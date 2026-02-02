@@ -1,0 +1,301 @@
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:get/get.dart';
+
+import 'package:project_taxi_driver_app/screens/onboarding.dart'; // Added OnboardingScreen import
+import 'package:project_taxi_driver_app/utils/app_colors.dart';
+import 'package:project_taxi_driver_app/widgets/pro_library.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import 'package:system_alert_window/system_alert_window.dart';
+
+class PermissionScreen extends StatefulWidget {
+  const PermissionScreen({super.key});
+
+  @override
+  State<PermissionScreen> createState() => _PermissionScreenState();
+}
+
+class _PermissionScreenState extends State<PermissionScreen> {
+  bool _isLoading = false;
+  bool _locationGranted = false;
+  bool _notificationGranted = false;
+  bool _overlayGranted = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkStatus();
+  }
+
+  Future<void> _checkStatus() async {
+    // Check initial status
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.always ||
+        permission == LocationPermission.whileInUse) {
+      setState(() => _locationGranted = true);
+    }
+
+    // Notification permission check is trickier on Android < 13 without request,
+    // but we can assume false or just let the button handle it.
+
+    // Check Overlay Permission
+    bool overlayStatus = await SystemAlertWindow.checkPermissions() ?? false;
+    if (overlayStatus) {
+      setState(() => _overlayGranted = true);
+    }
+  }
+
+  Future<void> _requestLocation() async {
+    if (_locationGranted) return;
+
+    setState(() => _isLoading = true);
+    try {
+      LocationPermission permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.always ||
+          permission == LocationPermission.whileInUse) {
+        setState(() => _locationGranted = true);
+      } else if (permission == LocationPermission.deniedForever) {
+        await Geolocator.openAppSettings();
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _requestNotification() async {
+    if (_notificationGranted) return;
+
+    setState(() => _isLoading = true);
+    try {
+      NotificationSettings settings = await FirebaseMessaging.instance
+          .requestPermission(
+            alert: true,
+            announcement: false,
+            badge: true,
+            carPlay: false,
+            criticalAlert: false,
+            provisional: false,
+            sound: true,
+          );
+
+      if (settings.authorizationStatus == AuthorizationStatus.authorized ||
+          settings.authorizationStatus == AuthorizationStatus.provisional) {
+        setState(() => _notificationGranted = true);
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _requestOverlay() async {
+    if (_overlayGranted) return;
+
+    setState(() => _isLoading = true);
+    try {
+      await SystemAlertWindow.requestPermissions(
+        prefMode: SystemWindowPrefMode.OVERLAY,
+      );
+      bool overlayStatus = await SystemAlertWindow.checkPermissions() ?? false;
+      if (overlayStatus) {
+        setState(() => _overlayGranted = true);
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _requestAllPermissions() async {
+    if (!_locationGranted) await _requestLocation();
+    if (!_notificationGranted) await _requestNotification();
+    if (!_overlayGranted) await _requestOverlay();
+
+    if (_locationGranted) {
+      await _completePermissions();
+    } else {
+      if (mounted) {
+        Get.snackbar(
+          'Permission Required',
+          'Location permission is required to receive rides.',
+          backgroundColor: Colors.red,
+          colorText: Colors.white,
+        );
+      }
+    }
+  }
+
+  Future<void> _completePermissions() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('permissionsAccepted', true);
+
+    if (mounted) {
+      Get.off(() => const OnboardingScreen());
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Scaffold(
+      backgroundColor: isDark ? const Color(0xFF1A1A1A) : Colors.white,
+      appBar: ProAppBar(
+        automaticallyImplyLeading: false,
+        titleText: "Permissions",
+      ),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(height: 20),
+              Text(
+                "Enable Access",
+                style: TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.bold,
+                  color: isDark ? Colors.white : Colors.black87,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                "Tap on each item to grant permission.",
+                style: TextStyle(
+                  fontSize: 16,
+                  color: isDark ? Colors.white60 : Colors.black54,
+                  height: 1.5,
+                ),
+              ),
+              const SizedBox(height: 40),
+
+              _buildPermissionTile(
+                icon: Icons.location_on,
+                title: "Location Services",
+                description:
+                    "Required to find passengers near you and track rides.",
+                isGranted: _locationGranted,
+                onTap: _requestLocation,
+              ),
+
+              const SizedBox(height: 20),
+
+              _buildPermissionTile(
+                icon: Icons.notifications_active,
+                title: "Notifications",
+                description: "Get instant alerts for new ride requests.",
+                isGranted: _notificationGranted,
+                onTap: _requestNotification,
+              ),
+
+              const SizedBox(height: 20),
+
+              _buildPermissionTile(
+                icon: Icons.layers,
+                title: "Display Over Apps",
+                description:
+                    "Required to show ride requests while using other apps.",
+                isGranted: _overlayGranted,
+                onTap: _requestOverlay,
+              ),
+
+              const Spacer(),
+
+              ProButton(
+                text: "Allow & Continue",
+                isLoading: _isLoading,
+                onPressed: _requestAllPermissions,
+              ),
+              const SizedBox(height: 20),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPermissionTile({
+    required IconData icon,
+    required String title,
+    required String description,
+    required bool isGranted,
+    required VoidCallback onTap,
+  }) {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: isGranted ? null : onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: isDark ? const Color(0xFF2C2C2C) : Colors.grey[100],
+            borderRadius: BorderRadius.circular(16),
+            border: isGranted
+                ? Border.all(color: Colors.green.withValues(alpha: 0.5))
+                : Border.all(color: AppColors.primary.withValues(alpha: 0.3)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: isGranted
+                      ? Colors.green.withValues(alpha: 0.1)
+                      : AppColors.primary.withValues(alpha: 0.1),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  isGranted ? Icons.check : icon,
+                  color: isGranted ? Colors.green : AppColors.primary,
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: isDark ? Colors.white : Colors.black87,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      description,
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: isDark ? Colors.white60 : Colors.black54,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (isGranted)
+                const Padding(
+                  padding: EdgeInsets.only(left: 8.0),
+                  child: Icon(
+                    Icons.check_circle,
+                    color: Colors.green,
+                    size: 20,
+                  ),
+                )
+              else
+                Icon(
+                  Icons.chevron_right,
+                  color: isDark ? Colors.white54 : Colors.grey,
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}

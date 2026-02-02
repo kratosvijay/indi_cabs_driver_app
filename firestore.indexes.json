@@ -1,0 +1,19 @@
+{
+    "indexes": [
+        {
+            "collectionGroup": "drivers",
+            "queryScope": "COLLECTION",
+            "fields": [
+                {
+                    "fieldPath": "geohash",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "isOnline",
+                    "order": "ASCENDING"
+                }
+            ]
+        }
+    ],
+    "fieldOverrides": []
+}
