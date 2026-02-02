@@ -14,16 +14,12 @@ import 'package:project_taxi_driver_app/screens/splash_screen.dart';
 import 'package:flutter_refresh_rate_control/flutter_refresh_rate_control.dart';
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
 import 'package:project_taxi_driver_app/utils/app_translations.dart';
-import 'package:project_taxi_driver_app/utils/system_alert_utils.dart'; // Import utils
-import 'package:project_taxi_driver_app/widgets/custom_overlay.dart';
+import 'package:project_taxi_driver_app/services/overlay_service.dart';
 
-@pragma("vm:entry-point")
-void overlayMain() {
-  WidgetsFlutterBinding.ensureInitialized();
-  runApp(
-    const MaterialApp(debugShowCheckedModeBanner: false, home: CustomOverlay()),
-  );
-}
+// Re-export the overlay entry point for flutter_overlay_window
+// This MUST be in main.dart for the plugin to find it
+export 'package:project_taxi_driver_app/services/overlay_service.dart'
+    show overlayMain;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -72,12 +68,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
     // Request permissions and register app-side listener
     Future.delayed(Duration.zero, () async {
-      SystemAlertUtils.registerCallBack((tag) {
-        debugPrint("Overlay tag received: $tag");
-        if (tag == "open_app") {
-          // Additional logic if needed when app is opened via bubble
-        }
-      });
+      OverlayService.instance.requestOverlayPermission();
     });
   }
 
@@ -91,7 +82,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       // Auto-hide overlay when app is resumed
-      SystemAlertUtils.closeOverlayWindow();
+      OverlayService.instance.hideFloatingBubble();
     }
   }
 

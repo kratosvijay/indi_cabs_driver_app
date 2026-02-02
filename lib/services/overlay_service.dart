@@ -1,10 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
-import 'package:project_taxi_driver_app/utils/app_colors.dart';
-import 'package:project_taxi_driver_app/widgets/pro_library.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
-class OverlayService extends GetxService {
+class OverlayService {
   static final OverlayService instance = OverlayService._internal();
   factory OverlayService() => instance;
   OverlayService._internal();
@@ -32,9 +30,18 @@ class OverlayService extends GetxService {
       'OverlayService: showFloatingBubble called, _isOverlayActive=$_isOverlayActive',
     );
 
-    if (_isOverlayActive) {
-      debugPrint('OverlayService: Overlay already active, skipping');
+    // Check actual overlay status instead of relying only on our flag
+    final isActuallyActive = await FlutterOverlayWindow.isActive();
+    if (isActuallyActive) {
+      debugPrint('OverlayService: Overlay is actually active, skipping');
+      _isOverlayActive = true;
       return;
+    }
+
+    // Reset flag if it was out of sync
+    if (_isOverlayActive && !isActuallyActive) {
+      debugPrint('OverlayService: Flag was out of sync, resetting');
+      _isOverlayActive = false;
     }
 
     final hasPermission = await requestOverlayPermission();
@@ -48,9 +55,10 @@ class OverlayService extends GetxService {
     try {
       debugPrint('OverlayService: Calling FlutterOverlayWindow.showOverlay...');
       await FlutterOverlayWindow.showOverlay(
-        height: 150,
-        width: 150,
-        alignment: OverlayAlignment.centerRight,
+        height: 180,
+        width: 180,
+        alignment: OverlayAlignment.centerLeft,
+        positionGravity: PositionGravity.auto,
         enableDrag: true,
         overlayTitle: "Driver App",
         overlayContent: "Tap to open",
@@ -70,10 +78,14 @@ class OverlayService extends GetxService {
     debugPrint(
       'OverlayService: hideFloatingBubble called, _isOverlayActive=$_isOverlayActive',
     );
-    if (!_isOverlayActive) return;
-    await FlutterOverlayWindow.closeOverlay();
+    // Always try to close and reset flag to ensure sync
+    try {
+      await FlutterOverlayWindow.closeOverlay();
+    } catch (e) {
+      debugPrint('OverlayService: Error closing overlay: $e');
+    }
     _isOverlayActive = false;
-    debugPrint('OverlayService: Overlay hidden');
+    debugPrint('OverlayService: Overlay hidden, flag reset');
   }
 
   /// Send data to overlay (e.g., ride request)
@@ -90,56 +102,82 @@ class OverlayService extends GetxService {
 /// Overlay entry point - this runs in a separate isolate
 @pragma("vm:entry-point")
 void overlayMain() {
-  Get.put(OverlayController());
-  runApp(const OverlayApp());
+  debugPrint('overlayMain: ENTRY POINT CALLED');
+  WidgetsFlutterBinding.ensureInitialized();
+  debugPrint('overlayMain: WidgetsFlutterBinding initialized');
+  runApp(const OverlayBubbleApp());
+  debugPrint('overlayMain: runApp called');
 }
 
-class OverlayController extends GetxController {
-  final rideRequest = Rxn<Map<String, dynamic>>();
-
-  @override
-  void onInit() {
-    super.onInit();
-    // Listen for data from main app
-    FlutterOverlayWindow.overlayListener.listen((data) {
-      if (data['type'] == 'ride_request') {
-        rideRequest.value = data['data'];
-      }
-    });
-  }
-}
-
-class OverlayApp extends GetView<OverlayController> {
-  const OverlayApp({super.key});
+/// Simple overlay app that shows a floating bubble
+class OverlayBubbleApp extends StatelessWidget {
+  const OverlayBubbleApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return GetMaterialApp(
+    debugPrint('OverlayBubbleApp: build called');
+    return MaterialApp(
       debugShowCheckedModeBanner: false,
-      themeMode: ThemeMode.system,
-      home: Material(
-        color: Colors.transparent,
-        child: Obx(
-          () => controller.rideRequest.value != null
-              ? _buildRideRequestOverlay(context)
-              : _buildFloatingBubble(context),
-        ),
-      ),
+      home: const OverlayBubbleWidget(),
+    );
+  }
+}
+
+/// The actual bubble widget
+class OverlayBubbleWidget extends StatefulWidget {
+  const OverlayBubbleWidget({super.key});
+
+  @override
+  State<OverlayBubbleWidget> createState() => _OverlayBubbleWidgetState();
+}
+
+class _OverlayBubbleWidgetState extends State<OverlayBubbleWidget> {
+  Map<String, dynamic>? _rideRequest;
+
+  @override
+  void initState() {
+    super.initState();
+    debugPrint('_OverlayBubbleWidgetState: initState called');
+
+    // Listen for data from main app
+    FlutterOverlayWindow.overlayListener.listen((data) {
+      debugPrint('_OverlayBubbleWidgetState: Received data: $data');
+      if (data is Map && data['type'] == 'ride_request') {
+        setState(() {
+          _rideRequest = data['data'];
+        });
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    debugPrint(
+      '_OverlayBubbleWidgetState: build called, _rideRequest=$_rideRequest',
+    );
+
+    return Material(
+      color: Colors.transparent,
+      child: _rideRequest != null
+          ? _buildRideRequestOverlay()
+          : _buildFloatingBubble(),
     );
   }
 
-  Widget _buildFloatingBubble(BuildContext context) {
+  Widget _buildFloatingBubble() {
+    debugPrint('_buildFloatingBubble: Building bubble UI');
     return GestureDetector(
       onTap: () async {
-        // Open main app when bubble is tapped
+        debugPrint('_buildFloatingBubble: Bubble tapped!');
+        // Bring the main app to foreground, then close overlay
+        FlutterForegroundTask.launchApp();
         await FlutterOverlayWindow.closeOverlay();
       },
       child: Container(
-        width: 100,
-        height: 100,
+        width: 80,
+        height: 80,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          gradient: AppColors.getAppBarGradient(context),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withValues(alpha: 0.3),
@@ -148,13 +186,20 @@ class OverlayApp extends GetView<OverlayController> {
             ),
           ],
         ),
-        child: const Icon(Icons.local_taxi, color: Colors.white, size: 50),
+        child: ClipOval(
+          child: Image.asset(
+            'assets/logos/app_logo.png',
+            width: 80,
+            height: 80,
+            fit: BoxFit.cover,
+          ),
+        ),
       ),
     );
   }
 
-  Widget _buildRideRequestOverlay(BuildContext context) {
-    final request = controller.rideRequest.value;
+  Widget _buildRideRequestOverlay() {
+    debugPrint('_buildRideRequestOverlay: Building ride request UI');
     return Container(
       margin: const EdgeInsets.all(16),
       padding: const EdgeInsets.all(16),
@@ -171,104 +216,53 @@ class OverlayApp extends GetView<OverlayController> {
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: AppColors.primary.withValues(alpha: 0.1),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(
-                  Icons.local_taxi,
-                  color: AppColors.primary,
-                  size: 24,
-                ),
-              ),
-              const SizedBox(width: 12),
-              const Expanded(
-                child: Text(
-                  'New Ride Request',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          _buildInfoRow(
-            Icons.location_on,
-            'Pickup',
-            request?['pickupTitle'] ?? 'Unknown',
+          const Text(
+            'New Ride Request',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 8),
-          _buildInfoRow(
-            Icons.flag,
-            'Drop',
-            request?['dropoffTitle'] ?? 'Unknown',
-          ),
-          const SizedBox(height: 8),
-          _buildInfoRow(
-            Icons.attach_money,
-            'Fare',
-            '₹${request?['rideFare'] ?? '0'}',
-          ),
+          Text('Pickup: ${_rideRequest?['pickupTitle'] ?? 'Unknown'}'),
+          Text('Drop: ${_rideRequest?['dropoffTitle'] ?? 'Unknown'}'),
+          Text('Fare: ₹${_rideRequest?['rideFare'] ?? '0'}'),
           const SizedBox(height: 16),
           Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
-              Expanded(
-                child: ProButton(
-                  text: 'Reject',
-                  onPressed: () async {
-                    // Send reject action
-                    await FlutterOverlayWindow.shareData({
-                      'action': 'reject',
-                      'rideId': request?['rideId'],
-                    });
-                    controller.rideRequest.value = null;
-                  },
-                  backgroundColor: Colors.red,
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                onPressed: () async {
+                  debugPrint('_buildRideRequestOverlay: Reject pressed');
+                  await FlutterOverlayWindow.shareData({
+                    'action': 'reject',
+                    'rideId': _rideRequest?['rideId'],
+                  });
+                  setState(() => _rideRequest = null);
+                },
+                child: const Text(
+                  'Reject',
+                  style: TextStyle(color: Colors.white),
                 ),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: ProButton(
-                  text: 'Accept',
-                  onPressed: () async {
-                    // Send accept action and close overlay
-                    await FlutterOverlayWindow.shareData({
-                      'action': 'accept',
-                      'rideId': request?['rideId'],
-                    });
-                    await FlutterOverlayWindow.closeOverlay();
-                  },
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+                onPressed: () async {
+                  debugPrint('_buildRideRequestOverlay: Accept pressed');
+                  await FlutterOverlayWindow.shareData({
+                    'action': 'accept',
+                    'rideId': _rideRequest?['rideId'],
+                  });
+                  await FlutterOverlayWindow.closeOverlay();
+                },
+                child: const Text(
+                  'Accept',
+                  style: TextStyle(color: Colors.white),
                 ),
               ),
             ],
           ),
         ],
       ),
-    );
-  }
-
-  Widget _buildInfoRow(IconData icon, String label, String value) {
-    return Row(
-      children: [
-        Icon(icon, size: 16, color: Colors.grey),
-        const SizedBox(width: 8),
-        Text(
-          '$label: ',
-          style: const TextStyle(fontSize: 14, color: Colors.grey),
-        ),
-        Expanded(
-          child: Text(
-            value,
-            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
-            overflow: TextOverflow.ellipsis,
-          ),
-        ),
-      ],
     );
   }
 }

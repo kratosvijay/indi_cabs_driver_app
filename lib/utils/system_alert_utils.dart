@@ -20,8 +20,8 @@ class SystemAlertUtils {
   static Future<void> showOverlayWindow() async {
     try {
       await SystemAlertWindow.showSystemWindow(
-        height: 90,
-        width: 90,
+        height: 80,
+        width: 80,
         gravity: SystemWindowGravity.LEADING,
 
         prefMode: SystemWindowPrefMode.OVERLAY,

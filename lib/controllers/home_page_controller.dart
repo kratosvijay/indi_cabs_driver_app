@@ -28,7 +28,8 @@ import 'package:volume_controller/volume_controller.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'package:project_taxi_driver_app/screens/rental_request_screen.dart';
-import 'package:project_taxi_driver_app/utils/system_alert_utils.dart';
+import 'package:flutter_overlay_window/flutter_overlay_window.dart';
+import 'package:project_taxi_driver_app/services/overlay_service.dart';
 import 'package:project_taxi_driver_app/services/queue_service.dart';
 import 'package:project_taxi_driver_app/services/demand_service.dart';
 import 'package:flutter_tts/flutter_tts.dart';
@@ -134,19 +135,19 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     }
 
     // Overlay Listener
-    SystemAlertUtils.requestPermissions();
-    SystemAlertUtils.registerCallBack((tag) {
-      log("SystemAlert Event: $tag");
-      if (tag == "accept") {
-        if (activeRideRequest.value != null) {
-          onRideAccepted();
+    OverlayService.instance.requestOverlayPermission();
+    FlutterOverlayWindow.overlayListener.listen((data) {
+      log("Overlay Event: $data");
+      if (data is Map) {
+        if (data['action'] == "accept") {
+          if (activeRideRequest.value != null) {
+            onRideAccepted();
+          }
+        } else if (data['action'] == "reject") {
+          if (activeRideRequest.value != null) {
+            onRideRejected("overlay_reject");
+          }
         }
-      } else if (tag == "reject") {
-        if (activeRideRequest.value != null) {
-          onRideRejected("system_alert_overlay");
-        }
-      } else if (tag == "open") {
-        // App is already brought to foreground by plugin usually, or we can force it
       }
     });
 
@@ -196,7 +197,8 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       }
     } else if (state == AppLifecycleState.resumed) {
       debugPrint("App resumed. Closing overlay.");
-      SystemAlertUtils.closeOverlayWindow();
+      debugPrint("App resumed. Closing overlay.");
+      OverlayService.instance.hideFloatingBubble();
     }
   }
 
@@ -207,12 +209,12 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       debugPrint("_showStatusBubble: Skipped (Driver is offline)");
       return;
     }
-    debugPrint("_showStatusBubble: Showing system alert window...");
-    await SystemAlertUtils.showOverlayWindow();
+    debugPrint("_showStatusBubble: Showing floating bubble...");
+    await OverlayService.instance.showFloatingBubble();
   }
 
   Future<void> _showOverlayForRide(RideRequest request) async {
-    await SystemAlertUtils.showOverlayWindow();
+    await OverlayService.instance.showRideRequestOverlay(request.toJson());
   }
 
   @override

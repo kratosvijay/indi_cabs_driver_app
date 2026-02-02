@@ -8,7 +8,7 @@ import 'package:project_taxi_driver_app/widgets/status_slider.dart'; // For Driv
 import 'package:project_taxi_driver_app/screens/language.dart';
 import 'package:project_taxi_driver_app/screens/onboarding.dart';
 import 'package:project_taxi_driver_app/screens/permission_screen.dart';
-import 'package:project_taxi_driver_app/utils/system_alert_utils.dart';
+import 'package:project_taxi_driver_app/services/overlay_service.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -60,9 +60,9 @@ class SplashController extends GetxController {
 
       try {
         // Safe to request now as user has gone through permission screen
-        await SystemAlertUtils.requestPermissions();
+        await OverlayService.instance.requestOverlayPermission();
       } catch (e) {
-        debugPrint("Splash: Error initializing System Alert Window: $e");
+        debugPrint("Splash: Error initializing Overlay Service: $e");
       }
 
       // 5. GPS Warmup
