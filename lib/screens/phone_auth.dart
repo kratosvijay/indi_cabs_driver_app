@@ -347,7 +347,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                           icon: Icons.lock_outline,
                           keyboardType: TextInputType.number,
                         ),
-                        const SizedBox(height: 80),
+                        const SizedBox(height: 30),
                         ProButton(
                           text: _getTranslatedString('verifyOtp'),
                           onPressed: _verifyOtp,
@@ -355,6 +355,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                           // backgroundColor: Colors.white,
                           // textColor: AppColors.primary,
                         ),
+                        const SizedBox(height: 30),
                         TextButton(
                           onPressed: _isLoading ? null : _sendOtp,
                           style: TextButton.styleFrom(

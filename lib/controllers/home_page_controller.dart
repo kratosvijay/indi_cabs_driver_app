@@ -68,8 +68,8 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   final RxDouble walletBalance = 0.0.obs;
   final Rxn<Ride> lastRide = Rxn<Ride>();
 
-  // Snooze Logic
-  // final Map<String, DateTime> _ignoredRides = {};
+  // Snooze Logic / Ignored Rides
+  final Map<String, DateTime> _ignoredRides = {};
 
   // Subscriptions and Timers
   StreamSubscription? rideRequestSubscription;
@@ -134,8 +134,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       }
     }
 
-    // Overlay Listener
-    OverlayService.instance.requestOverlayPermission();
+    // Overlay Listener (permission already requested in SplashController)
     FlutterOverlayWindow.overlayListener.listen((data) {
       log("Overlay Event: $data");
       if (data is Map) {
@@ -531,6 +530,16 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
           // If we already have this ride active locally, don't re-process
           if (activeRideRequest.value?.rideId == doc.id) {
+            continue;
+          }
+
+          // Check if we recently rejected this ride locally to avoid loop
+          // (Requires tracking rejected IDs. For now, we rely on activeRideRequest being null check above
+          // but if we cleared it in onRideRejected, we might re-fetch it if snapshot updates.
+          // Better approach: Check if data status is 'accepted' or 'rejected' which query filters out.
+          // Query filters 'searching'. So if we set it to 'rejected' on server, it won't appear.
+          // BUT latency exists. So we add a local ignore check.)
+          if (_ignoredRides.containsKey(doc.id)) {
             continue;
           }
 
@@ -1129,7 +1138,11 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
       // 1. Play TTS
       try {
-        await audioPlayer.stop(); // Ensure sound is stopped
+        try {
+          await audioPlayer.stop(); // Ensure sound is stopped
+        } catch (e) {
+          debugPrint("Error stopping audio (TTS loop): $e");
+        }
 
         String speechText = "Rental Request";
         if (activeRideRequest.value?.vehicleType == "ActingDriver") {
@@ -1176,7 +1189,11 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
     try {
       debugPrint("Stopping Audio...");
-      await audioPlayer.stop();
+      try {
+        await audioPlayer.stop();
+      } catch (e) {
+        debugPrint("Error stopping audio (stopRideRequestSound): $e");
+      }
       // release() kills the player on some platforms/versions, preventing reuse.
       // Since it's static, stop() is sufficient to silence the singleton.
 
@@ -1198,6 +1215,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     if (_isAcceptingRide) return;
     _isAcceptingRide = true;
     stopRideRequestSound();
+    rideTimeoutTimer?.cancel(); // CRITICAL FIX: Cancel timeout immediately
 
     final request = activeRideRequest.value;
     if (request == null) {
@@ -1311,6 +1329,8 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
     final rideId = activeRideRequest.value!.rideId;
     final driverId = user.uid;
+    _ignoredRides[rideId] =
+        DateTime.now(); // Ignore this ride ID locally from now on
     final rideType = activeRideRequest.value!.rideType;
     final collectionPath = (rideType == 'rental')
         ? 'rental_requests'
@@ -1320,6 +1340,10 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
     // Clear local state immediately to hide UI
     activeRideRequest.value = null;
+
+    // CRITICAL FIX: Close overlay if it's open (especially for background timeout/rejection)
+    OverlayService.instance.hideFloatingBubble();
+
     Get.back(); // Close Request Card/Screen if open
 
     try {

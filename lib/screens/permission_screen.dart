@@ -8,7 +8,7 @@ import 'package:project_taxi_driver_app/utils/app_colors.dart';
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:system_alert_window/system_alert_window.dart';
+import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 
 class PermissionScreen extends StatefulWidget {
   const PermissionScreen({super.key});
@@ -17,7 +17,8 @@ class PermissionScreen extends StatefulWidget {
   State<PermissionScreen> createState() => _PermissionScreenState();
 }
 
-class _PermissionScreenState extends State<PermissionScreen> {
+class _PermissionScreenState extends State<PermissionScreen>
+    with WidgetsBindingObserver {
   bool _isLoading = false;
   bool _locationGranted = false;
   bool _notificationGranted = false;
@@ -26,7 +27,22 @@ class _PermissionScreenState extends State<PermissionScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _checkStatus();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Re-check permissions when user returns from settings
+    if (state == AppLifecycleState.resumed) {
+      _checkStatus();
+    }
   }
 
   Future<void> _checkStatus() async {
@@ -41,7 +57,7 @@ class _PermissionScreenState extends State<PermissionScreen> {
     // but we can assume false or just let the button handle it.
 
     // Check Overlay Permission
-    bool overlayStatus = await SystemAlertWindow.checkPermissions() ?? false;
+    bool overlayStatus = await FlutterOverlayWindow.isPermissionGranted();
     if (overlayStatus) {
       setState(() => _overlayGranted = true);
     }
@@ -50,24 +66,22 @@ class _PermissionScreenState extends State<PermissionScreen> {
   Future<void> _requestLocation() async {
     if (_locationGranted) return;
 
-    setState(() => _isLoading = true);
     try {
       LocationPermission permission = await Geolocator.requestPermission();
       if (permission == LocationPermission.always ||
           permission == LocationPermission.whileInUse) {
-        setState(() => _locationGranted = true);
+        if (mounted) setState(() => _locationGranted = true);
       } else if (permission == LocationPermission.deniedForever) {
         await Geolocator.openAppSettings();
       }
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
+    } catch (e) {
+      debugPrint('Error requesting location permission: $e');
     }
   }
 
   Future<void> _requestNotification() async {
     if (_notificationGranted) return;
 
-    setState(() => _isLoading = true);
     try {
       NotificationSettings settings = await FirebaseMessaging.instance
           .requestPermission(
@@ -82,46 +96,72 @@ class _PermissionScreenState extends State<PermissionScreen> {
 
       if (settings.authorizationStatus == AuthorizationStatus.authorized ||
           settings.authorizationStatus == AuthorizationStatus.provisional) {
-        setState(() => _notificationGranted = true);
+        if (mounted) setState(() => _notificationGranted = true);
       }
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
+    } catch (e) {
+      debugPrint('Error requesting notification permission: $e');
     }
   }
 
   Future<void> _requestOverlay() async {
-    if (_overlayGranted) return;
+    if (_overlayGranted) {
+      debugPrint('Overlay: Already granted, skipping');
+      return;
+    }
 
-    setState(() => _isLoading = true);
+    debugPrint('Overlay: Requesting permission...');
     try {
-      await SystemAlertWindow.requestPermissions(
-        prefMode: SystemWindowPrefMode.OVERLAY,
-      );
-      bool overlayStatus = await SystemAlertWindow.checkPermissions() ?? false;
-      if (overlayStatus) {
+      // Don't await - requestPermission opens settings and never returns properly
+      // The lifecycle observer (didChangeAppLifecycleState) will re-check status
+      FlutterOverlayWindow.requestPermission();
+
+      // Wait a brief moment then re-check (user may have already granted)
+      await Future.delayed(const Duration(milliseconds: 500));
+      bool overlayStatus = await FlutterOverlayWindow.isPermissionGranted();
+      debugPrint('Overlay: Quick check status: $overlayStatus');
+      if (overlayStatus && mounted) {
         setState(() => _overlayGranted = true);
       }
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
+    } catch (e) {
+      debugPrint('Error requesting overlay permission: $e');
     }
+    debugPrint('Overlay: Request complete, _overlayGranted=$_overlayGranted');
   }
 
   Future<void> _requestAllPermissions() async {
-    if (!_locationGranted) await _requestLocation();
-    if (!_notificationGranted) await _requestNotification();
-    if (!_overlayGranted) await _requestOverlay();
+    debugPrint('RequestAll: Starting...');
+    setState(() => _isLoading = true);
 
-    if (_locationGranted) {
-      await _completePermissions();
-    } else {
-      if (mounted) {
-        Get.snackbar(
-          'Permission Required',
-          'Location permission is required to receive rides.',
-          backgroundColor: Colors.red,
-          colorText: Colors.white,
-        );
+    try {
+      debugPrint('RequestAll: Location granted=$_locationGranted');
+      if (!_locationGranted) await _requestLocation();
+
+      debugPrint('RequestAll: Notification granted=$_notificationGranted');
+      if (!_notificationGranted) await _requestNotification();
+
+      debugPrint('RequestAll: Overlay granted=$_overlayGranted');
+      if (!_overlayGranted) await _requestOverlay();
+
+      debugPrint('RequestAll: All requests done. Location=$_locationGranted');
+      if (_locationGranted) {
+        debugPrint('RequestAll: Completing permissions...');
+        await _completePermissions();
+      } else {
+        debugPrint('RequestAll: Location not granted, showing error');
+        if (mounted) {
+          Get.snackbar(
+            'Permission Required',
+            'Location permission is required to receive rides.',
+            backgroundColor: Colors.red,
+            colorText: Colors.white,
+          );
+        }
       }
+    } catch (e) {
+      debugPrint('RequestAll: Error occurred: $e');
+    } finally {
+      debugPrint('RequestAll: Finally block, setting loading=false');
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 

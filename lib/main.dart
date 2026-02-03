@@ -14,7 +14,6 @@ import 'package:project_taxi_driver_app/screens/splash_screen.dart';
 import 'package:flutter_refresh_rate_control/flutter_refresh_rate_control.dart';
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
 import 'package:project_taxi_driver_app/utils/app_translations.dart';
-import 'package:project_taxi_driver_app/services/overlay_service.dart';
 
 // Re-export the overlay entry point for flutter_overlay_window
 // This MUST be in main.dart for the plugin to find it
@@ -60,30 +59,11 @@ class MyApp extends StatefulWidget {
   State<MyApp> createState() => _MyAppState();
 }
 
-class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
+class _MyAppState extends State<MyApp> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
-
-    // Request permissions and register app-side listener
-    Future.delayed(Duration.zero, () async {
-      OverlayService.instance.requestOverlayPermission();
-    });
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      // Auto-hide overlay when app is resumed
-      OverlayService.instance.hideFloatingBubble();
-    }
+    // Overlay permission is requested in SplashController after permission check
   }
 
   @override

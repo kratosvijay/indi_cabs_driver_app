@@ -18,7 +18,14 @@ class SplashScreen extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Image.asset('assets/logos/app_logo.png', width: 150, height: 150),
+            ClipOval(
+              child: Image.asset(
+                'assets/logos/app_logo.png',
+                width: 150,
+                height: 150,
+                fit: BoxFit.cover,
+              ),
+            ),
             const SizedBox(height: 24),
             CircularProgressIndicator(color: AppColors.lightEnd),
             const SizedBox(height: 16),

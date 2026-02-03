@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:get/get.dart';
+import 'package:project_taxi_driver_app/utils/app_colors.dart'; // Ensure this import is correct based on project structure
+import 'dart:async'; // Add Timer import
 
 class OverlayService {
   static final OverlayService instance = OverlayService._internal();
@@ -55,11 +58,12 @@ class OverlayService {
     try {
       debugPrint('OverlayService: Calling FlutterOverlayWindow.showOverlay...');
       await FlutterOverlayWindow.showOverlay(
-        height: 180,
-        width: 180,
+        height: 200,
+        width: 200,
         alignment: OverlayAlignment.centerLeft,
         positionGravity: PositionGravity.auto,
         enableDrag: true,
+        flag: OverlayFlag.defaultFlag,
         overlayTitle: "Driver App",
         overlayContent: "Tap to open",
       );
@@ -95,7 +99,52 @@ class OverlayService {
 
   /// Show ride request notification overlay
   Future<void> showRideRequestOverlay(Map<String, dynamic> rideData) async {
-    await sendDataToOverlay({'type': 'ride_request', 'data': rideData});
+    debugPrint('OverlayService: showRideRequestOverlay called');
+
+    // Calculate dynamic dimensions
+    double screenWidth = Get.width;
+    double screenHeight = Get.height;
+
+    // Safety fallback
+    if (screenWidth == 0) screenWidth = 400;
+    if (screenHeight == 0) screenHeight = 844;
+
+    // Target: 90% width, fixed height appropriate for card
+    final targetWidth = (screenWidth * 0.9).toInt();
+    final targetHeight = 550; // Enough for the content
+
+    // CHECK ACTUAL STATE: The overlay might have closed itself (e.g. timeout)
+    // without the main isolate knowing.
+    bool isActive = await FlutterOverlayWindow.isActive();
+
+    if (!isActive) {
+      debugPrint('OverlayService: Overlay inactive, showing new window');
+      await FlutterOverlayWindow.showOverlay(
+        height: targetHeight,
+        width: targetWidth,
+        alignment: OverlayAlignment.center,
+        positionGravity: PositionGravity.auto,
+        enableDrag: true,
+        flag: OverlayFlag.defaultFlag,
+        overlayTitle: "New Ride Request",
+        overlayContent: "You have a new ride request",
+      );
+      _isOverlayActive = true;
+    } else {
+      debugPrint(
+        'OverlayService: Overlay already active, sending data to resize',
+      );
+      // We do NOT call resizeOverlay here anymore to avoid race conditions.
+      // The OverlayBubbleWidget listener receives the data and resizes itself.
+    }
+
+    // Send data
+    await sendDataToOverlay({
+      'type': 'ride_request',
+      'data': rideData,
+      'width': targetWidth,
+      'height': targetHeight,
+    });
   }
 }
 
@@ -133,6 +182,10 @@ class OverlayBubbleWidget extends StatefulWidget {
 
 class _OverlayBubbleWidgetState extends State<OverlayBubbleWidget> {
   Map<String, dynamic>? _rideRequest;
+  Timer? _timer;
+  double _progressValue = 1.0;
+
+  StreamSubscription? _subscription;
 
   @override
   void initState() {
@@ -140,14 +193,92 @@ class _OverlayBubbleWidgetState extends State<OverlayBubbleWidget> {
     debugPrint('_OverlayBubbleWidgetState: initState called');
 
     // Listen for data from main app
-    FlutterOverlayWindow.overlayListener.listen((data) {
+    _subscription = FlutterOverlayWindow.overlayListener.listen((data) async {
       debugPrint('_OverlayBubbleWidgetState: Received data: $data');
+      if (!mounted) return;
       if (data is Map && data['type'] == 'ride_request') {
-        setState(() {
-          _rideRequest = data['data'];
-        });
+        final width = (data['width'] as num?)?.toInt() ?? 500;
+        final height = (data['height'] as num?)?.toInt() ?? 600;
+
+        // Expand window for card - use passed dimensions
+        try {
+          await FlutterOverlayWindow.resizeOverlay(width, height, true);
+        } catch (e) {
+          debugPrint("Error resizing overlay: $e");
+        }
+
+        if (mounted) {
+          setState(() {
+            _rideRequest = data['data'];
+            _startTimer(); // Start timer when request arrives
+          });
+        }
       }
     });
+  }
+
+  @override
+  void dispose() {
+    _subscription?.cancel();
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _startTimer() {
+    _progressValue = 1.0;
+    _timer?.cancel();
+    // 5 seconds timer: 50ms interval * 100 ticks = 5000ms
+    _timer = Timer.periodic(const Duration(milliseconds: 50), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      setState(() {
+        _progressValue -= 0.01;
+      });
+      if (_progressValue <= 0) {
+        timer.cancel();
+        if (mounted) {
+          _rejectRide(); // Auto reject
+        }
+      }
+    });
+  }
+
+  Future<void> _rejectRide() async {
+    debugPrint('_rejectRide: Auto-rejecting or user rejected');
+    _timer?.cancel();
+
+    // Send rejection data
+    await FlutterOverlayWindow.shareData({
+      'action': 'reject',
+      'rideId': _rideRequest?['rideId'],
+    });
+
+    // Close immediately - DO NOT resize to bubble
+    await FlutterOverlayWindow.closeOverlay();
+
+    // We don't nullify _rideRequest here because the window is closing anyway,
+    // and we want to avoid a frame where it turns into a bubble or empty state.
+  }
+
+  Future<void> _acceptRide() async {
+    debugPrint('_acceptRide: Accepted');
+    _timer?.cancel();
+
+    // 1. Send data FIRST to ensure main isolate receives it
+    await FlutterOverlayWindow.shareData({
+      'action': 'accept',
+      'rideId': _rideRequest?['rideId'],
+    });
+
+    // 2. Launch App to bring to foreground
+    FlutterForegroundTask.launchApp();
+
+    // 3. DO NOT close overlay here.
+    // The main app's lifecycle listener (didChangeAppLifecycleState) in HomePageController
+    // or main.dart will detect 'resumed' and close the overlay.
+    // Closing it here causes a race condition and potential ANR/Crash.
   }
 
   @override
@@ -159,7 +290,7 @@ class _OverlayBubbleWidgetState extends State<OverlayBubbleWidget> {
     return Material(
       color: Colors.transparent,
       child: _rideRequest != null
-          ? _buildRideRequestOverlay()
+          ? _buildRequestCard()
           : _buildFloatingBubble(),
     );
   }
@@ -192,77 +323,249 @@ class _OverlayBubbleWidgetState extends State<OverlayBubbleWidget> {
             width: 80,
             height: 80,
             fit: BoxFit.cover,
+            errorBuilder: (context, error, stackTrace) {
+              return Container(
+                color: Colors.amber,
+                child: const Icon(Icons.local_taxi, size: 40),
+              );
+            },
           ),
         ),
       ),
     );
   }
 
-  Widget _buildRideRequestOverlay() {
-    debugPrint('_buildRideRequestOverlay: Building ride request UI');
+  Widget _buildRequestCard() {
+    // Determine Header Text similar to app
+    String headerText = "New Ride Request";
+    if (_rideRequest != null) {
+      final method = _rideRequest!['paymentMethod'] ?? 'Cash';
+      final walletUsed =
+          (_rideRequest!['paidByWallet'] as num?)?.toDouble() ?? 0.0;
+
+      if (widgetIsRental) {
+        headerText = "${_rideRequest!['vehicleClass'] ?? 'Car'} Rental";
+      } else if (walletUsed > 0 || method == 'Cash + Wallet') {
+        headerText = "Cash + Wallet"; // Simplified translation
+      } else if (method.toLowerCase().contains('cash')) {
+        headerText = "Cash Payment";
+      } else {
+        headerText = "Digital Payment";
+      }
+    }
+
     return Container(
-      margin: const EdgeInsets.all(16),
-      padding: const EdgeInsets.all(16),
+      margin: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
+        color: AppColors.primary,
+        borderRadius: BorderRadius.circular(20),
         boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.3),
-            blurRadius: 15,
-            spreadRadius: 3,
+          BoxShadow(blurRadius: 15, color: Colors.black.withValues(alpha: 0.3)),
+        ],
+      ),
+      child: Stack(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 24, 16, 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // 1. Header
+                Center(
+                  child: Text(
+                    headerText,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white.withValues(alpha: 0.9),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // 2. Pickup Location
+                _buildDetailRow(
+                  Icons.location_on,
+                  _rideRequest?['pickupTitle'] ?? 'Pickup',
+                  _rideRequest?['pickupFullAddress'] ?? '',
+                  widgetIsRental
+                      ? "Rental"
+                      : "${(_rideRequest?['driverDistance']?.toStringAsFixed(1)) ?? '0.0'} km Away",
+                ),
+
+                // Connector Dots (Visual only, inside column for simplicity or absolute)
+                const Padding(
+                  padding: EdgeInsets.only(left: 11.0, top: 4, bottom: 4),
+                  child: Icon(Icons.more_vert, color: Colors.white54, size: 20),
+                ),
+
+                // 3. Dropoff Location
+                _buildDetailRow(
+                  Icons.flag,
+                  _rideRequest?['dropoffTitle'] ?? 'Dropoff',
+                  _rideRequest?['dropoffFullAddress'] ?? '',
+                  widgetIsRental
+                      ? ""
+                      : "${(_rideRequest?['rideDistance']?.toStringAsFixed(1)) ?? '0.0'} km Ride",
+                ),
+
+                const Divider(height: 32, color: Colors.white54),
+
+                // 4. Fare
+                Center(
+                  child: Column(
+                    children: [
+                      Text(
+                        "₹${_rideRequest?['rideFare'] ?? '0'}",
+                        style: const TextStyle(
+                          fontSize: 36,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                      ),
+                      Text(
+                        "Includes Tip", // Assuming tip logic is handled in fare or simplified for overlay
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.7),
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // 5. Buttons
+                _buildActionButtons(),
+              ],
+            ),
+          ),
+
+          // Close Button (Top Right)
+          Positioned(
+            top: 8,
+            right: 8,
+            child: IconButton(
+              icon: const Icon(Icons.close, color: Colors.white),
+              onPressed: _rejectRide, // Treat close as reject/dismiss
+            ),
+          ),
+
+          // Progress Bar (Bottom)
+          Positioned(
+            bottom: 0,
+            left: 0,
+            right: 0,
+            child: ClipRRect(
+              borderRadius: const BorderRadius.vertical(
+                bottom: Radius.circular(20),
+              ),
+              child: LinearProgressIndicator(
+                value: _progressValue,
+                backgroundColor: Colors.blue.shade300,
+                valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                minHeight: 6,
+              ),
+            ),
           ),
         ],
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Text(
-            'New Ride Request',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 8),
-          Text('Pickup: ${_rideRequest?['pickupTitle'] ?? 'Unknown'}'),
-          Text('Drop: ${_rideRequest?['dropoffTitle'] ?? 'Unknown'}'),
-          Text('Fare: ₹${_rideRequest?['rideFare'] ?? '0'}'),
-          const SizedBox(height: 16),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+    );
+  }
+
+  bool get widgetIsRental => _rideRequest?['rideType'] == 'rental';
+
+  Widget _buildDetailRow(
+    IconData icon,
+    String title,
+    String fullAddress,
+    String distanceInfo,
+  ) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, color: Colors.white, size: 28),
+        const SizedBox(width: 16),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-                onPressed: () async {
-                  debugPrint('_buildRideRequestOverlay: Reject pressed');
-                  await FlutterOverlayWindow.shareData({
-                    'action': 'reject',
-                    'rideId': _rideRequest?['rideId'],
-                  });
-                  setState(() => _rideRequest = null);
-                },
-                child: const Text(
-                  'Reject',
-                  style: TextStyle(color: Colors.white),
+              Text(
+                title,
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                  fontSize: 18,
                 ),
               ),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
-                onPressed: () async {
-                  debugPrint('_buildRideRequestOverlay: Accept pressed');
-                  await FlutterOverlayWindow.shareData({
-                    'action': 'accept',
-                    'rideId': _rideRequest?['rideId'],
-                  });
-                  await FlutterOverlayWindow.closeOverlay();
-                },
-                child: const Text(
-                  'Accept',
-                  style: TextStyle(color: Colors.white),
+              const SizedBox(height: 4),
+              Text(
+                fullAddress,
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.9),
+                  fontSize: 14,
                 ),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
               ),
+              const SizedBox(height: 8),
+              if (distanceInfo.isNotEmpty)
+                Text(
+                  distanceInfo,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
             ],
           ),
-        ],
-      ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildActionButtons() {
+    return Row(
+      children: [
+        Expanded(
+          child: ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.grey.shade800,
+              foregroundColor: Colors.white, // Text color
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+            onPressed: _rejectRide,
+            child: const Text(
+              'Pass',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.green, // Accept color
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+            onPressed: _acceptRide,
+            child: const Text(
+              'Accept',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
