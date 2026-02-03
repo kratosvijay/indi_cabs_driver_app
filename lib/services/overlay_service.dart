@@ -3,7 +3,8 @@ import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:get/get.dart';
 import 'package:project_taxi_driver_app/utils/app_colors.dart'; // Ensure this import is correct based on project structure
-import 'dart:async'; // Add Timer import
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:async';
 
 class OverlayService {
   static final OverlayService instance = OverlayService._internal();
@@ -266,16 +267,35 @@ class _OverlayBubbleWidgetState extends State<OverlayBubbleWidget> {
     debugPrint('_acceptRide: Accepted');
     _timer?.cancel();
 
-    // 1. Send data FIRST to ensure main isolate receives it
+    // 1. Launch App IMMEDIATELY
+    FlutterForegroundTask.launchApp();
+
+    // 2. Backup: Save to SharedPreferences (Fire and Forget)
+    SharedPreferences.getInstance()
+        .then((prefs) {
+          if (_rideRequest != null && _rideRequest!['rideId'] != null) {
+            prefs.setString(
+              'details_accepted_ride_id',
+              _rideRequest!['rideId'],
+            );
+            debugPrint(
+              "Overlay: Saved accepted ride ID to prefs: ${_rideRequest!['rideId']}",
+            );
+          }
+        })
+        .catchError((e) {
+          debugPrint("Overlay: Error saving prefs: $e");
+        });
+
+    // 3. Fallback: Send Standard Stream Data
     await FlutterOverlayWindow.shareData({
       'action': 'accept',
       'rideId': _rideRequest?['rideId'],
     });
 
-    // 2. Launch App to bring to foreground
-    FlutterForegroundTask.launchApp();
-
-    // 3. DO NOT close overlay here.
+    // 4. DO NOT close overlay here.
+    // The main app will close it when it resumes.
+    // The main app will close it when it resumes and processes the acceptance.
     // The main app's lifecycle listener (didChangeAppLifecycleState) in HomePageController
     // or main.dart will detect 'resumed' and close the overlay.
     // Closing it here causes a race condition and potential ANR/Crash.

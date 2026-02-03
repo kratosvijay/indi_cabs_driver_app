@@ -511,189 +511,201 @@ class _RideRequestCardState extends State<RideRequestCard> {
 
   @override
   Widget build(BuildContext context) {
-    return Positioned(
-      bottom: 0,
-      left: 0,
-      right: 0,
-      child: GestureDetector(
-        onTap: widget.onAccept,
-        child: Container(
-          decoration: BoxDecoration(
-            color: AppColors.primary,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-            boxShadow: [
-              BoxShadow(
-                blurRadius: 15,
-                color: Colors.black.withValues(alpha: 0.3),
+    // Fix for "incorrect configuration id" crash on Android 14+ when resuming from background.
+    // We create a FRESH MediaQueryData from the view to bypass stale inherited widgets.
+    // We also forcefully reset the textScaler to 1.0 to avoid any invalid system configuration IDs.
+    final mediaQueryData = MediaQueryData.fromView(
+      View.of(context),
+    ).copyWith(textScaler: const TextScaler.linear(1.0));
+
+    return MediaQuery(
+      data: mediaQueryData,
+      child: Positioned(
+        bottom: 0,
+        left: 0,
+        right: 0,
+        child: GestureDetector(
+          onTap: widget.onAccept,
+          child: Container(
+            decoration: BoxDecoration(
+              color: AppColors.primary,
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(20),
               ),
-            ],
-          ),
-          child: Stack(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 24, 16, 24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // --- Payment Method Header ---
-                    Center(
-                      child: Text(
-                        widget.rideRequest.rideType == 'daily'
-                            ? _getPaymentHeaderText()
-                            : "${widget.rideRequest.vehicleClass} ${'rideHeader'.tr}",
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white.withValues(alpha: 0.9),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    _isTranslating
-                        ? _buildShimmerRow()
-                        : _buildDetailRow(
-                            Icons.location_on,
-                            _translatedPickupTitle ??
-                                widget.rideRequest.pickupTitle,
-                            _translatedPickupAddress ??
-                                widget.rideRequest.pickupFullAddress,
-                            "${widget.rideRequest.driverDistance.toStringAsFixed(1)} ${'kmAway'.tr}${(widget.rideRequest.driverDuration != null) ? " (~${widget.rideRequest.driverDuration!.toStringAsFixed(0)} ${'mins'.tr})" : ""}",
-                          ),
-                    const Padding(
-                      padding: EdgeInsets.symmetric(
-                        vertical: 8.0,
-                        horizontal: 12.0,
-                      ),
-                      child: Icon(
-                        Icons.more_vert,
-                        color: Colors.white54,
-                        size: 20,
-                      ),
-                    ),
-                    _isTranslating
-                        ? _buildShimmerRow()
-                        : _buildDetailRow(
-                            Icons.flag,
-                            _translatedDropoffTitle ??
-                                widget.rideRequest.dropoffTitle,
-                            _translatedDropoffAddress ??
-                                widget.rideRequest.dropoffFullAddress,
-                            "${widget.rideRequest.rideDistance.toStringAsFixed(1)} ${'kmRide'.tr}${(widget.rideRequest.rideDuration != null) ? " (~${widget.rideRequest.rideDuration!.toStringAsFixed(0)} ${'mins'.tr})" : ""}",
-                          ),
-                    if (widget.rideRequest.stops.isNotEmpty) ...[
-                      const SizedBox(height: 12),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          vertical: 8,
-                          horizontal: 12,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.15),
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(
-                            color: Colors.white.withValues(alpha: 0.3),
+              boxShadow: [
+                BoxShadow(
+                  blurRadius: 15,
+                  color: Colors.black.withValues(alpha: 0.3),
+                ),
+              ],
+            ),
+            child: Stack(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 24, 16, 24),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // --- Payment Method Header ---
+                      Center(
+                        child: Text(
+                          widget.rideRequest.rideType == 'daily'
+                              ? _getPaymentHeaderText()
+                              : "${widget.rideRequest.vehicleClass} ${'rideHeader'.tr}",
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white.withValues(alpha: 0.9),
                           ),
                         ),
-                        child: Row(
-                          children: [
-                            const Icon(
-                              Icons.add_location_alt_outlined,
-                              color: Colors.yellowAccent,
-                              size: 20,
+                      ),
+                      const SizedBox(height: 16),
+                      _isTranslating
+                          ? _buildShimmerRow()
+                          : _buildDetailRow(
+                              Icons.location_on,
+                              _translatedPickupTitle ??
+                                  widget.rideRequest.pickupTitle,
+                              _translatedPickupAddress ??
+                                  widget.rideRequest.pickupFullAddress,
+                              "${widget.rideRequest.driverDistance.toStringAsFixed(1)} ${'kmAway'.tr}${(widget.rideRequest.driverDuration != null) ? " (~${widget.rideRequest.driverDuration!.toStringAsFixed(0)} ${'mins'.tr})" : ""}",
                             ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Text(
-                                "${widget.rideRequest.stops.length} ${'stopsAdded'.tr}",
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 16,
-                                ),
-                              ),
+                      const Padding(
+                        padding: EdgeInsets.symmetric(
+                          vertical: 8.0,
+                          horizontal: 12.0,
+                        ),
+                        child: Icon(
+                          Icons.more_vert,
+                          color: Colors.white54,
+                          size: 20,
+                        ),
+                      ),
+                      _isTranslating
+                          ? _buildShimmerRow()
+                          : _buildDetailRow(
+                              Icons.flag,
+                              _translatedDropoffTitle ??
+                                  widget.rideRequest.dropoffTitle,
+                              _translatedDropoffAddress ??
+                                  widget.rideRequest.dropoffFullAddress,
+                              "${widget.rideRequest.rideDistance.toStringAsFixed(1)} ${'kmRide'.tr}${(widget.rideRequest.rideDuration != null) ? " (~${widget.rideRequest.rideDuration!.toStringAsFixed(0)} ${'mins'.tr})" : ""}",
                             ),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 4,
-                              ),
-                              decoration: BoxDecoration(
+                      if (widget.rideRequest.stops.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            vertical: 8,
+                            horizontal: 12,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: Colors.white.withValues(alpha: 0.3),
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(
+                                Icons.add_location_alt_outlined,
                                 color: Colors.yellowAccent,
-                                borderRadius: BorderRadius.circular(6),
+                                size: 20,
                               ),
-                              child: Text(
-                                "₹${widget.rideRequest.stops.length * 30} added",
-                                style: const TextStyle(
-                                  color: Colors.black87,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 14,
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  "${widget.rideRequest.stops.length} ${'stopsAdded'.tr}",
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 16,
+                                  ),
                                 ),
                               ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.yellowAccent,
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Text(
+                                  "₹${widget.rideRequest.stops.length * 30} added",
+                                  style: const TextStyle(
+                                    color: Colors.black87,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                      ],
+                      const Divider(height: 32, color: Colors.white54),
+                      Center(
+                        child: Column(
+                          children: [
+                            Text(
+                              "₹${widget.rideRequest.rideFare.toStringAsFixed(2)}",
+                              style: const TextStyle(
+                                fontSize: 36,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                              ),
                             ),
+                            if (widget.rideRequest.tip != null &&
+                                widget.rideRequest.tip! > 0) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                "+ ₹${widget.rideRequest.tip!.toStringAsFixed(0)} Tip Included",
+                                style: const TextStyle(
+                                  color: Colors.greenAccent,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
                           ],
                         ),
                       ),
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 16),
                     ],
-                    const Divider(height: 32, color: Colors.white54),
-                    Center(
-                      child: Column(
-                        children: [
-                          Text(
-                            "₹${widget.rideRequest.rideFare.toStringAsFixed(2)}",
-                            style: const TextStyle(
-                              fontSize: 36,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                            ),
-                          ),
-                          if (widget.rideRequest.tip != null &&
-                              widget.rideRequest.tip! > 0) ...[
-                            const SizedBox(height: 4),
-                            Text(
-                              "+ ₹${widget.rideRequest.tip!.toStringAsFixed(0)} Tip Included",
-                              style: const TextStyle(
-                                color: Colors.greenAccent,
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
-                        ],
+                  ),
+                ),
+                Positioned(
+                  top: 8,
+                  right: 8,
+                  child: IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white),
+                    onPressed: widget.onReject,
+                  ),
+                ),
+                Positioned(
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
+                  child: ClipRRect(
+                    borderRadius: const BorderRadius.vertical(
+                      bottom: Radius.circular(20),
+                    ),
+                    child: LinearProgressIndicator(
+                      value: _progressValue,
+                      backgroundColor: Colors.blue.shade300,
+                      valueColor: const AlwaysStoppedAnimation<Color>(
+                        Colors.white,
                       ),
+                      minHeight: 6,
                     ),
-                    const SizedBox(height: 16),
-                  ],
-                ),
-              ),
-              Positioned(
-                top: 8,
-                right: 8,
-                child: IconButton(
-                  icon: const Icon(Icons.close, color: Colors.white),
-                  onPressed: widget.onReject,
-                ),
-              ),
-              Positioned(
-                bottom: 0,
-                left: 0,
-                right: 0,
-                child: ClipRRect(
-                  borderRadius: const BorderRadius.vertical(
-                    bottom: Radius.circular(20),
-                  ),
-                  child: LinearProgressIndicator(
-                    value: _progressValue,
-                    backgroundColor: Colors.blue.shade300,
-                    valueColor: const AlwaysStoppedAnimation<Color>(
-                      Colors.white,
-                    ),
-                    minHeight: 6,
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

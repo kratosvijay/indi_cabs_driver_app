@@ -1097,9 +1097,16 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return PopScope(
-      canPop: false,
-      child: Scaffold(
+    // FIX: Force fresh MediaQueryData to avoid "incorrect configuration id" crash on Android 14+
+    final mediaQueryData = MediaQueryData.fromView(View.of(context)).copyWith(
+      textScaler: const TextScaler.linear(1.0),
+    );
+
+    return MediaQuery(
+      data: mediaQueryData,
+      child: PopScope(
+        canPop: false,
+        child: Scaffold(
         appBar: AppBar(
           title: Text('rideStartedTitle'.tr),
           automaticallyImplyLeading: false,
@@ -1503,7 +1510,7 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
           ],
         ),
       ),
-    );
+    ));
   }
 
   String _formatTime(int totalSeconds) {

@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:developer';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -59,6 +58,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
   // Ride Request State
   final Rxn<RideRequest> activeRideRequest = Rxn<RideRequest>();
+  final RxBool isRideAcceptanceInProgress = false.obs;
 
   final RxBool hasActiveRide = false.obs;
   QuerySnapshot? lastRideRequestSnapshot;
@@ -136,7 +136,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
     // Overlay Listener (permission already requested in SplashController)
     FlutterOverlayWindow.overlayListener.listen((data) {
-      log("Overlay Event: $data");
+      debugPrint("Overlay Event: $data");
       if (data is Map) {
         if (data['action'] == "accept") {
           if (activeRideRequest.value != null) {
@@ -173,6 +173,18 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
     listenForWallet();
     listenForNotifications();
+
+    // Configure Port Listener
+    // _configureIsolatePort(); // Removed Port Logic
+
+    // Safe permission request (Moved from Splash to avoid startup ANR)
+    Future.delayed(const Duration(seconds: 3), () {
+      try {
+        OverlayService.instance.requestOverlayPermission();
+      } catch (e) {
+        debugPrint("Error requesting overlay permission in Home: $e");
+      }
+    });
   }
 
   @override
@@ -195,10 +207,42 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         }
       }
     } else if (state == AppLifecycleState.resumed) {
-      debugPrint("App resumed. Closing overlay.");
-      debugPrint("App resumed. Closing overlay.");
+      debugPrint("App resumed. Checking for overlay acceptance...");
+
+      // Check for SharedPreferences backup flag with retry
+      _checkForAcceptedRideInPrefs();
+
+      debugPrint("Closing overlay.");
       OverlayService.instance.hideFloatingBubble();
     }
+  }
+
+  void _checkForAcceptedRideInPrefs({int retries = 5}) {
+    SharedPreferences.getInstance().then((prefs) async {
+      await prefs
+          .reload(); // CRITICAL: Force reload to see changes from Overlay isolate
+      final acceptedId = prefs.getString('details_accepted_ride_id');
+      if (acceptedId != null &&
+          activeRideRequest.value != null &&
+          activeRideRequest.value!.rideId == acceptedId) {
+        debugPrint(
+          "Resume: Found accepted ride ID in prefs: $acceptedId. Triggering acceptance.",
+        );
+        isRideAcceptanceInProgress.value =
+            true; // Prevents "Processing" card flicker
+        onRideAccepted();
+        prefs.remove('details_accepted_ride_id'); // Clear flag
+      } else {
+        debugPrint(
+          "Resume: No matching accepted ride found in prefs. Retries left: $retries",
+        );
+        if (retries > 0) {
+          Future.delayed(const Duration(milliseconds: 500), () {
+            _checkForAcceptedRideInPrefs(retries: retries - 1);
+          });
+        }
+      }
+    });
   }
 
   Future<void> showStatusBubble() async {
@@ -534,13 +578,14 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
           }
 
           // Check if we recently rejected this ride locally to avoid loop
-          // (Requires tracking rejected IDs. For now, we rely on activeRideRequest being null check above
-          // but if we cleared it in onRideRejected, we might re-fetch it if snapshot updates.
-          // Better approach: Check if data status is 'accepted' or 'rejected' which query filters out.
-          // Query filters 'searching'. So if we set it to 'rejected' on server, it won't appear.
-          // BUT latency exists. So we add a local ignore check.)
           if (_ignoredRides.containsKey(doc.id)) {
-            continue;
+            final ignoredTime = _ignoredRides[doc.id]!;
+            // Only ignore for 60 seconds to allow for re-dispatch or testing
+            if (DateTime.now().difference(ignoredTime).inSeconds < 60) {
+              continue;
+            } else {
+              _ignoredRides.remove(doc.id); // Expired, allow processing again
+            }
           }
 
           debugPrint("Found new assigned ride: ${doc.id}");
@@ -759,8 +804,10 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     debugPrint("Processing Ride Document: ${doc.id}");
 
     if (currentPosition.value == null) {
-      debugPrint("Process Ride: Aborted (Current position null)");
-      return;
+      debugPrint(
+        "Process Ride: Warning - Current position null, but proceeding.",
+      );
+      // We do NOT return here anymore. We proceed so the request is shown.
     }
 
     // Helper to parse location data
@@ -796,10 +843,19 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
     // Calculate distances
     debugPrint("Calculating route details...");
-    final driverRouteDetails = await getRouteDetails(
-      currentPosition.value!,
-      pickupLocation,
-    );
+    Map<String, dynamic>? driverRouteDetails;
+
+    // Check if we have a valid current position before calculating driver route
+    if (currentPosition.value != null) {
+      driverRouteDetails = await getRouteDetails(
+        currentPosition.value!,
+        pickupLocation,
+      );
+    } else {
+      debugPrint(
+        "Warning: Skipping driver route calculation (Current position null)",
+      );
+    }
 
     Map<String, dynamic>? rideRouteDetails;
     // Only calculate ride route if we actually had a distinct destination provided
@@ -1187,25 +1243,41 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     _isRentalRinging = false;
     // Do not check isClosed here, we want to stop sound regardless of controller state
 
+    debugPrint("Stopping Audio and Vibration...");
+
+    // 1. Stop Audio
     try {
-      debugPrint("Stopping Audio...");
-      try {
-        await audioPlayer.stop();
-      } catch (e) {
-        debugPrint("Error stopping audio (stopRideRequestSound): $e");
-      }
-      // release() kills the player on some platforms/versions, preventing reuse.
-      // Since it's static, stop() is sufficient to silence the singleton.
+      await audioPlayer.stop();
+      await audioPlayer.setReleaseMode(
+        ReleaseMode.release,
+      ); // Reset release mode
+    } catch (e) {
+      debugPrint("Error stopping audio (stopRideRequestSound): $e");
+    }
 
+    // 2. Stop TTS
+    try {
       await flutterTts.stop();
-      Vibration.cancel();
+    } catch (e) {
+      debugPrint("Error stopping TTS: $e");
+    }
 
+    // 3. Stop Vibration (Aggressive)
+    try {
+      // Just call cancel directly, don't wait for 'hasVibrator' check which can be slow or fail
+      Vibration.cancel();
+    } catch (e) {
+      debugPrint("Error stopping vibration: $e");
+    }
+
+    // 4. Restore Volume
+    try {
       volumeController.showSystemUI = false;
       if (originalVolume != null) {
         // volumeController.setVolume(originalVolume!).catchError((_) {});
       }
     } catch (e) {
-      debugPrint("Error stopping audio: $e");
+      debugPrint("Error restoring volume: $e");
     }
   }
 
@@ -1214,6 +1286,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   Future<void> onRideAccepted() async {
     if (_isAcceptingRide) return;
     _isAcceptingRide = true;
+    isRideAcceptanceInProgress.value = true; // Hide request card immediately
     stopRideRequestSound();
     rideTimeoutTimer?.cancel(); // CRITICAL FIX: Cancel timeout immediately
 
@@ -1320,6 +1393,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       Get.snackbar("Error", "Could not accept ride: $e");
       debugPrint("Accept Error: $e");
       _isAcceptingRide = false;
+      isRideAcceptanceInProgress.value = false; // Re-show card on error
     }
   }
 

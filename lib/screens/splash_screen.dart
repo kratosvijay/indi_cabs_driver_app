@@ -3,13 +3,25 @@ import 'package:get/get.dart';
 import 'package:project_taxi_driver_app/controllers/splash_controller.dart';
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
 
-class SplashScreen extends StatelessWidget {
+class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
+
+  @override
+  State<SplashScreen> createState() => _SplashScreenState();
+}
+
+class _SplashScreenState extends State<SplashScreen> {
+  @override
+  void initState() {
+    super.initState();
+    Get.put(SplashController());
+  }
 
   @override
   Widget build(BuildContext context) {
     // Initialize the SplashController
-    Get.put(SplashController());
+    // Initialize the SplashController
+    // Get.put(SplashController()); // Moved to bindings or initState to avoid build-time side effects
 
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
     return Scaffold(

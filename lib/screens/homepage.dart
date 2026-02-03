@@ -317,7 +317,9 @@ class _DriverHomePageState extends State<DriverHomePage>
 
             // Ride Request Card
             Obx(() {
-              if (controller.activeRideRequest.value != null) {
+              // Hide card if we are in the process of accepting (e.g. from overlay)
+              if (controller.activeRideRequest.value != null &&
+                  !controller.isRideAcceptanceInProgress.value) {
                 if (controller.activeRideRequest.value!.rideType == 'rental') {
                   return const SizedBox.shrink();
                 }
