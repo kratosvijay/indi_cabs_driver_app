@@ -93,6 +93,20 @@ class AppTranslations extends Translations {
       'sortPriceHighToLow': 'Price: High to Low',
       'sortDistanceLowToHigh': 'Distance: Low to High',
       'sortTimeNewest': 'Time: Newest',
+      'sortPriorityScore': 'Priority Score',
+      'sortSmartAI': 'Smart AI',
+
+      // Filters
+      'filter': 'Filter',
+      'filterAll': 'All Requests',
+      'filterCashOnly': 'Cash Only',
+      'filterDigitalOnly': 'Digital Only',
+      'filterDailyOnly': 'Daily Rides',
+      'filterRentalOnly': 'Rental Rides',
+      'filterMultiStopOnly': 'Multi-Stop',
+      'filterDistanceNearby': 'Nearby (<5km)',
+      'filterDistanceMedium': 'Medium (5-15km)',
+      'filterDistanceFar': 'Far (15km+)',
 
       // Subscription
       'subscriptionPlans': 'Subscription Plans',

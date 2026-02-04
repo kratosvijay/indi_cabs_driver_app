@@ -5,6 +5,7 @@ import 'package:project_taxi_driver_app/services/request_queue_service.dart';
 import 'package:project_taxi_driver_app/services/location_service.dart';
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
 import 'package:project_taxi_driver_app/widgets/ride_request.dart';
+import 'package:project_taxi_driver_app/widgets/request_map_preview.dart';
 
 class MultiRequestCard extends StatefulWidget {
   final Function(RideRequest request) onAccept;
