@@ -32,6 +32,10 @@ import 'package:project_taxi_driver_app/services/overlay_service.dart';
 import 'package:project_taxi_driver_app/services/queue_service.dart';
 import 'package:project_taxi_driver_app/services/demand_service.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:project_taxi_driver_app/services/request_queue_service.dart';
+import 'package:project_taxi_driver_app/services/goto_timer_service.dart';
+import 'package:project_taxi_driver_app/services/overlay_service_enhanced.dart';
+import 'package:project_taxi_driver_app/widgets/goto_status_banner.dart';
 
 class HomePageController extends GetxController with WidgetsBindingObserver {
   final User user;
@@ -95,6 +99,12 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
   // App Lifecycle
   AppLifecycleState _appLifecycleState = AppLifecycleState.resumed;
+
+  // Request Queue Service
+  final RequestQueueService _queueService = RequestQueueService.instance;
+
+  // GoTo Timer Service
+  final GoToTimerService _goToTimerService = GoToTimerService.instance;
 
   // Translations
 
@@ -171,6 +181,9 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     // but if you want valid data on refresh, you might keep a lighter version.
     // For now, relying on Splash->Auth->Home chain.
 
+    // Setup GoTo expiry callback
+    _goToTimerService.onGoToExpired = _onGoToExpired;
+
     listenForWallet();
     listenForNotifications();
 
@@ -195,8 +208,13 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
     if (state == AppLifecycleState.paused) {
       debugPrint("App paused. Driver Status: ${driverStatus.value}");
-      if (driverStatus.value == DriverStatus.online) {
-        if (activeRideRequest.value != null &&
+      if (driverStatus.value == DriverStatus.online ||
+          driverStatus.value == DriverStatus.goTo) {
+        // Check if we have multiple requests in queue
+        if (_queueService.totalCount > 0) {
+          debugPrint("Showing Overlay for Multiple Requests");
+          _showMultipleRequestsOverlay();
+        } else if (activeRideRequest.value != null &&
             activeRideRequest.value!.status == 'searching') {
           debugPrint("Showing Overlay for Ride Request");
           _showOverlayForRide(activeRideRequest.value!);
@@ -245,6 +263,28 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     });
   }
 
+  /// Handle GoTo expiry - switch back to online
+  void _onGoToExpired() {
+    debugPrint('GoTo expired, switching to online mode');
+
+    // Clear GoTo destination
+    goToDestination.value = null;
+
+    // Show notification
+    Get.snackbar(
+      'gotoExpired'.tr,
+      'gotoExpiredMessage'.tr,
+      snackPosition: SnackPosition.TOP,
+      backgroundColor: Colors.orange,
+      colorText: Colors.white,
+      duration: const Duration(seconds: 3),
+      icon: const Icon(Icons.access_time, color: Colors.white),
+    );
+
+    // Update status to online
+    handleStatusChange(DriverStatus.online);
+  }
+
   Future<void> showStatusBubble() async {
     // Only show bubble when driver is online
     if (driverStatus.value != DriverStatus.online &&
@@ -258,6 +298,20 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
   Future<void> _showOverlayForRide(RideRequest request) async {
     await OverlayService.instance.showRideRequestOverlay(request.toJson());
+  }
+
+  /// Show multiple requests overlay
+  Future<void> _showMultipleRequestsOverlay() async {
+    final requests = _queueService.getAllRequests();
+    if (requests.isEmpty) return;
+
+    final requestsData = requests.map((r) => r.toJson()).toList();
+    final sortType = _queueService.currentSortType.value.toString().split('.').last;
+
+    await OverlayServiceEnhanced.instance.showMultipleRequestsOverlay(
+      requestsData,
+      sortType,
+    );
   }
 
   @override
@@ -369,6 +423,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         if (result.containsKey('clear') && result['clear'] == true) {
           debugPrint("GoTo Cancelled/Cleared");
           goToDestination.value = null;
+          _goToTimerService.deactivateGoTo();
           // If we cleared GoTo, do we revert to Online? Yes.
           // Firestore Update to remove GoTo
           await FirebaseFirestore.instance
@@ -379,22 +434,36 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
                 'goToDestination': FieldValue.delete(),
               }, SetOptions(merge: true));
         } else {
-          goToDestination.value = result;
+          // Show activation dialog
+          showGoToActivationDialog(
+            destination: result['address'],
+            duration: const Duration(hours: 1),
+            onConfirm: () async {
+              goToDestination.value = result;
 
-          // Firestore Update for GoTo
-          await FirebaseFirestore.instance
-              .collection('drivers')
-              .doc(user.uid)
-              .set({
-                'isOnline': true,
-                'goToDestination': {
-                  'address': result['address'],
-                  'location': GeoPoint(
-                    (result['location'] as LatLng).latitude,
-                    (result['location'] as LatLng).longitude,
-                  ),
-                },
-              }, SetOptions(merge: true));
+              // Activate GoTo timer
+              await _goToTimerService.activateGoTo({
+                'address': result['address'],
+                'lat': (result['location'] as LatLng).latitude,
+                'lng': (result['location'] as LatLng).longitude,
+              });
+
+              // Firestore Update for GoTo
+              await FirebaseFirestore.instance
+                  .collection('drivers')
+                  .doc(user.uid)
+                  .set({
+                    'isOnline': true,
+                    'goToDestination': {
+                      'address': result['address'],
+                      'location': GeoPoint(
+                        (result['location'] as LatLng).latitude,
+                        (result['location'] as LatLng).longitude,
+                      ),
+                    },
+                  }, SetOptions(merge: true));
+            },
+          );
         }
       } else {
         debugPrint("GoTo cancelled, reverting to online");
@@ -956,13 +1025,40 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       paymentMethod: data['paymentMethod'] ?? 'Cash',
       status: data['status'] ?? 'searching',
       vehicleClass: data['vehicleClass'] ?? data['vehicleType'] ?? 'Unknown',
+      paidByWallet: (data['paidByWallet'] as num?)?.toDouble() ??
+          (data['walletAmountUsed'] as num?)?.toDouble(),
     );
 
+    // Filter by GoTo destination if active
+    if (_goToTimerService.isGoToActive.value) {
+      final isTowardsDestination = _goToTimerService.isRequestTowardsDestination(
+        pickupLocation,
+        finalDestination,
+      );
+
+      if (!isTowardsDestination) {
+        debugPrint(
+          'Skipping request ${doc.id}: Not towards GoTo destination',
+        );
+        return; // Skip this request
+      }
+
+      debugPrint('Request ${doc.id} is towards GoTo destination');
+    }
+
+    // Add to queue based on ride type
+    if (newRequest.rideType == 'rental') {
+      _queueService.addRentalRequest(newRequest);
+    } else {
+      _queueService.addDailyRequest(newRequest);
+    }
+
+    // Also set as active for backward compatibility
     activeRideRequest.value = newRequest;
 
     // Trigger Overlay if Backgrounded
     if (_appLifecycleState == AppLifecycleState.paused) {
-      _showOverlayForRide(newRequest);
+      _showMultipleRequestsOverlay();
     }
 
     if (newRequest.rideType == 'rental') {

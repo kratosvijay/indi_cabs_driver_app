@@ -147,6 +147,53 @@ class OverlayService {
       'height': targetHeight,
     });
   }
+
+  /// Show multiple ride requests overlay
+  Future<void> showMultipleRequestsOverlay(
+    List<Map<String, dynamic>> requestsData,
+    String sortType,
+  ) async {
+    debugPrint('OverlayService: showMultipleRequestsOverlay called with ${requestsData.length} requests');
+
+    // Calculate dynamic dimensions
+    double screenWidth = Get.width;
+    double screenHeight = Get.height;
+
+    // Safety fallback
+    if (screenWidth == 0) screenWidth = 400;
+    if (screenHeight == 0) screenHeight = 844;
+
+    // Target: 90% width, taller height for multiple requests
+    final targetWidth = (screenWidth * 0.9).toInt();
+    final targetHeight = 600; // Taller for multiple cards
+
+    // CHECK ACTUAL STATE
+    bool isActive = await FlutterOverlayWindow.isActive();
+
+    if (!isActive) {
+      debugPrint('OverlayService: Overlay inactive, showing new window');
+      await FlutterOverlayWindow.showOverlay(
+        height: targetHeight,
+        width: targetWidth,
+        alignment: OverlayAlignment.center,
+        positionGravity: PositionGravity.auto,
+        enableDrag: true,
+        flag: OverlayFlag.defaultFlag,
+        overlayTitle: "Multiple Ride Requests",
+        overlayContent: "You have ${requestsData.length} ride requests",
+      );
+      _isOverlayActive = true;
+    }
+
+    // Send data
+    await sendDataToOverlay({
+      'type': 'multiple_requests',
+      'requests': requestsData,
+      'sortType': sortType,
+      'width': targetWidth,
+      'height': targetHeight,
+    });
+  }
 }
 
 /// Overlay entry point - this runs in a separate isolate
@@ -183,10 +230,15 @@ class OverlayBubbleWidget extends StatefulWidget {
 
 class _OverlayBubbleWidgetState extends State<OverlayBubbleWidget> {
   Map<String, dynamic>? _rideRequest;
+  List<Map<String, dynamic>>? _multipleRequests;
+  String _sortType = 'timeNewest';
+  int _currentPage = 0;
+  
   Timer? _timer;
   double _progressValue = 1.0;
 
   StreamSubscription? _subscription;
+  final PageController _pageController = PageController();
 
   @override
   void initState() {
@@ -197,22 +249,46 @@ class _OverlayBubbleWidgetState extends State<OverlayBubbleWidget> {
     _subscription = FlutterOverlayWindow.overlayListener.listen((data) async {
       debugPrint('_OverlayBubbleWidgetState: Received data: $data');
       if (!mounted) return;
-      if (data is Map && data['type'] == 'ride_request') {
-        final width = (data['width'] as num?)?.toInt() ?? 500;
-        final height = (data['height'] as num?)?.toInt() ?? 600;
+      
+      if (data is Map) {
+        if (data['type'] == 'ride_request') {
+          final width = (data['width'] as num?)?.toInt() ?? 500;
+          final height = (data['height'] as num?)?.toInt() ?? 600;
 
-        // Expand window for card - use passed dimensions
-        try {
-          await FlutterOverlayWindow.resizeOverlay(width, height, true);
-        } catch (e) {
-          debugPrint("Error resizing overlay: $e");
-        }
+          // Expand window for card - use passed dimensions
+          try {
+            await FlutterOverlayWindow.resizeOverlay(width, height, true);
+          } catch (e) {
+            debugPrint("Error resizing overlay: $e");
+          }
 
-        if (mounted) {
-          setState(() {
-            _rideRequest = data['data'];
-            _startTimer(); // Start timer when request arrives
-          });
+          if (mounted) {
+            setState(() {
+              _rideRequest = data['data'];
+              _multipleRequests = null;
+              _startTimer(); // Start timer when request arrives
+            });
+          }
+        } else if (data['type'] == 'multiple_requests') {
+          final width = (data['width'] as num?)?.toInt() ?? 500;
+          final height = (data['height'] as num?)?.toInt() ?? 600;
+
+          // Expand window for multiple cards
+          try {
+            await FlutterOverlayWindow.resizeOverlay(width, height, true);
+          } catch (e) {
+            debugPrint("Error resizing overlay: $e");
+          }
+
+          if (mounted) {
+            setState(() {
+              _multipleRequests = List<Map<String, dynamic>>.from(data['requests'] ?? []);
+              _sortType = data['sortType'] ?? 'timeNewest';
+              _rideRequest = null;
+              _currentPage = 0;
+              _startTimer();
+            });
+          }
         }
       }
     });
@@ -222,6 +298,7 @@ class _OverlayBubbleWidgetState extends State<OverlayBubbleWidget> {
   void dispose() {
     _subscription?.cancel();
     _timer?.cancel();
+    _pageController.dispose();
     super.dispose();
   }
 
@@ -250,22 +327,44 @@ class _OverlayBubbleWidgetState extends State<OverlayBubbleWidget> {
     debugPrint('_rejectRide: Auto-rejecting or user rejected');
     _timer?.cancel();
 
+    String? rideId;
+    if (_rideRequest != null) {
+      rideId = _rideRequest?['rideId'];
+    } else if (_multipleRequests != null && _currentPage < _multipleRequests!.length) {
+      rideId = _multipleRequests![_currentPage]['rideId'];
+    }
+
     // Send rejection data
     await FlutterOverlayWindow.shareData({
       'action': 'reject',
-      'rideId': _rideRequest?['rideId'],
+      'rideId': rideId,
     });
 
-    // Close immediately - DO NOT resize to bubble
-    await FlutterOverlayWindow.closeOverlay();
-
-    // We don't nullify _rideRequest here because the window is closing anyway,
-    // and we want to avoid a frame where it turns into a bubble or empty state.
+    // If multiple requests, remove current and show next
+    if (_multipleRequests != null && _multipleRequests!.length > 1) {
+      setState(() {
+        _multipleRequests!.removeAt(_currentPage);
+        if (_currentPage >= _multipleRequests!.length) {
+          _currentPage = _multipleRequests!.length - 1;
+        }
+        _startTimer();
+      });
+    } else {
+      // Close overlay if no more requests
+      await FlutterOverlayWindow.closeOverlay();
+    }
   }
 
   Future<void> _acceptRide() async {
     debugPrint('_acceptRide: Accepted');
     _timer?.cancel();
+
+    String? rideId;
+    if (_rideRequest != null) {
+      rideId = _rideRequest?['rideId'];
+    } else if (_multipleRequests != null && _currentPage < _multipleRequests!.length) {
+      rideId = _multipleRequests![_currentPage]['rideId'];
+    }
 
     // 1. Launch App IMMEDIATELY
     FlutterForegroundTask.launchApp();
@@ -273,14 +372,9 @@ class _OverlayBubbleWidgetState extends State<OverlayBubbleWidget> {
     // 2. Backup: Save to SharedPreferences (Fire and Forget)
     SharedPreferences.getInstance()
         .then((prefs) {
-          if (_rideRequest != null && _rideRequest!['rideId'] != null) {
-            prefs.setString(
-              'details_accepted_ride_id',
-              _rideRequest!['rideId'],
-            );
-            debugPrint(
-              "Overlay: Saved accepted ride ID to prefs: ${_rideRequest!['rideId']}",
-            );
+          if (rideId != null) {
+            prefs.setString('details_accepted_ride_id', rideId);
+            debugPrint("Overlay: Saved accepted ride ID to prefs: $rideId");
           }
         })
         .catchError((e) {
@@ -290,15 +384,11 @@ class _OverlayBubbleWidgetState extends State<OverlayBubbleWidget> {
     // 3. Fallback: Send Standard Stream Data
     await FlutterOverlayWindow.shareData({
       'action': 'accept',
-      'rideId': _rideRequest?['rideId'],
+      'rideId': rideId,
     });
 
     // 4. DO NOT close overlay here.
     // The main app will close it when it resumes.
-    // The main app will close it when it resumes and processes the acceptance.
-    // The main app's lifecycle listener (didChangeAppLifecycleState) in HomePageController
-    // or main.dart will detect 'resumed' and close the overlay.
-    // Closing it here causes a race condition and potential ANR/Crash.
   }
 
   @override
@@ -309,9 +399,9 @@ class _OverlayBubbleWidgetState extends State<OverlayBubbleWidget> {
 
     return Material(
       color: Colors.transparent,
-      child: _rideRequest != null
-          ? _buildRequestCard()
-          : _buildFloatingBubble(),
+      child: _multipleRequests != null
+          ? _buildMultipleRequestsCard()
+          : (_rideRequest != null ? _buildRequestCard() : _buildFloatingBubble()),
     );
   }
 
@@ -586,6 +676,203 @@ class _OverlayBubbleWidgetState extends State<OverlayBubbleWidget> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildMultipleRequestsCard() {
+    if (_multipleRequests == null || _multipleRequests!.isEmpty) {
+      return _buildFloatingBubble();
+    }
+
+    return Container(
+      margin: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: AppColors.primary,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(blurRadius: 15, color: Colors.black.withValues(alpha: 0.3)),
+        ],
+      ),
+      child: Stack(
+        children: [
+          Column(
+            children: [
+              // Header with counter
+              Container(
+                padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.layers, color: Colors.white, size: 20),
+                    const SizedBox(width: 8),
+                    Text(
+                      '${_currentPage + 1}/${_multipleRequests!.length} Requests',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              // PageView for requests
+              Expanded(
+                child: PageView.builder(
+                  controller: _pageController,
+                  itemCount: _multipleRequests!.length,
+                  onPageChanged: (index) {
+                    setState(() {
+                      _currentPage = index;
+                      _startTimer();
+                    });
+                  },
+                  itemBuilder: (context, index) {
+                    return _buildRequestContent(_multipleRequests![index]);
+                  },
+                ),
+              ),
+
+              // Page indicator
+              if (_multipleRequests!.length > 1)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8.0),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: List.generate(_multipleRequests!.length, (index) {
+                      return Container(
+                        margin: const EdgeInsets.symmetric(horizontal: 4),
+                        width: _currentPage == index ? 24 : 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          color: _currentPage == index
+                              ? Colors.white
+                              : Colors.white.withValues(alpha: 0.4),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                      );
+                    }),
+                  ),
+                ),
+
+              // Action buttons
+              _buildActionButtons(),
+              const SizedBox(height: 8),
+            ],
+          ),
+
+          // Close Button (Top Right)
+          Positioned(
+            top: 8,
+            right: 8,
+            child: IconButton(
+              icon: const Icon(Icons.close, color: Colors.white),
+              onPressed: _rejectRide,
+            ),
+          ),
+
+          // Progress Bar (Bottom)
+          Positioned(
+            bottom: 0,
+            left: 0,
+            right: 0,
+            child: ClipRRect(
+              borderRadius: const BorderRadius.vertical(
+                bottom: Radius.circular(20),
+              ),
+              child: LinearProgressIndicator(
+                value: _progressValue,
+                backgroundColor: Colors.blue.shade300,
+                valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                minHeight: 6,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRequestContent(Map<String, dynamic> request) {
+    String headerText = "New Ride Request";
+    if (request['rideType'] == 'rental') {
+      headerText = "${request['vehicleClass'] ?? 'Car'} Rental";
+    } else {
+      final method = request['paymentMethod'] ?? 'Cash';
+      final walletUsed = (request['paidByWallet'] as num?)?.toDouble() ?? 0.0;
+
+      if (walletUsed > 0 || method == 'Cash + Wallet') {
+        headerText = "Cash + Wallet";
+      } else if (method.toLowerCase().contains('cash')) {
+        headerText = "Cash Payment";
+      } else {
+        headerText = "Digital Payment";
+      }
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+      child: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Header
+            Center(
+              child: Text(
+                headerText,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white.withValues(alpha: 0.9),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            // Pickup Location
+            _buildDetailRow(
+              Icons.location_on,
+              request['pickupTitle'] ?? 'Pickup',
+              request['pickupFullAddress'] ?? '',
+              request['rideType'] == 'rental'
+                  ? "Rental"
+                  : "${(request['driverDistance']?.toStringAsFixed(1)) ?? '0.0'} km Away",
+            ),
+
+            const Padding(
+              padding: EdgeInsets.only(left: 11.0, top: 4, bottom: 4),
+              child: Icon(Icons.more_vert, color: Colors.white54, size: 20),
+            ),
+
+            // Dropoff Location
+            _buildDetailRow(
+              Icons.flag,
+              request['dropoffTitle'] ?? 'Dropoff',
+              request['dropoffFullAddress'] ?? '',
+              request['rideType'] == 'rental'
+                  ? ""
+                  : "${(request['rideDistance']?.toStringAsFixed(1)) ?? '0.0'} km Ride",
+            ),
+
+            const Divider(height: 24, color: Colors.white54),
+
+            // Fare
+            Center(
+              child: Text(
+                "₹${request['rideFare'] ?? '0'}",
+                style: const TextStyle(
+                  fontSize: 32,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

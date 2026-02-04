@@ -23,6 +23,9 @@ import 'package:project_taxi_driver_app/widgets/ride_request.dart';
 import 'package:project_taxi_driver_app/widgets/status_slider.dart';
 import 'package:project_taxi_driver_app/screens/subscription_plans.dart';
 import 'package:project_taxi_driver_app/screens/demand_areas_screen.dart';
+import 'package:project_taxi_driver_app/widgets/multi_request_card.dart';
+import 'package:project_taxi_driver_app/widgets/goto_status_banner.dart';
+import 'package:project_taxi_driver_app/services/request_queue_service.dart';
 
 class DriverHomePage extends StatefulWidget {
   final User user;
@@ -315,11 +318,49 @@ class _DriverHomePageState extends State<DriverHomePage>
               child: _buildDashboard(context),
             ),
 
-            // Ride Request Card
+            // GoTo Status Banner
+            Positioned(
+              top: 150,
+              left: 0,
+              right: 0,
+              child: GoToStatusBanner(
+                onExtend: () {
+                  // Optional: Refresh or update something
+                },
+                onDeactivate: () {
+                  // Switch back to online mode
+                  controller.handleStatusChange(DriverStatus.online);
+                },
+              ),
+            ),
+
+            // Multi-Request Card (replaces single RideRequestCard)
             Obx(() {
-              // Hide card if we are in the process of accepting (e.g. from overlay)
-              if (controller.activeRideRequest.value != null &&
+              final queueService = RequestQueueService.instance;
+              
+              // Check if we have requests in queue
+              if ((queueService.dailyRequests.isNotEmpty ||
+                      queueService.rentalRequests.isNotEmpty) &&
                   !controller.isRideAcceptanceInProgress.value) {
+                return MultiRequestCard(
+                  onAccept: (request) {
+                    // Set as active request and accept
+                    controller.activeRideRequest.value = request;
+                    controller.onRideAccepted();
+                    // Learn from accepted ride for ML
+                    queueService.learnFromAcceptedRide(request);
+                  },
+                  onReject: (request) {
+                    RequestQueueService.instance.removeRequest(request.rideId);
+                    controller.stopRideRequestSound();
+                  },
+                );
+              }
+              
+              // Fallback to single request card for backward compatibility
+              if (controller.activeRideRequest.value != null &&
+                  !controller.isRideAcceptanceInProgress.value &&
+                  queueService.totalCount == 0) {
                 if (controller.activeRideRequest.value!.rideType == 'rental') {
                   return const SizedBox.shrink();
                 }
@@ -330,6 +371,7 @@ class _DriverHomePageState extends State<DriverHomePage>
                   onReject: () => controller.onRideRejected("card_reject"),
                 );
               }
+              
               return const SizedBox.shrink();
             }),
           ],
