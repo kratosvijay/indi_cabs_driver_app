@@ -14,6 +14,8 @@ import 'package:project_taxi_driver_app/screens/splash_screen.dart';
 import 'package:flutter_refresh_rate_control/flutter_refresh_rate_control.dart';
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
 import 'package:project_taxi_driver_app/utils/app_translations.dart';
+import 'package:project_taxi_driver_app/services/request_queue_service.dart';
+import 'package:project_taxi_driver_app/services/goto_timer_service.dart';
 
 // Re-export the overlay entry point for flutter_overlay_window
 // This MUST be in main.dart for the plugin to find it
@@ -48,6 +50,12 @@ Future<void> main() async {
 
   // Initialize AuthController globally
   Get.put(AuthController());
+
+  // Initialize Request Queue Service
+  Get.put(RequestQueueService());
+
+  // Initialize GoTo Timer Service
+  Get.put(GoToTimerService());
 
   runApp(const MyApp());
 }

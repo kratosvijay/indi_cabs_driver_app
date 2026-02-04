@@ -88,6 +88,39 @@ class AppTranslations extends Translations {
       'queueSafeMsg': 'You are back in the zone.',
       'queueExitedMsg': 'You left the airport zone.',
 
+      // Multiple Requests & Sorting
+      'requests': 'Requests',
+      'sortPriceHighToLow': 'Price: High to Low',
+      'sortDistanceLowToHigh': 'Distance: Low to High',
+      'sortTimeNewest': 'Time: Newest',
+      'sortPriorityScore': 'Priority Score',
+      'sortSmartAI': 'Smart AI',
+
+      // Filters
+      'filter': 'Filter',
+      'filterAll': 'All Requests',
+      'filterCashOnly': 'Cash Only',
+      'filterDigitalOnly': 'Digital Only',
+      'filterDailyOnly': 'Daily Rides',
+      'filterRentalOnly': 'Rental Rides',
+      'filterMultiStopOnly': 'Multi-Stop',
+      'filterDistanceNearby': 'Nearby (<5km)',
+      'filterDistanceMedium': 'Medium (5-15km)',
+      'filterDistanceFar': 'Far (15km+)',
+
+      // GoTo Timer
+      'gotoActivated': 'GoTo Activated',
+      'gotoActivatedFor': 'GoTo activated for',
+      'gotoExpired': 'GoTo Expired',
+      'gotoExpiredMessage': 'Your GoTo time has expired. Switching to online mode.',
+      'gotoTimeRemaining': 'GoTo Time Remaining',
+      'extendGoto': 'Extend GoTo',
+      'deactivateGoto': 'Deactivate GoTo',
+      'gotoDestination': 'GoTo Destination',
+      'towardsDestination': 'Towards Destination',
+      'extend30Min': 'Extend 30 min',
+      'extend1Hour': 'Extend 1 hour',
+
       // Subscription
       'subscriptionPlans': 'Subscription Plans',
       'subscriptionHelp': 'Subscription Help',
