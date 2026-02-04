@@ -88,6 +88,12 @@ class AppTranslations extends Translations {
       'queueSafeMsg': 'You are back in the zone.',
       'queueExitedMsg': 'You left the airport zone.',
 
+      // Multiple Requests & Sorting
+      'requests': 'Requests',
+      'sortPriceHighToLow': 'Price: High to Low',
+      'sortDistanceLowToHigh': 'Distance: Low to High',
+      'sortTimeNewest': 'Time: Newest',
+
       // Subscription
       'subscriptionPlans': 'Subscription Plans',
       'subscriptionHelp': 'Subscription Help',
