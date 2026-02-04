@@ -108,6 +108,19 @@ class AppTranslations extends Translations {
       'filterDistanceMedium': 'Medium (5-15km)',
       'filterDistanceFar': 'Far (15km+)',
 
+      // GoTo Timer
+      'gotoActivated': 'GoTo Activated',
+      'gotoActivatedFor': 'GoTo activated for',
+      'gotoExpired': 'GoTo Expired',
+      'gotoExpiredMessage': 'Your GoTo time has expired. Switching to online mode.',
+      'gotoTimeRemaining': 'GoTo Time Remaining',
+      'extendGoto': 'Extend GoTo',
+      'deactivateGoto': 'Deactivate GoTo',
+      'gotoDestination': 'GoTo Destination',
+      'towardsDestination': 'Towards Destination',
+      'extend30Min': 'Extend 30 min',
+      'extend1Hour': 'Extend 1 hour',
+
       // Subscription
       'subscriptionPlans': 'Subscription Plans',
       'subscriptionHelp': 'Subscription Help',
