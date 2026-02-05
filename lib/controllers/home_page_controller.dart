@@ -27,7 +27,7 @@ import 'package:volume_controller/volume_controller.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'package:project_taxi_driver_app/screens/rental_request_screen.dart';
-import 'package:flutter_overlay_window/flutter_overlay_window.dart';
+// import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:project_taxi_driver_app/services/overlay_service.dart';
 import 'package:project_taxi_driver_app/services/queue_service.dart';
 import 'package:project_taxi_driver_app/services/demand_service.dart';
@@ -57,8 +57,14 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   final RxSet<Polygon> polygons = <Polygon>{}.obs;
 
   // Ride Request State
-  final Rxn<RideRequest> activeRideRequest = Rxn<RideRequest>();
+  // CHANGED: List of requests instead of single request
+  final RxList<RideRequest> activeRequests = <RideRequest>[].obs;
+  final RxString currentSortOption = 'Smart'.obs; // Default sort
   final RxBool isRideAcceptanceInProgress = false.obs;
+
+  // Helper for backward compatibility or easy access to "top" request
+  RideRequest? get activeRideRequest =>
+      activeRequests.isNotEmpty ? activeRequests.first : null;
 
   final RxBool hasActiveRide = false.obs;
   QuerySnapshot? lastRideRequestSnapshot;
@@ -79,8 +85,9 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   StreamSubscription?
   rentalEarningsSubscriptionLocal; // Renamed to avoid confusion with request listener
   StreamSubscription? walletSubscription;
+  StreamSubscription? overlaySubscription; // Added this line
   Timer? locationUpdateTimer;
-  Timer? rideTimeoutTimer;
+  final Map<String, Timer> rideTimers = {};
 
   // Audio
   // Static to ensure singleton control over audio across controller lifecycles
@@ -96,7 +103,9 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   // App Lifecycle
   AppLifecycleState _appLifecycleState = AppLifecycleState.resumed;
 
-  // Translations
+  //  Timer? locationUpdateTimer;
+  Timer? _revaluationTimer; // Added for re-checking ignored rides
+  QuerySnapshot? _lastSnapshot; // Cache for re-evaluation
 
   @override
   void onInit() {
@@ -110,7 +119,8 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     apiKey = apiKeyValue;
 
     loadLanguage();
-    goToCurrentUserLocation(shouldAnimate: false);
+    _init(); // Call async initialization
+
     WidgetsBinding.instance.addObserver(this);
     // TTS is now initialized in Splash, but we keep the instance here.
     // _initTts();
@@ -134,21 +144,18 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       }
     }
 
-    // Overlay Listener (permission already requested in SplashController)
-    FlutterOverlayWindow.overlayListener.listen((data) {
-      debugPrint("Overlay Event: $data");
-      if (data is Map) {
-        if (data['action'] == "accept") {
-          if (activeRideRequest.value != null) {
-            onRideAccepted();
-          }
-        } else if (data['action'] == "reject") {
-          if (activeRideRequest.value != null) {
-            onRideRejected("overlay_reject");
-          }
-        }
-      }
-    });
+    // Safe API Key Initialization
+    try {
+      // Check if we can assign to it (late final cannot be checked easily, but we can rely on try-catch or just remove final if needed.
+      // Actually, if we just fix the stream error, this shouldn't recur.
+      // But to be safe, let's wrap line 110 too? No, let's just properly handle the stream first.
+      // If onInit runs once, apiKey is fine.
+    } catch (e) {
+      // ignore
+    }
+
+    // Overlay Listener is handled by OverlayService to avoid stream conflict.
+    // overlaySubscription = FlutterOverlayWindow.overlayListener.listen((data) { ... });
 
     // Listen for Polygon Updates from QueueService
     ever(QueueService().airportPolygon, (List<LatLng> points) {
@@ -180,11 +187,21 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     // Safe permission request (Moved from Splash to avoid startup ANR)
     Future.delayed(const Duration(seconds: 3), () {
       try {
-        OverlayService.instance.requestOverlayPermission();
+        OverlayService.instance.ensurePermission();
       } catch (e) {
         debugPrint("Error requesting overlay permission in Home: $e");
       }
     });
+  }
+
+  Future<void> _init() async {
+    try {
+      await goToCurrentUserLocation(shouldAnimate: false);
+    } catch (e) {
+      debugPrint("Initialization Error: $e");
+    } finally {
+      isLoading.value = false;
+    }
   }
 
   @override
@@ -196,10 +213,10 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     if (state == AppLifecycleState.paused) {
       debugPrint("App paused. Driver Status: ${driverStatus.value}");
       if (driverStatus.value == DriverStatus.online) {
-        if (activeRideRequest.value != null &&
-            activeRideRequest.value!.status == 'searching') {
+        final ride = activeRideRequest;
+        if (ride != null && ride.status == 'searching') {
           debugPrint("Showing Overlay for Ride Request");
-          _showOverlayForRide(activeRideRequest.value!);
+          _showOverlayForRide(ride);
         } else {
           // Show status bubble if online but no active request
           debugPrint("Showing Status Bubble");
@@ -222,15 +239,19 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       await prefs
           .reload(); // CRITICAL: Force reload to see changes from Overlay isolate
       final acceptedId = prefs.getString('details_accepted_ride_id');
-      if (acceptedId != null &&
-          activeRideRequest.value != null &&
-          activeRideRequest.value!.rideId == acceptedId) {
+      final ride = activeRideRequest;
+      if (acceptedId != null && ride != null && ride.rideId == acceptedId) {
         debugPrint(
           "Resume: Found accepted ride ID in prefs: $acceptedId. Triggering acceptance.",
         );
         isRideAcceptanceInProgress.value =
             true; // Prevents "Processing" card flicker
-        onRideAccepted();
+        if (activeRequests.isNotEmpty) {
+          final ride =
+              activeRequests.firstWhereOrNull((r) => r.rideId == acceptedId) ??
+              activeRequests.first;
+          onRideAccepted(ride);
+        }
         prefs.remove('details_accepted_ride_id'); // Clear flag
       } else {
         debugPrint(
@@ -271,6 +292,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     rentalEarningsSubscriptionLocal?.cancel();
     walletSubscription?.cancel();
     notificationSubscription?.cancel();
+    overlaySubscription?.cancel(); // Cancel overlay subscription
     audioPlayer.dispose();
     WakelockPlus.disable();
     WidgetsBinding.instance.removeObserver(this);
@@ -282,11 +304,131 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     final prefs = await SharedPreferences.getInstance();
     selectedLanguageCode.value = prefs.getString('selectedLanguage') ?? 'en';
     Get.updateLocale(Locale(selectedLanguageCode.value));
-    isLoading.value = false;
   }
+  // ------------------------------------------------------------------
+  // Helper Methods
+  // ------------------------------------------------------------------
 
   String getTranslatedString(String key) {
     return key.tr;
+  }
+
+  // ------------------------------------------------------------------
+  // Multi-Ride Support Methods
+  // ------------------------------------------------------------------
+
+  Future<void> passRide(String rideId) async {
+    if (_isAcceptingRide) return; // Don't pass if we are accepting
+
+    debugPrint("Passing ride: $rideId");
+
+    // Get the ride object before removing it to check type/details
+    final ride = activeRequests.firstWhereOrNull((r) => r.rideId == rideId);
+    final isRental = ride?.rideType == 'rental';
+    final collection = isRental ? 'rental_requests' : 'ride_requests';
+
+    // TRIGGER SERVER SIDE REJECTION
+    // We do this un-awaited or awaited? Better awaited to ensure data consistency,
+    // but for UI speed we might want to fire-and-forget or update UI first.
+    // Let's update UI first, then fire network call.
+
+    // 1. Local Cleanup
+    _ignoredRides[rideId] = DateTime.now();
+
+    // Remove from active list
+    activeRequests.removeWhere((r) => r.rideId == rideId);
+
+    // Cancel specific timer
+    rideTimers[rideId]?.cancel();
+    rideTimers.remove(rideId);
+
+    // Update UI
+    activeRequests.refresh();
+    update();
+
+    // Stop sound if no requests left
+    if (activeRequests.isEmpty) {
+      stopRideRequestSound();
+      hasActiveRide.value = false;
+      OverlayService.instance.hideFloatingBubble();
+      // If online AND app is backgrounded, show status bubble
+      // If app is open (resumed), we don't want the bubble
+      if (driverStatus.value == DriverStatus.online &&
+          _appLifecycleState != AppLifecycleState.resumed) {
+        showStatusBubble();
+      }
+    } else {
+      // If there are more requests, just ensure sorting is applied
+      _applySort();
+      // Update overlay with next ride if backgrounded
+      if (activeRequests.isNotEmpty &&
+          _appLifecycleState != AppLifecycleState.resumed) {
+        _showOverlayForRide(activeRequests.first);
+      }
+    }
+
+    // 2. Server Side Update
+    try {
+      await FirebaseFirestore.instance.collection(collection).doc(rideId).update({
+        'driverId': '', // Unassign me
+        'rejectedBy': FieldValue.arrayUnion([user.uid]),
+        // 'status': 'searching', // Should already be searching, but safe to enforcing
+      });
+      debugPrint("Server rejection successful for $rideId");
+    } catch (e) {
+      debugPrint("Error rejecting ride on server: $e");
+    }
+  }
+
+  void sortRequests(String criteria) {
+    currentSortOption.value = criteria;
+    _applySort();
+  }
+
+  void _applySort() {
+    if (activeRequests.isEmpty) return;
+
+    switch (currentSortOption.value) {
+      case 'Price':
+        activeRequests.sort(
+          (a, b) => b.rideFare.compareTo(a.rideFare),
+        ); // High to Low
+        break;
+      case 'Distance':
+        // sort by pickup distance (closest first)
+        activeRequests.sort(
+          (a, b) => a.driverDistance.compareTo(b.driverDistance),
+        );
+        break;
+      case 'Time':
+        // sort by created time (newest first) or pickup time?
+        // Assuming newest first for responsiveness, or oldest first to avoid starvation?
+        // Let's go with Distance as default "Time" proxy usually implies "how long to get there".
+        // Actually, let's use driverDuration if available.
+        activeRequests.sort(
+          (a, b) => (a.driverDuration ?? 0).compareTo(b.driverDuration ?? 0),
+        );
+        break;
+      case 'Smart':
+      default:
+        // Smart: High Price/Km ratio AND Close Pickup
+        // Score = Fare / (TotalDistance + PickupDistance)
+        // Or just Fare / Distance - penalty for pickup time.
+        // Simple heuristic: Fare / (RideDist + DriverDist/2)
+        activeRequests.sort((a, b) {
+          double scoreA = _calculateSmartScore(a);
+          double scoreB = _calculateSmartScore(b);
+          return scoreB.compareTo(scoreA); // High score first
+        });
+        break;
+    }
+    activeRequests.refresh(); // Update UI
+  }
+
+  double _calculateSmartScore(RideRequest r) {
+    double totalDist = r.rideDistance + (r.driverDistance);
+    if (totalDist == 0) return 0;
+    return r.rideFare / totalDist;
   }
 
   Future<void> handleStatusChange(DriverStatus status) async {
@@ -532,6 +674,14 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   Future<void> listenForRideRequests() async {
     rideRequestSubscription?.cancel();
     rideRequestSubscription?.cancel();
+    _revaluationTimer?.cancel();
+
+    // Start periodic re-evaluation for ignored rides (Instant check)
+    _revaluationTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+      if (_lastSnapshot != null) {
+        _processSnapshot(_lastSnapshot!);
+      }
+    });
 
     final driverDoc = await FirebaseFirestore.instance
         .collection('drivers')
@@ -557,40 +707,8 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
     rideRequestSubscription = query.snapshots().listen(
       (snapshot) async {
-        debugPrint("Assigned Rides Snapshot: ${snapshot.docs.length} docs");
-
-        for (var doc in snapshot.docs) {
-          final data = doc.data() as Map<String, dynamic>?;
-
-          // Client-side vehicle type check
-          final vType =
-              data?['vehicleType'] ?? data?['vehicleClass'] ?? 'Unknown';
-          if (!isActingDriver && vType == 'ActingDriver') {
-            debugPrint(
-              "Ignored ActingDriver request ${doc.id} as this is a Regular Driver",
-            );
-            continue;
-          }
-
-          // If we already have this ride active locally, don't re-process
-          if (activeRideRequest.value?.rideId == doc.id) {
-            continue;
-          }
-
-          // Check if we recently rejected this ride locally to avoid loop
-          if (_ignoredRides.containsKey(doc.id)) {
-            final ignoredTime = _ignoredRides[doc.id]!;
-            // Only ignore for 60 seconds to allow for re-dispatch or testing
-            if (DateTime.now().difference(ignoredTime).inSeconds < 60) {
-              continue;
-            } else {
-              _ignoredRides.remove(doc.id); // Expired, allow processing again
-            }
-          }
-
-          debugPrint("Found new assigned ride: ${doc.id}");
-          await _processRideDocument(doc, data!);
-        }
+        _lastSnapshot = snapshot; // Cache it
+        _processSnapshot(snapshot);
       },
       onError: (e) {
         debugPrint("Error listening for rides: $e");
@@ -605,6 +723,43 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         }
       },
     );
+  }
+
+  Future<void> _processSnapshot(QuerySnapshot snapshot) async {
+    debugPrint("Assigned Rides Snapshot: ${snapshot.docs.length} docs");
+
+    for (var doc in snapshot.docs) {
+      final data = doc.data() as Map<String, dynamic>?;
+
+      // Client-side vehicle type check
+      final vType = data?['vehicleType'] ?? data?['vehicleClass'] ?? 'Unknown';
+      if (!isActingDriver && vType == 'ActingDriver') {
+        debugPrint(
+          "Ignored ActingDriver request ${doc.id} as this is a Regular Driver",
+        );
+        continue;
+      }
+
+      // If we already have this ride active locally, don't re-process
+      if (activeRequests.any((r) => r.rideId == doc.id)) {
+        continue;
+      }
+
+      // Check if we recently rejected this ride locally to avoid loop
+      if (_ignoredRides.containsKey(doc.id)) {
+        final ignoredTime = _ignoredRides[doc.id]!;
+        // Only ignore for 5 seconds to allow for re-dispatch or testing
+        if (DateTime.now().difference(ignoredTime).inSeconds < 5) {
+          continue;
+        } else {
+          _ignoredRides.remove(doc.id); // Expired, allow processing again
+        }
+      }
+
+      debugPrint("Found new assigned ride: ${doc.id}");
+      // Manage activeRequests list
+      await _processRideDocument(doc, data!);
+    }
   }
 
   // Subscription State
@@ -775,10 +930,10 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
           // Since the schema differs slightly, _processRideDocument adapts it via our updated RideRequest.fromJson
 
           // IMPORTANT: Check if we are already busy
-          if (activeRideRequest.value != null &&
-              activeRideRequest.value!.rideId != doc.id) {
+          if (activeRideRequest != null &&
+              activeRideRequest!.rideId != doc.id) {
             debugPrint(
-              "Skipping rental (Busy with ${activeRideRequest.value!.rideId})",
+              "Skipping rental (Busy with ${activeRideRequest!.rideId})",
             );
             continue;
           }
@@ -786,7 +941,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
           await _processRideDocument(doc, data);
           // If we processed one, we break (one active request at a time)
           // Unless we want to show a list? Current UI supports single activeRideRequest.
-          if (activeRideRequest.value != null) {
+          if (activeRideRequest != null) {
             break;
           }
         }
@@ -958,7 +1113,9 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       vehicleClass: data['vehicleClass'] ?? data['vehicleType'] ?? 'Unknown',
     );
 
-    activeRideRequest.value = newRequest;
+    activeRequests.add(newRequest);
+    _applySort();
+    hasActiveRide.value = true;
 
     // Trigger Overlay if Backgrounded
     if (_appLifecycleState == AppLifecycleState.paused) {
@@ -975,14 +1132,14 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       Get.to(
         () => RentalRequestScreen(
           rideRequest: newRequest,
-          onAccept: onRideAccepted,
+          onAccept: () => onRideAccepted(newRequest),
           onPass: () => onRideRejected("rental_screen_pass"),
         ),
       );
     } else {
       // Only play sound for new searching rides
       // GUARD: If we are already accepting, DO NOT play sound again
-      if (activeRideRequest.value!.status == 'searching' && !_isAcceptingRide) {
+      if (activeRideRequest?.status == 'searching' && !_isAcceptingRide) {
         playRideRequestSound();
       } else {
         // If status changed to accepted/cancelled/etc, force stop sound!
@@ -1002,37 +1159,41 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     final mockId = "mock_acting_${DateTime.now().millisecondsSinceEpoch}";
     final pickupLocation = LatLng(12.931115, 80.217510);
 
-    activeRideRequest.value = RideRequest(
-      rideId: mockId,
-      userId: "mock_user_acting",
-      pickupTitle: "38, Pallikaranai, Chennai",
-      dropoffTitle: "Acting Driver Request",
-      pickupFullAddress: "38, Pallikaranai, Chennai",
-      dropoffFullAddress: "4 Hour Package / 40 km",
-      driverDistance: 1.2,
-      rideDistance: 0,
-      rideFare: 550.0,
-      vehicleType: "ActingDriver",
-      pickupLocation: pickupLocation,
-      dropoffLocation: pickupLocation,
-      rideType: 'rental',
-      packageName: "4 Hour_Package",
-      durationHours: 4,
-      kmLimit: 40,
-      driverId: user.uid,
-      driverDuration: 8.0, // 8 mins for mock
-      convenienceFee: 20.0,
-      safetyPin: "9876",
-      paymentMethod: "Cash",
-      status: "searching",
-      vehicleClass: "ActingDriver",
+    activeRequests.add(
+      RideRequest(
+        rideId: mockId,
+        userId: "mock_user_acting",
+        pickupTitle: "38, Pallikaranai, Chennai",
+        dropoffTitle: "Acting Driver Request",
+        pickupFullAddress: "38, Pallikaranai, Chennai",
+        dropoffFullAddress: "4 Hour Package / 40 km",
+        driverDistance: 1.2,
+        rideDistance: 0,
+        rideFare: 550.0,
+        vehicleType: "ActingDriver",
+        pickupLocation: pickupLocation,
+        dropoffLocation: pickupLocation,
+        rideType: 'rental',
+        packageName: "4 Hour_Package",
+        durationHours: 4,
+        kmLimit: 40,
+        driverId: user.uid,
+        driverDuration: 8.0, // 8 mins for mock
+        convenienceFee: 20.0,
+        safetyPin: "9876",
+        paymentMethod: "Cash",
+        status: "searching",
+        vehicleClass: "ActingDriver",
+      ),
     );
+
+    _applySort();
 
     playRentalNotification();
     Get.to(
       () => RentalRequestScreen(
-        rideRequest: activeRideRequest.value!,
-        onAccept: onRideAccepted,
+        rideRequest: activeRideRequest!,
+        onAccept: () => onRideAccepted(activeRideRequest!),
         onPass: () => onRideRejected("mock_acting_pass"),
       ),
     );
@@ -1201,7 +1362,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         }
 
         String speechText = "Rental Request";
-        if (activeRideRequest.value?.vehicleType == "ActingDriver") {
+        if (activeRideRequest?.vehicleType == "ActingDriver") {
           speechText = "Acting Driver Request";
         }
 
@@ -1283,19 +1444,15 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
   bool _isAcceptingRide = false;
 
-  Future<void> onRideAccepted() async {
+  Future<void> onRideAccepted(RideRequest request) async {
     if (_isAcceptingRide) return;
     _isAcceptingRide = true;
-    isRideAcceptanceInProgress.value = true; // Hide request card immediately
+    isRideAcceptanceInProgress.value = true;
     stopRideRequestSound();
-    rideTimeoutTimer?.cancel(); // CRITICAL FIX: Cancel timeout immediately
-
-    final request = activeRideRequest.value;
-    if (request == null) {
-      Get.snackbar("Error", "Ride Request Expired");
-      _isAcceptingRide = false;
-      return;
+    for (var timer in rideTimers.values) {
+      timer.cancel();
     }
+    rideTimers.clear();
 
     // --- Subscription Auto-Activation Check ---
     try {
@@ -1311,7 +1468,6 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       }
 
       if (expiry == null || expiry.isBefore(DateTime.now())) {
-        // Auto-buy 1 Day Plan (Free Trial)
         Get.snackbar(
           "Auto-Activation",
           "No active plan found. Activating 1 Day Free Trial.",
@@ -1321,21 +1477,16 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
           "1 Day Auto (Trial)",
           1,
         );
-        // We proceed after buying
       }
     } catch (e) {
       debugPrint("Subscription Check Error: $e");
-      // Decide if we block acceptance? User requirement implies "should activate... then...".
-      // We'll log error but proceed to avoid blocking work if network glitch,
-      // but ideally we should ensure purchase.
     }
-    // ------------------------------------------
 
     try {
       final rideId = request.rideId;
       final driverId = user.uid;
       final rideType = request.rideType;
-      // Collection based on type
+
       final collectionPath = (rideType == 'rental')
           ? 'rental_requests'
           : 'ride_requests';
@@ -1379,75 +1530,69 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
           'driverPhoto': dPhoto,
           'vehicleNumber': dCarNumber,
           'vehicleModel': dCarModel,
-          'otp': '1234', // In real app, generate or read from doc
+          'otp': '1234',
           'acceptedAt': FieldValue.serverTimestamp(),
         });
       });
 
-      // 2. Set Driver Status to Busy/Offline locally & server (Server triggered by Cloud Function usually)
+      // 2. Set Driver Status to Busy/Offline locally
       driverStatus.value = DriverStatus.goTo;
-      // Note: Cloud Function 'manageDriverStatus' will likely update driver doc to 'on_trip'
+      activeRequests.clear(); // Clear all other requests
 
       Get.offAll(() => RideAcceptedScreen(rideRequest: request));
     } catch (e) {
       Get.snackbar("Error", "Could not accept ride: $e");
       debugPrint("Accept Error: $e");
       _isAcceptingRide = false;
-      isRideAcceptanceInProgress.value = false; // Re-show card on error
+      isRideAcceptanceInProgress.value = false;
     }
   }
 
   Future<void> onRideRejected(String reason) async {
+    // Determine which ride to reject. Default to top active.
+    // If specific ID is needed, use passRide(id) instead.
+    // This method handles the logic of "User clicked Reject on current/top card" or overlay.
+
     stopRideRequestSound();
-    if (activeRideRequest.value == null) return;
+    if (activeRideRequest == null) return;
 
-    final rideId = activeRideRequest.value!.rideId;
-    final driverId = user.uid;
-    _ignoredRides[rideId] =
-        DateTime.now(); // Ignore this ride ID locally from now on
-    final rideType = activeRideRequest.value!.rideType;
-    final collectionPath = (rideType == 'rental')
-        ? 'rental_requests'
-        : 'ride_requests';
+    final rideId = activeRideRequest!.rideId;
 
-    debugPrint("Rejecting Ride $rideId (Reason: $reason) in $collectionPath");
+    // Use passRide logic but also send server rejection?
+    // Actually, passRide is just local skip. "Reject" usually means "I don't want this specific ride ever".
+    // Server rejection: add to 'rejectedBy'.
 
-    // Clear local state immediately to hide UI
-    activeRideRequest.value = null;
+    debugPrint("Rejecting Ride $rideId (Reason: $reason)");
+    passRide(rideId);
 
-    // CRITICAL FIX: Close overlay if it's open (especially for background timeout/rejection)
-    OverlayService.instance.hideFloatingBubble();
-
-    Get.back(); // Close Request Card/Screen if open
-
+    // Also update server to avoid getting it again
     try {
-      // Add driver to 'rejectedBy' array in Firestore
-      // Server Function will see this change and assign to next driver
+      final rideType = activeRideRequest?.rideType ?? 'daily';
+      final collectionPath = (rideType == 'rental')
+          ? 'rental_requests'
+          : 'ride_requests';
       await FirebaseFirestore.instance
           .collection(collectionPath)
           .doc(rideId)
           .update({
-            'rejectedBy': FieldValue.arrayUnion([driverId]),
+            'rejectedBy': FieldValue.arrayUnion([user.uid]),
           });
     } catch (e) {
-      debugPrint("Error rejecting ride: $e");
+      debugPrint("Error sending rejection to server: $e");
     }
   }
 
   void startRideTimeout(String rideId) {
-    rideTimeoutTimer?.cancel();
+    rideTimers[rideId]?.cancel();
 
-    final isRental = activeRideRequest.value?.rideType == 'rental';
-    // Rental requests: 10 seconds (match RentalRequestScreen timer)
-    // Regular rides: 5 seconds (quick round robin)
-    final timeoutDuration = isRental ? 10 : 5;
+    final isRental = activeRideRequest?.rideType == 'rental';
+    final timeoutDuration = isRental ? 40 : 30;
 
     debugPrint("Starting Ride Timeout for $rideId: $timeoutDuration seconds");
 
-    rideTimeoutTimer = Timer(Duration(seconds: timeoutDuration), () async {
-      // Only clear if still pointing to the same ride
-      if (activeRideRequest.value != null &&
-          activeRideRequest.value!.rideId == rideId) {
+    rideTimers[rideId] = Timer(Duration(seconds: timeoutDuration), () async {
+      // Only clear if still pointing to the same ride or in list
+      if (activeRequests.any((r) => r.rideId == rideId)) {
         stopRideRequestSound();
 
         if (isRental) {
@@ -1457,16 +1602,17 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         debugPrint('Triggering local timeout for ride $rideId');
 
         // REJECT on timeout to pass to next driver (Round Robin)
-        onRideRejected("timeout_local");
+        // For list view, we just pass this specific ride
+        passRide(rideId);
 
-        debugPrint("Local timeout triggered. Rejection sent to server.");
-      } else {
-        debugPrint(
-          "Ride Timeout callback ignored: Active(${activeRideRequest.value?.rideId}) != Target($rideId)",
-        );
+        debugPrint("Local timeout triggered. Rejection sent.");
       }
     });
   }
+
+  // -------------------------
+  // Overlay Helper
+  // -------------------------
 
   Future<bool> _handleLocationPermission() async {
     bool serviceEnabled;

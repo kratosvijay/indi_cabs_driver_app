@@ -135,10 +135,13 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
                           ],
                         ),
-                        child: Image.asset(
-                          'assets/logos/app_logo.png',
-                          width: 150,
-                          height: 150,
+                        child: ClipOval(
+                          child: Image.asset(
+                            'assets/logos/app_logo.png',
+                            width: 150,
+                            height: 150,
+                            fit: BoxFit.cover,
+                          ),
                         ),
                       ),
                     ),

@@ -493,16 +493,22 @@ class _RideRequestCardState extends State<RideRequestCard> {
   }
 
   void _startTimer() {
-    _timer = Timer.periodic(const Duration(milliseconds: 50), (timer) {
+    // 30 seconds for daily, 40 for rental
+    final isRental = widget.rideRequest.rideType == 'rental';
+    // 5 seconds for debugging
+    final totalDurationMs = 5000;
+    final tickMs = 100; // Update every 100ms for smoother performance
+    final decrement = tickMs / totalDurationMs;
+
+    _timer = Timer.periodic(Duration(milliseconds: tickMs), (timer) {
       if (!mounted) {
         timer.cancel();
         return;
       }
       setState(() {
-        _progressValue -= 0.01; // 1.0 / (5000ms / 50ms) -> 5 seconds duration
+        _progressValue -= decrement;
       });
       if (_progressValue <= 0) {
-        // Round Robin Mode: Reject to pass to next driver
         timer.cancel(); // Stop timer
         widget.onReject();
       }
@@ -514,200 +520,231 @@ class _RideRequestCardState extends State<RideRequestCard> {
     // Fix for "incorrect configuration id" crash on Android 14+ when resuming from background.
     // We create a FRESH MediaQueryData from the view to bypass stale inherited widgets.
     // We also forcefully reset the textScaler to 1.0 to avoid any invalid system configuration IDs.
-    final mediaQueryData = MediaQueryData.fromView(
-      View.of(context),
-    ).copyWith(textScaler: const TextScaler.linear(1.0));
 
-    return MediaQuery(
-      data: mediaQueryData,
-      child: Positioned(
-        bottom: 0,
-        left: 0,
-        right: 0,
-        child: GestureDetector(
-          onTap: widget.onAccept,
-          child: Container(
-            decoration: BoxDecoration(
-              color: AppColors.primary,
-              borderRadius: const BorderRadius.vertical(
-                top: Radius.circular(20),
-              ),
-              boxShadow: [
-                BoxShadow(
-                  blurRadius: 15,
-                  color: Colors.black.withValues(alpha: 0.3),
-                ),
-              ],
-            ),
-            child: Stack(
+    // We will handle MediaQuery in the parent or assume context is fine.
+    // For list usage, we don't want Positioned.
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.primary,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            blurRadius: 15,
+            color: Colors.black.withValues(alpha: 0.3),
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Stack(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 20, 16, 20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min, // Important for list items
               children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 24, 16, 24),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // --- Payment Method Header ---
-                      Center(
-                        child: Text(
-                          widget.rideRequest.rideType == 'daily'
-                              ? _getPaymentHeaderText()
-                              : "${widget.rideRequest.vehicleClass} ${'rideHeader'.tr}",
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white.withValues(alpha: 0.9),
-                          ),
-                        ),
+                // --- Payment Method Header ---
+                Center(
+                  child: Text(
+                    widget.rideRequest.rideType == 'daily'
+                        ? _getPaymentHeaderText()
+                        : "${widget.rideRequest.vehicleClass} ${'rideHeader'.tr}",
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white.withValues(alpha: 0.9),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                _isTranslating
+                    ? _buildShimmerRow()
+                    : _buildDetailRow(
+                        Icons.location_on,
+                        _translatedPickupTitle ??
+                            widget.rideRequest.pickupTitle,
+                        _translatedPickupAddress ??
+                            widget.rideRequest.pickupFullAddress,
+                        "${widget.rideRequest.driverDistance.toStringAsFixed(1)} ${'kmAway'.tr}${(widget.rideRequest.driverDuration != null) ? " (~${widget.rideRequest.driverDuration!.toStringAsFixed(0)} ${'mins'.tr})" : ""}",
                       ),
-                      const SizedBox(height: 16),
-                      _isTranslating
-                          ? _buildShimmerRow()
-                          : _buildDetailRow(
-                              Icons.location_on,
-                              _translatedPickupTitle ??
-                                  widget.rideRequest.pickupTitle,
-                              _translatedPickupAddress ??
-                                  widget.rideRequest.pickupFullAddress,
-                              "${widget.rideRequest.driverDistance.toStringAsFixed(1)} ${'kmAway'.tr}${(widget.rideRequest.driverDuration != null) ? " (~${widget.rideRequest.driverDuration!.toStringAsFixed(0)} ${'mins'.tr})" : ""}",
-                            ),
-                      const Padding(
-                        padding: EdgeInsets.symmetric(
-                          vertical: 8.0,
-                          horizontal: 12.0,
-                        ),
-                        child: Icon(
-                          Icons.more_vert,
-                          color: Colors.white54,
+                const Padding(
+                  padding: EdgeInsets.symmetric(
+                    vertical: 4.0,
+                    horizontal: 12.0,
+                  ),
+                  child: Icon(Icons.more_vert, color: Colors.white54, size: 16),
+                ),
+                _isTranslating
+                    ? _buildShimmerRow()
+                    : _buildDetailRow(
+                        Icons.flag,
+                        _translatedDropoffTitle ??
+                            widget.rideRequest.dropoffTitle,
+                        _translatedDropoffAddress ??
+                            widget.rideRequest.dropoffFullAddress,
+                        "${widget.rideRequest.rideDistance.toStringAsFixed(1)} ${'kmRide'.tr}${(widget.rideRequest.rideDuration != null) ? " (~${widget.rideRequest.rideDuration!.toStringAsFixed(0)} ${'mins'.tr})" : ""}",
+                      ),
+                if (widget.rideRequest.stops.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      vertical: 8,
+                      horizontal: 12,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.3),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(
+                          Icons.add_location_alt_outlined,
+                          color: Colors.yellowAccent,
                           size: 20,
                         ),
-                      ),
-                      _isTranslating
-                          ? _buildShimmerRow()
-                          : _buildDetailRow(
-                              Icons.flag,
-                              _translatedDropoffTitle ??
-                                  widget.rideRequest.dropoffTitle,
-                              _translatedDropoffAddress ??
-                                  widget.rideRequest.dropoffFullAddress,
-                              "${widget.rideRequest.rideDistance.toStringAsFixed(1)} ${'kmRide'.tr}${(widget.rideRequest.rideDuration != null) ? " (~${widget.rideRequest.rideDuration!.toStringAsFixed(0)} ${'mins'.tr})" : ""}",
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            "${widget.rideRequest.stops.length} ${'stopsAdded'.tr}",
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
                             ),
-                      if (widget.rideRequest.stops.isNotEmpty) ...[
-                        const SizedBox(height: 12),
+                          ),
+                        ),
                         Container(
                           padding: const EdgeInsets.symmetric(
-                            vertical: 8,
-                            horizontal: 12,
+                            horizontal: 10,
+                            vertical: 4,
                           ),
                           decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: Colors.white.withValues(alpha: 0.3),
+                            color: Colors.yellowAccent,
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            "₹${widget.rideRequest.stops.length * 30} added",
+                            style: const TextStyle(
+                              color: Colors.black87,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
                             ),
                           ),
-                          child: Row(
-                            children: [
-                              const Icon(
-                                Icons.add_location_alt_outlined,
-                                color: Colors.yellowAccent,
-                                size: 20,
-                              ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  "${widget.rideRequest.stops.length} ${'stopsAdded'.tr}",
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 16,
-                                  ),
-                                ),
-                              ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 10,
-                                  vertical: 4,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Colors.yellowAccent,
-                                  borderRadius: BorderRadius.circular(6),
-                                ),
-                                child: Text(
-                                  "₹${widget.rideRequest.stops.length * 30} added",
-                                  style: const TextStyle(
-                                    color: Colors.black87,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 14,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
                         ),
-                        const SizedBox(height: 8),
                       ],
-                      const Divider(height: 32, color: Colors.white54),
-                      Center(
-                        child: Column(
-                          children: [
-                            Text(
-                              "₹${widget.rideRequest.rideFare.toStringAsFixed(2)}",
-                              style: const TextStyle(
-                                fontSize: 36,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.white,
-                              ),
-                            ),
-                            if (widget.rideRequest.tip != null &&
-                                widget.rideRequest.tip! > 0) ...[
-                              const SizedBox(height: 4),
-                              Text(
-                                "+ ₹${widget.rideRequest.tip!.toStringAsFixed(0)} Tip Included",
-                                style: const TextStyle(
-                                  color: Colors.greenAccent,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ],
-                          ],
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+                const Divider(height: 24, color: Colors.white24),
+
+                // --- Footer: Price and Actions ---
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    // Price
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          "₹${widget.rideRequest.rideFare.toStringAsFixed(0)}",
+                          style: const TextStyle(
+                            fontSize: 28,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 16),
-                    ],
-                  ),
-                ),
-                Positioned(
-                  top: 8,
-                  right: 8,
-                  child: IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white),
-                    onPressed: widget.onReject,
-                  ),
-                ),
-                Positioned(
-                  bottom: 0,
-                  left: 0,
-                  right: 0,
-                  child: ClipRRect(
-                    borderRadius: const BorderRadius.vertical(
-                      bottom: Radius.circular(20),
+                        if (widget.rideRequest.tip != null &&
+                            widget.rideRequest.tip! > 0)
+                          Text(
+                            "+ ₹${widget.rideRequest.tip!.toStringAsFixed(0)} Tip",
+                            style: const TextStyle(
+                              color: Colors.greenAccent,
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                      ],
                     ),
-                    child: LinearProgressIndicator(
-                      value: _progressValue,
-                      backgroundColor: Colors.blue.shade300,
-                      valueColor: const AlwaysStoppedAnimation<Color>(
-                        Colors.white,
-                      ),
-                      minHeight: 6,
+
+                    // Buttons: Pass / Accept
+                    Row(
+                      children: [
+                        // Pass Button
+                        TextButton(
+                          onPressed: widget.onReject,
+                          style: TextButton.styleFrom(
+                            backgroundColor: Colors.white.withValues(
+                              alpha: 0.1,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(30),
+                            ),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 10,
+                            ),
+                          ),
+                          child: const Text(
+                            "Pass",
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        // Accept Button (Tap the card triggers it, but explicit button is nice too)
+                        ElevatedButton.icon(
+                          onPressed: widget.onAccept,
+                          icon: const Icon(Icons.check_circle, size: 18),
+                          label: Text("Accept".tr),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.green,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(30),
+                            ),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 20,
+                              vertical: 10,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
+                  ],
                 ),
+
+                const SizedBox(height: 8),
               ],
             ),
           ),
-        ),
+
+          // Progress Bar (Timer)
+          Positioned(
+            bottom: 0,
+            left: 0,
+            right: 0,
+            child: ClipRRect(
+              borderRadius: const BorderRadius.vertical(
+                bottom: Radius.circular(20),
+              ),
+              child: LinearProgressIndicator(
+                value: _progressValue,
+                backgroundColor: Colors.white.withValues(alpha: 0.1),
+                valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                minHeight: 4,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

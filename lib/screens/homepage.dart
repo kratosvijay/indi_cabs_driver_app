@@ -96,12 +96,12 @@ class _DriverHomePageState extends State<DriverHomePage>
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Container(
-                  width: 100,
-                  height: 100,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: AppColors.lightEnd.withAlpha(150),
+                ClipOval(
+                  child: Image.asset(
+                    'assets/logos/app_logo.png',
+                    width: 150,
+                    height: 150,
+                    fit: BoxFit.cover,
                   ),
                 ),
                 SizedBox(height: 24),
@@ -315,24 +315,186 @@ class _DriverHomePageState extends State<DriverHomePage>
               child: _buildDashboard(context),
             ),
 
-            // Ride Request Card
+            // Ride Request List with Sorting
             Obx(() {
-              // Hide card if we are in the process of accepting (e.g. from overlay)
-              if (controller.activeRideRequest.value != null &&
-                  !controller.isRideAcceptanceInProgress.value) {
-                if (controller.activeRideRequest.value!.rideType == 'rental') {
-                  return const SizedBox.shrink();
-                }
+              final requests = controller.activeRequests;
 
-                return RideRequestCard(
-                  rideRequest: controller.activeRideRequest.value!,
-                  onAccept: controller.onRideAccepted,
-                  onReject: () => controller.onRideRejected("card_reject"),
-                );
+              if (requests.isEmpty) return const SizedBox.shrink();
+              if (controller.isRideAcceptanceInProgress.value) {
+                return const SizedBox.shrink();
               }
-              return const SizedBox.shrink();
+
+              return Positioned.fill(
+                child: Container(
+                  color: Theme.of(context).scaffoldBackgroundColor,
+                  child: SafeArea(
+                    child: Row(
+                      children: [
+                        // Left Sorting Column (10%)
+                        Expanded(
+                          flex: 1,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              border: Border(
+                                right: BorderSide(
+                                  color: Theme.of(context).dividerColor,
+                                ),
+                              ),
+                            ),
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.start,
+                              children: [
+                                const SizedBox(height: 16),
+                                Icon(
+                                  Icons.sort,
+                                  color: Theme.of(context).iconTheme.color,
+                                  size: 24,
+                                ),
+                                const SizedBox(height: 8),
+                                const Divider(),
+                                _buildSortOption(
+                                  context,
+                                  icon: Icons.access_time_filled,
+                                  label: 'Time',
+                                  value: 'Time',
+                                ),
+                                _buildSortOption(
+                                  context,
+                                  icon: Icons.attach_money,
+                                  label: 'Price',
+                                  value: 'Price',
+                                ),
+                                _buildSortOption(
+                                  context,
+                                  icon: Icons.near_me,
+                                  label: 'Dist',
+                                  value: 'Distance',
+                                ),
+                                _buildSortOption(
+                                  context,
+                                  icon: Icons.star,
+                                  label: 'Smart',
+                                  value: 'Smart',
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+
+                        // Right Request List (90%)
+                        Expanded(
+                          flex: 9,
+                          child: Padding(
+                            padding: const EdgeInsets.all(8.0),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Padding(
+                                  padding: const EdgeInsets.only(
+                                    left: 8.0,
+                                    bottom: 8.0,
+                                  ),
+                                  child: Text(
+                                    "Active Requests (${requests.length})",
+                                    style: TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.bold,
+                                      color: Theme.of(
+                                        context,
+                                      ).textTheme.bodyLarge?.color,
+                                    ),
+                                  ),
+                                ),
+                                Expanded(
+                                  child: ListView.builder(
+                                    itemCount: requests.length,
+                                    itemBuilder: (context, index) {
+                                      final request = requests[index];
+                                      if (request.rideType == 'rental') {
+                                        return const SizedBox.shrink();
+                                      }
+                                      return Padding(
+                                        padding: const EdgeInsets.only(
+                                          bottom: 12.0,
+                                        ),
+                                        child: RideRequestCard(
+                                          key: ValueKey(request.rideId),
+                                          rideRequest: request,
+                                          onAccept: () => controller
+                                              .onRideAccepted(request),
+                                          onReject: () => controller.passRide(
+                                            request.rideId,
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
             }),
           ],
+        ),
+      );
+    });
+  }
+
+  Widget _buildSortOption(
+    BuildContext context, {
+    required IconData icon,
+    required String label,
+    required String value,
+  }) {
+    return Obx(() {
+      final isSelected = controller.currentSortOption.value == value;
+      final bool isDark = Theme.of(context).brightness == Brightness.dark;
+
+      final selectedColor = isDark ? Colors.lightBlueAccent : Colors.blue;
+      final unselectedColor = isDark ? Colors.grey.shade400 : Colors.grey;
+      final selectedBg = isDark
+          ? Colors.blue.withValues(alpha: 0.2)
+          : Colors.blue.shade50;
+
+      return InkWell(
+        onTap: () => controller.sortRequests(value),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          decoration: BoxDecoration(
+            color: isSelected ? selectedBg : Colors.transparent,
+            border: Border(
+              left: BorderSide(
+                color: isSelected ? selectedColor : Colors.transparent,
+                width: 3,
+              ),
+            ),
+          ),
+          child: Column(
+            children: [
+              Icon(
+                icon,
+                color: isSelected ? selectedColor : unselectedColor,
+                size: 24,
+              ),
+              const SizedBox(height: 4),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                  color: isSelected ? selectedColor : unselectedColor,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
         ),
       );
     });

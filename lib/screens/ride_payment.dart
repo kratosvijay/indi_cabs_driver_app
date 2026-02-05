@@ -219,68 +219,87 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
   Future<void> _finishRide() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
-      // Credit Logic (Driver)
+      // 1. Capture Data Locally (Safety against widget disposal)
+      final localTotalAmount = widget.totalAmount;
+      final localRideId = _rideRequest.rideId;
+      final localRideFare = _rideRequest.rideFare;
+      final localRideDistance = _rideRequest.rideDistance;
+      final localRideType = _rideRequest.rideType;
+      final localWaitingCharge = _rideRequest.waitingCharge;
+      final localUserId = user.uid;
+      final localCustomerId = _rideRequest.userId;
+
+      final bool isOnline = _isOnline;
+      final bool isCashPlusWallet = _isCashPlusWallet;
+      final double walletAmt = _walletAmount;
+
+      // 2. Navigate HOME Immediately (Optimistic Success)
+      Get.offAll(
+        () => DriverHomePage(user: user, initialStatus: DriverStatus.online),
+      );
+
+      // 3. Background Transactions
+      // We use a separate async block or just continue here.
+      // Since we already navigated, 'context' is unsafe, but Firebase calls are fine.
+
+      // Credit Logic
       double amountToCredit = 0.0;
       String description = "";
 
-      if (_isOnline) {
-        amountToCredit = widget.totalAmount;
-        description = "Earnings for Ride ID: ${_rideRequest.rideId} (Online)";
-      } else if (_isCashPlusWallet) {
-        amountToCredit = _walletAmount;
-        description = "Wallet Portion for Ride ID: ${_rideRequest.rideId}";
+      if (isOnline) {
+        amountToCredit = localTotalAmount;
+        description = "Earnings for Ride ID: $localRideId (Online)";
+      } else if (isCashPlusWallet) {
+        amountToCredit = walletAmt;
+        description = "Wallet Portion for Ride ID: $localRideId";
       }
 
       if (amountToCredit > 0) {
         try {
-          // 1. Credit Driver Wallet
+          // A. Credit Driver Wallet
           await WalletController.instance.creditWallet(
             amountToCredit,
-            "ride_${_rideRequest.rideId}", // Use rideId as paymentId
+            "ride_$localRideId",
             description: description,
           );
 
-          // 2. Create Earnings Record
+          // B. Create Earnings Record
           try {
             await FirebaseFirestore.instance
                 .collection('earnings')
-                .doc(_rideRequest.rideId)
+                .doc(localRideId)
                 .set({
-                  'amount': widget.totalAmount, // Total earnings for this ride
+                  'amount': localTotalAmount,
                   'createdAt': FieldValue.serverTimestamp(),
                   'details': {
-                    'baseFare': _rideRequest.rideFare,
-                    'distance': _rideRequest.rideDistance,
-                    'rideType': _rideRequest.rideType,
-                    'waitingCharge': _rideRequest.waitingCharge,
+                    'baseFare': localRideFare,
+                    'distance': localRideDistance,
+                    'rideType': localRideType,
+                    'waitingCharge': localWaitingCharge,
                   },
-                  'driverId': user.uid,
-                  'rideId': _rideRequest.rideId,
+                  'driverId': localUserId,
+                  'rideId': localRideId,
                   'status': 'completed',
                   'type': 'ride_fare',
                 });
-            debugPrint(
-              "Earnings record created for ride ${_rideRequest.rideId}",
-            );
+            debugPrint("Earnings record created for ride $localRideId");
           } catch (e) {
             debugPrint("Failed to create earnings record: $e");
           }
 
-          // 3. Deduct from Customer Wallet (Only if Cash + Wallet)
-          if (_isCashPlusWallet) {
-            final customerId = _rideRequest.userId;
-            final amountToDeduct = _walletAmount;
+          // C. Deduct from Customer Wallet (Only if Cash + Wallet)
+          if (isCashPlusWallet) {
+            final amountToDeduct = walletAmt;
 
             await FirebaseFirestore.instance.runTransaction((
               transaction,
             ) async {
               final userRef = FirebaseFirestore.instance
                   .collection('users')
-                  .doc(customerId);
+                  .doc(localCustomerId);
 
               final userSnapshot = await transaction.get(userRef);
               if (userSnapshot.exists) {
-                // Check for 'wallet_balance' (as per user dump) or fallback to 'walletBalance'
                 var currentBalance =
                     (userSnapshot.data()?['wallet_balance'] as num?)
                         ?.toDouble();
@@ -290,40 +309,32 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
 
                 final newBalance = currentBalance - amountToDeduct;
 
-                // Update 'wallet_balance' if it exists or was preferred, otherwise 'walletBalance'
-                // Based on user dump, 'wallet_balance' is the key.
                 if (userSnapshot.data()!.containsKey('wallet_balance')) {
                   transaction.update(userRef, {'wallet_balance': newBalance});
                 } else {
                   transaction.update(userRef, {'walletBalance': newBalance});
                 }
 
-                // Optional: Add transaction history for user
                 final transactionRef = userRef
                     .collection('wallet_transactions')
                     .doc();
                 transaction.set(transactionRef, {
                   'amount': -amountToDeduct,
-                  'description': 'Ride Payment: ${_rideRequest.rideId}',
+                  'description': 'Ride Payment: $localRideId',
                   'timestamp': FieldValue.serverTimestamp(),
                   'type': 'debit',
                 });
               }
             });
             debugPrint(
-              "Deducted $amountToDeduct from customer $customerId wallet.",
+              "Deducted $amountToDeduct from customer $localCustomerId wallet.",
             );
           }
         } catch (e) {
-          debugPrint("Failed to process wallet transactions: $e");
-          // Optionally show error snackbar, but maybe safer to proceed and log?
-          // Get.snackbar("Error", "Could not credit earnings: $e");
+          debugPrint("Failed to process background wallet transactions: $e");
+          // No valid context to show snackbar, just log.
         }
       }
-
-      Get.offAll(
-        () => DriverHomePage(user: user, initialStatus: DriverStatus.online),
-      );
     }
   }
 

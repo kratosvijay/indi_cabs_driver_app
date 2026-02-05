@@ -17,6 +17,8 @@ pluginManagement {
     }
 }
 
+rootProject.name = "indi_cabs_driver_android"
+
 plugins {
     id("dev.flutter.flutter-plugin-loader") version "1.0.0"
     id("com.android.application") version "8.10.0" apply false

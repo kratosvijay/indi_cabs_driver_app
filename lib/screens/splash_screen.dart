@@ -41,14 +41,7 @@ class _SplashScreenState extends State<SplashScreen> {
             const SizedBox(height: 24),
             CircularProgressIndicator(color: AppColors.lightEnd),
             const SizedBox(height: 16),
-            Text(
-              "Initializing...",
-              style: TextStyle(
-                color: isDark ? Colors.white70 : Colors.grey.shade700,
-                fontSize: 14,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
+            // Removed Text widget to prevent 'incorrect configuration id' crash on hot restart
           ],
         ),
       ),
