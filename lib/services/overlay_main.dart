@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:math' as math;
+import 'dart:ui' show IsolateNameServer;
 import 'package:flutter/material.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
@@ -36,24 +38,103 @@ class OverlayRoot extends StatefulWidget {
 }
 
 class _OverlayRootState extends State<OverlayRoot> {
+  static const String _actionPortName = 'overlay_action_port';
   OverlayMode _mode = OverlayMode.bubble;
   Map<String, dynamic>? _ride;
   Timer? _timer;
   double _progress = 1.0;
+  bool _actionInFlight = false;
 
   @override
   void initState() {
     super.initState();
 
     FlutterOverlayWindow.overlayListener.listen((data) {
-      if (data is Map && data["type"] == "SHOW_REQUEST") {
+      if (data is! Map) return;
+      final type = data["type"]?.toString();
+
+      if (type == "SHOW_REQUEST") {
+        final int? widthHint = (data["overlayWidth"] is num)
+            ? (data["overlayWidth"] as num).toInt()
+            : null;
+        final int? heightHint = (data["overlayHeight"] is num)
+            ? (data["overlayHeight"] as num).toInt()
+            : null;
+
         setState(() {
-          _ride = data["ride"];
+          _ride = Map<String, dynamic>.from(data["ride"] as Map? ?? const {});
           _mode = OverlayMode.request;
         });
         _startTimer();
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _resizeForRequest(widthHint: widthHint, heightHint: heightHint);
+        });
+        return;
+      }
+
+      if (type == "SHOW_BUBBLE") {
+        _timer?.cancel();
+        _progress = 1.0;
+        setState(() {
+          _ride = null;
+          _mode = OverlayMode.bubble;
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _resizeForBubble();
+        });
       }
     });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _sendActionToMain({"action": "OVERLAY_READY"});
+    });
+  }
+
+  Future<void> _sendActionToMain(Map<String, dynamic> payload) async {
+    try {
+      final sendPort = IsolateNameServer.lookupPortByName(_actionPortName);
+      if (sendPort != null) {
+        sendPort.send(payload);
+        return;
+      }
+    } catch (e) {
+      debugPrint("Overlay action port send failed: $e");
+    }
+
+    // Fallback path for builds where IsolateNameServer bridge is unavailable.
+    try {
+      await FlutterOverlayWindow.shareData(payload);
+    } catch (e) {
+      debugPrint("Overlay fallback shareData failed: $e");
+    }
+  }
+
+  Future<void> _resizeForRequest({int? widthHint, int? heightHint}) async {
+    if (!mounted) return;
+
+    final mediaSize = MediaQuery.of(context).size;
+    final int targetWidth =
+        widthHint ?? (mediaSize.width - 24).clamp(280.0, 420.0).round();
+    final int targetHeight =
+        heightHint ?? (mediaSize.height * 0.62).clamp(320.0, 540.0).round();
+
+    try {
+      await FlutterOverlayWindow.resizeOverlay(
+        targetWidth,
+        targetHeight,
+        false,
+      );
+    } catch (e) {
+      debugPrint("Resize overlay failed in overlay isolate: $e");
+    }
+  }
+
+  Future<void> _resizeForBubble() async {
+    try {
+      await FlutterOverlayWindow.resizeOverlay(88, 88, false);
+    } catch (e) {
+      debugPrint("Resize bubble failed in overlay isolate: $e");
+    }
   }
 
   /* ---------------- Timer ---------------- */
@@ -62,13 +143,15 @@ class _OverlayRootState extends State<OverlayRoot> {
     _timer?.cancel();
     _progress = 1;
 
-    // 5 seconds timer: 50ms interval * 100 ticks = 5000ms
-    _timer = Timer.periodic(const Duration(milliseconds: 50), (t) {
+    const totalSeconds = 5;
+    const tickMs = 100;
+    const decrement = tickMs / (totalSeconds * 1000);
+    _timer = Timer.periodic(const Duration(milliseconds: tickMs), (t) {
       if (!mounted) {
         t.cancel();
         return;
       }
-      setState(() => _progress -= 0.01);
+      setState(() => _progress = (_progress - decrement).clamp(0.0, 1.0));
       if (_progress <= 0) _reject();
     });
   }
@@ -76,38 +159,45 @@ class _OverlayRootState extends State<OverlayRoot> {
   /* ---------------- Actions ---------------- */
 
   Future<void> _reject() async {
+    if (_actionInFlight) return;
+    _actionInFlight = true;
     _timer?.cancel();
 
-    // Send Rejection Signal
-    await FlutterOverlayWindow.shareData({
-      "action": "REJECT",
-      "rideId": _ride?['rideId'],
-    });
-
-    // Close overlay (which will trigger cleanup in service)
-    await FlutterOverlayWindow.closeOverlay();
-
-    if (mounted) {
-      setState(() {
-        _ride = null;
-        _mode = OverlayMode.bubble;
-      });
+    try {
+      await _sendActionToMain({"action": "REJECT", "rideId": _ride?['rideId']});
+      if (mounted) {
+        setState(() {
+          _ride = null;
+          _mode = OverlayMode.bubble;
+        });
+      }
+      await _resizeForBubble();
+    } catch (e) {
+      debugPrint("Overlay reject flow failed: $e");
+    } finally {
+      _actionInFlight = false;
     }
   }
 
   Future<void> _accept() async {
+    if (_actionInFlight) return;
+    _actionInFlight = true;
     _timer?.cancel();
 
-    await FlutterOverlayWindow.shareData({
-      "action": "ACCEPT",
-      "ride": _ride,
-      "rideId": _ride?['rideId'],
-      "rideType": _ride?['rideType'],
-    });
+    try {
+      await _sendActionToMain({
+        "action": "ACCEPT",
+        "ride": _ride,
+        "rideId": _ride?['rideId'],
+        "rideType": _ride?['rideType'],
+      });
 
-    // Launch App explicitly
-    FlutterForegroundTask.launchApp();
-    await FlutterOverlayWindow.closeOverlay();
+      FlutterForegroundTask.launchApp();
+    } catch (e) {
+      debugPrint("Overlay accept flow failed: $e");
+    } finally {
+      _actionInFlight = false;
+    }
   }
 
   /* ---------------- UI ---------------- */
@@ -123,9 +213,7 @@ class _OverlayRootState extends State<OverlayRoot> {
   Widget _bubble() {
     return GestureDetector(
       onTap: () async {
-        // Bring app to foreground
-        FlutterForegroundTask.launchApp();
-        await FlutterOverlayWindow.closeOverlay();
+        await _sendActionToMain({"action": "OPEN_APP"});
       },
       child: Container(
         width: 80,
@@ -160,65 +248,125 @@ class _OverlayRootState extends State<OverlayRoot> {
 
   Widget _fullScreenCard() {
     // If resize failed, the window might be small (e.g., 200). Show a mini card in that case.
-    if (MediaQuery.of(context).size.height < 400) {
+    if (MediaQuery.of(context).size.height < 400 ||
+        MediaQuery.of(context).size.width < 280) {
       return _miniCard();
     }
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        child: _card(), // Rich card
-      ),
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final maxCardHeight = math.max(260.0, constraints.maxHeight - 24);
+        return Align(
+          alignment: Alignment.topCenter,
+          child: SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 28, 12, 8),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: math.min(560, constraints.maxWidth),
+                  maxHeight: maxCardHeight,
+                ),
+                child: SingleChildScrollView(child: _card()),
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 
   Widget _miniCard() {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.primary,
-        borderRadius: BorderRadius.circular(16),
-      ),
-      width: double.infinity,
-      height: double.infinity,
-      padding: const EdgeInsets.all(12),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Text(
-            "New Ride Request!",
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.bold,
-              fontSize: 16,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            "₹${_ride?['rideFare'] ?? '0'}",
-            style: const TextStyle(
-              color: Colors.greenAccent,
-              fontWeight: FontWeight.bold,
-              fontSize: 18,
-            ),
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.white,
-                foregroundColor: Colors.black,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isTiny =
+            constraints.maxHeight < 140 || constraints.maxWidth < 140;
+        final actionWidth = constraints.maxWidth.isFinite
+            ? (constraints.maxWidth - 16).clamp(150.0, 260.0).toDouble()
+            : 240.0;
+        final content = Column(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text(
+              "New Ride Request!",
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
               ),
-              onPressed: () {
-                // Request main app to open
-                FlutterOverlayWindow.shareData({"action": "OPEN_APP"});
-              },
-              child: const Text("Open App"),
             ),
+            const SizedBox(height: 8),
+            Text(
+              "₹${_ride?['rideFare'] ?? '0'}",
+              style: const TextStyle(
+                color: Colors.greenAccent,
+                fontWeight: FontWeight.bold,
+                fontSize: 18,
+              ),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: actionWidth,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        side: const BorderSide(color: Colors.white54),
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                      ),
+                      onPressed: _reject,
+                      child: const Text("Pass"),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                      ),
+                      onPressed: _accept,
+                      child: const Text("Accept"),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: actionWidth,
+              child: TextButton(
+                onPressed: () {
+                  _sendActionToMain({"action": "OPEN_APP"});
+                },
+                child: const Text(
+                  "Open App",
+                  style: TextStyle(color: Colors.white70),
+                ),
+              ),
+            ),
+          ],
+        );
+
+        return Container(
+          decoration: BoxDecoration(
+            color: AppColors.primary,
+            borderRadius: BorderRadius.circular(16),
           ),
-        ],
-      ),
+          width: double.infinity,
+          height: double.infinity,
+          padding: const EdgeInsets.all(12),
+          child: Center(
+            child: isTiny
+                ? FittedBox(fit: BoxFit.scaleDown, child: content)
+                : SingleChildScrollView(child: content),
+          ),
+        );
+      },
     );
   }
 

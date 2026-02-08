@@ -1,54 +1,109 @@
-import 'dart:async'; // Added
-import 'package:flutter/foundation.dart'; // Added
+import 'dart:async';
 import 'dart:collection';
 import 'dart:developer';
-import 'package:flutter_overlay_window/flutter_overlay_window.dart';
+import 'dart:isolate';
+import 'dart:ui' as ui;
+import 'dart:ui' show IsolateNameServer, Size;
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:get/get.dart';
 import 'package:project_taxi_driver_app/controllers/home_page_controller.dart';
 
 class OverlayService {
   static final OverlayService instance = OverlayService._();
+  static const String actionPortName = 'overlay_action_port';
+
   OverlayService._() {
+    _registerOverlayActionPort();
+
+    // Keep channel listener as a fallback path.
     FlutterOverlayWindow.overlayListener.listen((data) {
-      log("OverlayService Received Data: $data");
       if (data is Map) {
-        final action = data['action'];
-        final rideId = data['rideId'];
-
-        if (rideId != null) {
-          final controller = Get.find<HomePageController>();
-
-          if (action == 'REJECT') {
-            controller.passRide(rideId);
-            onRideRejected();
-          } else if (action == 'ACCEPT') {
-            // We need to convert the map back to RideRequest if possible,
-            // but onRideAccepted takes a RideRequest object.
-            // Ideally we find the request in our activeRequests list.
-            final ride = controller.activeRequests.firstWhereOrNull(
-              (r) => r.rideId == rideId,
-            );
-            if (ride != null) {
-              controller.onRideAccepted(ride);
-            } else {
-              // Fallback if not in list (edge case), try to reconstruct or ignore
-              log("OverlayService: Accepted ride not found in activeRequests");
-            }
-          }
-        }
-
-        if (action == 'OPEN_APP') {
-          log("OverlayService: Opening App requested");
-          FlutterForegroundTask.launchApp();
-        }
+        log("OverlayService Received Channel Data: $data");
+        _handleOverlayAction(Map<String, dynamic>.from(data));
       }
     });
   }
 
   final Queue<Map<String, dynamic>> _rideQueue = Queue();
+  ReceivePort? _overlayActionPort;
   bool _overlayVisible = false;
   bool _requestShowing = false;
+  Timer? _stopServiceTimer;
+
+  void _registerOverlayActionPort() {
+    _overlayActionPort?.close();
+    IsolateNameServer.removePortNameMapping(actionPortName);
+    _overlayActionPort = ReceivePort();
+    IsolateNameServer.registerPortWithName(
+      _overlayActionPort!.sendPort,
+      actionPortName,
+    );
+
+    _overlayActionPort!.listen((data) {
+      if (data is Map) {
+        log("OverlayService Received Port Data: $data");
+        _handleOverlayAction(Map<String, dynamic>.from(data));
+      }
+    });
+  }
+
+  HomePageController? get _controllerOrNull {
+    if (!Get.isRegistered<HomePageController>()) return null;
+    return Get.find<HomePageController>();
+  }
+
+  Future<void> _handleOverlayAction(Map<String, dynamic> payload) async {
+    final action = payload['action']?.toString();
+    final rideId =
+        payload['rideId']?.toString() ??
+        _rideQueue.firstOrNull?['rideId']?.toString();
+
+    if (action == 'OVERLAY_READY') {
+      await _pushCurrentRequest();
+      return;
+    }
+
+    if (action == 'OPEN_APP') {
+      log("OverlayService: Opening app from overlay action");
+      FlutterForegroundTask.launchApp();
+      return;
+    }
+
+    final controller = _controllerOrNull;
+
+    if (action == 'REJECT') {
+      if (controller != null && rideId != null && rideId.isNotEmpty) {
+        await controller.passRide(rideId);
+      }
+      await onRideRejected();
+      return;
+    }
+
+    if (action == 'ACCEPT') {
+      if (controller != null) {
+        final ride = (rideId == null)
+            ? controller.activeRideRequest
+            : controller.activeRequests.firstWhereOrNull(
+                    (r) => r.rideId == rideId,
+                  ) ??
+                  controller.activeRideRequest;
+
+        if (ride != null) {
+          await controller.onRideAccepted(ride);
+        } else {
+          log("OverlayService: Accept requested but no active ride found.");
+        }
+      }
+
+      _rideQueue.clear();
+      _requestShowing = false;
+      await _cleanupIfIdle();
+      FlutterForegroundTask.launchApp();
+    }
+  }
 
   /* ---------------- Permission ---------------- */
 
@@ -60,52 +115,58 @@ class OverlayService {
   /* ---------------- Bubble ---------------- */
 
   Future<void> showFloatingBubble() async {
-    _cancelStopService(); // Cancel any pending stop
-
-    // Check for stale state: If we think it's visible but the window is gone (user tapped it)
-    if (_overlayVisible) {
-      final bool isActive = await FlutterOverlayWindow.isActive();
-      if (!isActive) {
-        _overlayVisible = false;
-      } else {
-        return;
-      }
-    }
+    _cancelStopService();
 
     if (!await ensurePermission()) return;
 
-    // ... rest of implementation (start service, show overlay)
-
-    // Start service only when showing overlay
-    await FlutterForegroundTask.startService(
-      notificationTitle: "Driver Online",
-      notificationText: "Waiting for rides",
+    await _ensureForegroundService(
+      title: "Driver Online",
+      text: "Waiting for rides",
     );
+
+    // Force close to apply new drag settings
+    if (await _isOverlayActive()) {
+      await FlutterOverlayWindow.closeOverlay();
+    }
 
     await FlutterOverlayWindow.showOverlay(
-      height: 200,
-      width: 200,
+      height: 88,
+      width: 88,
       enableDrag: true,
-      alignment: OverlayAlignment.centerLeft,
+      alignment: OverlayAlignment.centerRight,
       flag: OverlayFlag.defaultFlag,
     );
+    log("OverlayService: Bubble overlay created.");
 
     _overlayVisible = true;
+    _requestShowing = false;
+    await FlutterOverlayWindow.shareData({
+      "type": "SHOW_BUBBLE",
+      "overlayWidth": 88,
+      "overlayHeight": 88,
+    });
   }
 
   /* ---------------- Incoming Request ---------------- */
 
   Future<void> showRideRequestOverlay(Map<String, dynamic> ride) async {
-    _cancelStopService(); // Cancel any pending stop
+    _cancelStopService();
 
-    // Safety: Check permission first to prevent crash
     if (!await ensurePermission()) {
       log("OverlayService: Permission not granted. Skipping overlay.");
       return;
     }
 
+    final sanitized = _sanitizeRideForOverlay(ride);
+    final rideId = sanitized['rideId']?.toString();
+    if (rideId != null &&
+        _rideQueue.any((r) => r['rideId']?.toString() == rideId)) {
+      log("OverlayService: Duplicate ride $rideId skipped");
+      return;
+    }
+
     log("OverlayService: onNewRide called");
-    _rideQueue.add(ride);
+    _rideQueue.add(sanitized);
     log("QUEUE SIZE: ${_rideQueue.length}");
 
     if (_requestShowing) return;
@@ -116,110 +177,60 @@ class OverlayService {
   Future<void> _showNextRequest() async {
     if (_rideQueue.isEmpty) {
       _requestShowing = false;
-      await _cleanupIfIdle();
+      if (_shouldKeepBubbleVisible()) {
+        await showFloatingBubble();
+      } else {
+        await _cleanupIfIdle();
+      }
       return;
     }
 
     _requestShowing = true;
 
-    // 1. ALWAYS start Foreground Service first to promote App Importance
-    // This is critical for Android 14+ to allow OverlayService restart if needed.
-    log(
-      "OverlayService: Starting Foreground Service to promote app importance...",
+    await _ensureForegroundService(
+      title: "New Ride Request",
+      text: "Tap to view details",
     );
-    await FlutterForegroundTask.startService(
-      notificationTitle: "New Ride Request",
-      notificationText: "Tap to view details",
-    );
-    // Give it time to propagate
-    await Future.delayed(const Duration(milliseconds: 500));
+    await Future.delayed(const Duration(milliseconds: 150));
 
-    // 2. Manage Overlay Window
-    if (_overlayVisible) {
-      // If already visible (e.g. bubble), try to resize instead of close-reopen to keep service alive
-      // Note: If resize not supported by plugin version, we fall back to close-open,
-      // but because we promoted to FGS above, close-open SHOULD work now.
-      try {
-        await FlutterOverlayWindow.resizeOverlay(
-          WindowSize.matchParent,
-          550,
-          true,
-        );
-      } catch (e) {
-        log("Resize not supported or failed: $e");
-        // CRITICAL: DO NOT close the overlay here. Closing it destroys the service,
-        // and restarting it triggers the Android 14 background start restriction (crash).
-        // Instead, we leave it as is (likely a Bubble) and rely on the UI to adapt (Mini Card).
-        // _overlayVisible is already true, so we just proceed to shareData.
-      }
+    final requestSize = _requestOverlaySizeDp();
+
+    // Force close to apply new drag settings (disable drag for request)
+    if (await _isOverlayActive()) {
+      await FlutterOverlayWindow.closeOverlay();
     }
 
-    if (!_overlayVisible) {
-      await FlutterOverlayWindow.showOverlay(
-        height: 550,
-        width: WindowSize.matchParent,
-        enableDrag: false,
-        alignment: OverlayAlignment.center,
-        flag: OverlayFlag.defaultFlag,
-      );
-      _overlayVisible = true;
-      // Wait for isolate
-      await Future.delayed(const Duration(milliseconds: 250));
-    }
+    await FlutterOverlayWindow.showOverlay(
+      height: requestSize.height.round(),
+      width: requestSize.width.round(),
+      enableDrag: false,
+      alignment: OverlayAlignment.center,
+      flag: OverlayFlag.defaultFlag,
+    );
+    log("OverlayService: Request overlay created.");
+    _overlayVisible = true;
+    await Future.delayed(const Duration(milliseconds: 120));
 
-    // 3. Send Data
+    await _pushCurrentRequest();
+  }
+
+  Future<void> _pushCurrentRequest() async {
+    if (_rideQueue.isEmpty) return;
+    final requestSize = _requestOverlaySizeDp();
+    await _resizeOverlay(requestSize.width.round(), requestSize.height.round());
     await FlutterOverlayWindow.shareData({
       "type": "SHOW_REQUEST",
       "ride": _rideQueue.first,
+      "overlayWidth": requestSize.width.round(),
+      "overlayHeight": requestSize.height.round(),
     });
   }
 
-  // Legacy method support if any code calls it
   Future<void> sendDataToOverlay(Map<String, dynamic> data) async {
     await FlutterOverlayWindow.shareData(data);
   }
 
-  /* ---------------- Overlay Callbacks ---------------- */
-
-  /* ---------------- Overlay Callbacks ---------------- */
-  // These should be called when we detect a signal from the overlay,
-  // OR when we want to manipulate the queue from the main app.
-
-  // Note: The UI isolate handles its own rejection via closeOverlay logic usually,
-  // but if we need to sync state, we listen to messages.
-  // Ideally, the main app (OverlayService) listens to the Overlay stream?
-  // flutter_overlay_window doesn't support bi-directional streams easily back to *this* class instance
-  // unless we use a port or check `FlutterOverlayWindow.overlayListener` (but that's for the overlay side usually).
-  // Actually, standard usage is: Logic -> Overlay. Overlay -> Logic is via MethodChannels or ports?
-  // The plugin has `FlutterOverlayWindow.overlayListener` which is `receivePort`.
-  // Wait, `FlutterOverlayWindow.overlayListener` is used *inside* the overlay to receive data.
-  // To send data back, the overlay uses `FlutterOverlayWindow.shareData`.
-  // Does `FlutterOverlayWindow` exposed to the main isolate have a listener for data coming *from* overlay?
-  // Checking docs/source... usually `FlutterOverlayWindow.onData`?
-  // No, the plugin relies on `shareData` broadcasting to *currently active* listeners.
-  // If `OverlayService` is in the main isolate, can it listen?
-  // The plugin's stream is often broadcast. Let's assume we can't easily get data back without a port.
-  // BUT the user's design shows `onRideRejected` etc.
-  // Code should just manage the queue.
-  // If the overlay closes itself (user tapped reject), the main app needs to know to show the next one.
-
-  // CRITICAL: We need to know when the overlay closes or rejects.
-  // `flutter_overlay_window` exposes `FlutterOverlayWindow.overlayListener` but that's for receiving IN the overlay.
-  // To receive IN MAIN APP, we usually need a `ReceivePort` passed to the isolate, or rely on `isActive` polling?
-  // Or maybe `FlutterForegroundTask` can help?
-  // Actually, standard pattern is:
-  // Overlay calls `closeOverlay`.
-  // Main app might likely assume if `_rideQueue` still has items, it should show next?
-  // But how does Main app know the previous one finished?
-
-  // Workaround: We will assume the overlay UI handles the "Reject" action by closing itself.
-  // But we need to pop the queue.
-  // We can expose `popTop()` method and call it when we *know* it's done (e.g. from Home Controller listening to backend changes?)
-  // OR, we can try to listen to the *same* `shareData` if it broadcasts to all?
-  // (Usually only works one way or strictly to Isolate).
-
-  // Let's implement queue management methods that the *Controller* calls.
-  // The Home Page Controller is the one that gets the 'rejected' status modification from backend or timeout.
+  /* ---------------- Queue Actions ---------------- */
 
   Future<void> hideFloatingBubble() async {
     await _cleanupIfIdle();
@@ -230,7 +241,21 @@ class OverlayService {
       _rideQueue.removeFirst();
     }
     _requestShowing = false;
-    await _showNextRequest(); // Auto show next
+    await _showNextRequest();
+  }
+
+  Future<void> removeRide(String rideId) async {
+    if (_rideQueue.isEmpty) return;
+
+    // Check if the ride to remove is currently being shown (head of queue)
+    if (_rideQueue.first['rideId']?.toString() == rideId) {
+      log("OverlayService: Current ride removed via app. Popping queue.");
+      await popQ();
+    } else {
+      // Just remove from queue if it's waiting
+      _rideQueue.removeWhere((r) => r['rideId']?.toString() == rideId);
+      log("OverlayService: Ride $rideId removed from background queue.");
+    }
   }
 
   Future<void> onRideRejected() async {
@@ -240,29 +265,20 @@ class OverlayService {
   Future<void> onRideAccepted(Map<String, dynamic> ride) async {
     _rideQueue.clear();
     _requestShowing = false;
-
-    // Stop service and close overlay
     await _cleanupIfIdle();
-
-    // Launch app
     FlutterForegroundTask.launchApp();
   }
-
-  Timer? _stopServiceTimer;
 
   /* ---------------- Cleanup ---------------- */
 
   Future<void> _cleanupIfIdle() async {
     try {
       await FlutterOverlayWindow.closeOverlay();
-    } catch (e) {
-      /* ignore */
-    }
+    } catch (_) {}
 
     _overlayVisible = false;
     _requestShowing = false;
 
-    // Debounce stop service to prevent race condition if app is minimized immediately
     _stopServiceTimer?.cancel();
     _stopServiceTimer = Timer(const Duration(seconds: 2), () async {
       if (!_overlayVisible) {
@@ -277,5 +293,94 @@ class OverlayService {
       _stopServiceTimer!.cancel();
       debugPrint("Cancelled Service Stop");
     }
+  }
+
+  bool _shouldKeepBubbleVisible() {
+    final controller = _controllerOrNull;
+    if (controller == null) return false;
+    return controller.shouldShowOverlayBubble;
+  }
+
+  Future<bool> _isOverlayActive() async {
+    try {
+      return await FlutterOverlayWindow.isActive();
+    } catch (e) {
+      debugPrint("OverlayService: isActive check failed: $e");
+      return false;
+    }
+  }
+
+  Future<void> _ensureForegroundService({
+    required String title,
+    required String text,
+  }) async {
+    try {
+      await FlutterForegroundTask.startService(
+        notificationTitle: title,
+        notificationText: text,
+      );
+    } catch (e) {
+      debugPrint("OverlayService: Foreground service start skipped: $e");
+    }
+  }
+
+  Future<void> _resizeOverlay(int width, int height) async {
+    try {
+      await FlutterOverlayWindow.resizeOverlay(width, height, false);
+    } catch (_) {}
+  }
+
+  Size _screenSizeDp() {
+    final view = ui.PlatformDispatcher.instance.views.first;
+    final dpr = view.devicePixelRatio;
+    return Size(view.physicalSize.width / dpr, view.physicalSize.height / dpr);
+  }
+
+  Size _requestOverlaySizeDp() {
+    final screen = _screenSizeDp();
+    final width = (screen.width - 16).clamp(280.0, 420.0).toDouble();
+    final height = (screen.height * 0.62).clamp(320.0, 540.0).toDouble();
+    return Size(width, height);
+  }
+
+  Map<String, dynamic> _sanitizeRideForOverlay(Map<String, dynamic> ride) {
+    final stops = ride['stops'] ?? ride['intermediateStops'];
+    final safeStops = <Map<String, dynamic>>[];
+    if (stops is List) {
+      for (final s in stops) {
+        if (s is Map) {
+          safeStops.add({
+            'address': s['address']?.toString() ?? '',
+            'status': s['status']?.toString() ?? 'pending',
+          });
+        } else if (s is String) {
+          safeStops.add({'address': s, 'status': 'pending'});
+        }
+      }
+    }
+
+    num? numVal(dynamic v) =>
+        v is num ? v : (v is String ? num.tryParse(v) : null);
+    String strVal(dynamic v, [String fallback = '']) =>
+        v == null ? fallback : v.toString();
+
+    return {
+      'rideId': strVal(ride['rideId']),
+      'rideType': strVal(ride['rideType'], 'daily'),
+      'vehicleClass': strVal(ride['vehicleClass']),
+      'paymentMethod': strVal(ride['paymentMethod'], 'Cash'),
+      'paidByWallet': numVal(ride['paidByWallet']) ?? 0,
+      'driverDistance': numVal(ride['driverDistance']) ?? 0,
+      'driverDuration': numVal(ride['driverDuration']),
+      'rideDistance': numVal(ride['rideDistance']) ?? 0,
+      'rideDuration': numVal(ride['rideDuration']),
+      'pickupTitle': strVal(ride['pickupTitle']),
+      'pickupFullAddress': strVal(ride['pickupFullAddress']),
+      'dropoffTitle': strVal(ride['dropoffTitle']),
+      'dropoffFullAddress': strVal(ride['dropoffFullAddress']),
+      'rideFare': numVal(ride['rideFare']) ?? 0,
+      'tip': numVal(ride['tip']),
+      'stops': safeStops,
+    };
   }
 }

@@ -76,6 +76,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
   // Snooze Logic / Ignored Rides
   final Map<String, DateTime> _ignoredRides = {};
+  final Set<String> _processingRideIds = <String>{};
 
   // Subscriptions and Timers
   StreamSubscription? rideRequestSubscription;
@@ -96,6 +97,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   final VolumeController volumeController = VolumeController.instance;
   double? originalVolume;
   bool _isRentalRinging = false;
+  bool _isStoppingRideSound = false;
 
   // API Key
   late final String apiKey;
@@ -277,8 +279,39 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     await OverlayService.instance.showFloatingBubble();
   }
 
+  bool get shouldShowOverlayBubble {
+    return (driverStatus.value == DriverStatus.online ||
+            driverStatus.value == DriverStatus.goTo) &&
+        _appLifecycleState != AppLifecycleState.resumed;
+  }
+
+  Map<String, dynamic> _buildOverlayPayload(RideRequest request) {
+    return {
+      'rideId': request.rideId,
+      'rideType': request.rideType,
+      'vehicleClass': request.vehicleClass,
+      'paymentMethod': request.paymentMethod,
+      'paidByWallet': request.paidByWallet ?? 0,
+      'driverDistance': request.driverDistance,
+      'driverDuration': request.driverDuration,
+      'rideDistance': request.rideDistance,
+      'rideDuration': request.rideDuration,
+      'pickupTitle': request.pickupTitle,
+      'pickupFullAddress': request.pickupFullAddress,
+      'dropoffTitle': request.dropoffTitle,
+      'dropoffFullAddress': request.dropoffFullAddress,
+      'rideFare': request.rideFare,
+      'tip': request.tip,
+      'stops': request.stops
+          .map((s) => {'address': s.fullAddress, 'status': s.status})
+          .toList(),
+    };
+  }
+
   Future<void> _showOverlayForRide(RideRequest request) async {
-    await OverlayService.instance.showRideRequestOverlay(request.toJson());
+    await OverlayService.instance.showRideRequestOverlay(
+      _buildOverlayPayload(request),
+    );
   }
 
   @override
@@ -335,6 +368,9 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     // 1. Local Cleanup
     _ignoredRides[rideId] = DateTime.now();
 
+    // Remove from overlay queue immediately
+    await OverlayService.instance.removeRide(rideId);
+
     // Remove from active list
     activeRequests.removeWhere((r) => r.rideId == rideId);
 
@@ -350,12 +386,13 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     if (activeRequests.isEmpty) {
       stopRideRequestSound();
       hasActiveRide.value = false;
-      OverlayService.instance.hideFloatingBubble();
       // If online AND app is backgrounded, show status bubble
       // If app is open (resumed), we don't want the bubble
       if (driverStatus.value == DriverStatus.online &&
           _appLifecycleState != AppLifecycleState.resumed) {
         showStatusBubble();
+      } else {
+        OverlayService.instance.hideFloatingBubble();
       }
     } else {
       // If there are more requests, just ensure sorting is applied
@@ -745,11 +782,16 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         continue;
       }
 
+      // If this ride is already being processed asynchronously, skip duplicate work.
+      if (_processingRideIds.contains(doc.id)) {
+        continue;
+      }
+
       // Check if we recently rejected this ride locally to avoid loop
       if (_ignoredRides.containsKey(doc.id)) {
         final ignoredTime = _ignoredRides[doc.id]!;
-        // Only ignore for 5 seconds to allow for re-dispatch or testing
-        if (DateTime.now().difference(ignoredTime).inSeconds < 5) {
+        // Keep a local cooldown to prevent immediate bounce-back of the same request.
+        if (DateTime.now().difference(ignoredTime).inSeconds < 2) {
           continue;
         } else {
           _ignoredRides.remove(doc.id); // Expired, allow processing again
@@ -758,7 +800,12 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
       debugPrint("Found new assigned ride: ${doc.id}");
       // Manage activeRequests list
-      await _processRideDocument(doc, data!);
+      _processingRideIds.add(doc.id);
+      try {
+        await _processRideDocument(doc, data!);
+      } finally {
+        _processingRideIds.remove(doc.id);
+      }
     }
   }
 
@@ -938,7 +985,15 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
             continue;
           }
 
-          await _processRideDocument(doc, data);
+          if (_processingRideIds.contains(doc.id)) {
+            continue;
+          }
+          _processingRideIds.add(doc.id);
+          try {
+            await _processRideDocument(doc, data);
+          } finally {
+            _processingRideIds.remove(doc.id);
+          }
           // If we processed one, we break (one active request at a time)
           // Unless we want to show a list? Current UI supports single activeRideRequest.
           if (activeRideRequest != null) {
@@ -957,6 +1012,11 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     Map<String, dynamic> data,
   ) async {
     debugPrint("Processing Ride Document: ${doc.id}");
+
+    if (activeRequests.any((r) => r.rideId == doc.id)) {
+      debugPrint("Process Ride: ${doc.id} already active. Skipping.");
+      return;
+    }
 
     if (currentPosition.value == null) {
       debugPrint(
@@ -1112,6 +1172,11 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       status: data['status'] ?? 'searching',
       vehicleClass: data['vehicleClass'] ?? data['vehicleType'] ?? 'Unknown',
     );
+
+    if (activeRequests.any((r) => r.rideId == newRequest.rideId)) {
+      debugPrint("Process Ride: ${newRequest.rideId} duplicate add skipped.");
+      return;
+    }
 
     activeRequests.add(newRequest);
     _applySort();
@@ -1356,7 +1421,9 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       // 1. Play TTS
       try {
         try {
-          await audioPlayer.stop(); // Ensure sound is stopped
+          if (audioPlayer.state == PlayerState.playing) {
+            await audioPlayer.stop(); // Ensure sound is stopped
+          }
         } catch (e) {
           debugPrint("Error stopping audio (TTS loop): $e");
         }
@@ -1401,44 +1468,52 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   }
 
   Future<void> stopRideRequestSound() async {
+    if (_isStoppingRideSound) return;
+    _isStoppingRideSound = true;
     _isRentalRinging = false;
     // Do not check isClosed here, we want to stop sound regardless of controller state
 
     debugPrint("Stopping Audio and Vibration...");
 
-    // 1. Stop Audio
     try {
-      await audioPlayer.stop();
-      await audioPlayer.setReleaseMode(
-        ReleaseMode.release,
-      ); // Reset release mode
-    } catch (e) {
-      debugPrint("Error stopping audio (stopRideRequestSound): $e");
-    }
-
-    // 2. Stop TTS
-    try {
-      await flutterTts.stop();
-    } catch (e) {
-      debugPrint("Error stopping TTS: $e");
-    }
-
-    // 3. Stop Vibration (Aggressive)
-    try {
-      // Just call cancel directly, don't wait for 'hasVibrator' check which can be slow or fail
-      Vibration.cancel();
-    } catch (e) {
-      debugPrint("Error stopping vibration: $e");
-    }
-
-    // 4. Restore Volume
-    try {
-      volumeController.showSystemUI = false;
-      if (originalVolume != null) {
-        // volumeController.setVolume(originalVolume!).catchError((_) {});
+      // 1. Stop Audio
+      try {
+        if (audioPlayer.state == PlayerState.playing) {
+          await audioPlayer.stop();
+        }
+        await audioPlayer.setReleaseMode(
+          ReleaseMode.release,
+        ); // Reset release mode
+      } catch (e) {
+        debugPrint("Error stopping audio (stopRideRequestSound): $e");
       }
-    } catch (e) {
-      debugPrint("Error restoring volume: $e");
+
+      // 2. Stop TTS
+      try {
+        await flutterTts.stop();
+      } catch (e) {
+        debugPrint("Error stopping TTS: $e");
+      }
+
+      // 3. Stop Vibration (Aggressive)
+      try {
+        // Just call cancel directly, don't wait for 'hasVibrator' check which can be slow or fail
+        Vibration.cancel();
+      } catch (e) {
+        debugPrint("Error stopping vibration: $e");
+      }
+
+      // 4. Restore Volume
+      try {
+        volumeController.showSystemUI = false;
+        if (originalVolume != null) {
+          // volumeController.setVolume(originalVolume!).catchError((_) {});
+        }
+      } catch (e) {
+        debugPrint("Error restoring volume: $e");
+      }
+    } finally {
+      _isStoppingRideSound = false;
     }
   }
 
@@ -1586,7 +1661,8 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     rideTimers[rideId]?.cancel();
 
     final isRental = activeRideRequest?.rideType == 'rental';
-    final timeoutDuration = isRental ? 40 : 30;
+    final timeoutDuration =
+        5; // Reduced from 30/40 to 5 seconds per user request
 
     debugPrint("Starting Ride Timeout for $rideId: $timeoutDuration seconds");
 
