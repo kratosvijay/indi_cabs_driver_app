@@ -403,6 +403,7 @@ class _DriverHomePageState extends State<DriverHomePage>
                                         context,
                                       ).textTheme.bodyLarge?.color,
                                     ),
+                                    textScaler: const TextScaler.linear(1.0),
                                   ),
                                 ),
                                 Expanded(
@@ -492,6 +493,7 @@ class _DriverHomePageState extends State<DriverHomePage>
                   color: isSelected ? selectedColor : unselectedColor,
                 ),
                 textAlign: TextAlign.center,
+                textScaler: const TextScaler.linear(1.0),
               ),
             ],
           ),

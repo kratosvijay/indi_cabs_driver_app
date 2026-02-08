@@ -493,8 +493,6 @@ class _RideRequestCardState extends State<RideRequestCard> {
   }
 
   void _startTimer() {
-    // 30 seconds for daily, 40 for rental
-    final isRental = widget.rideRequest.rideType == 'rental';
     // 5 seconds for debugging
     final totalDurationMs = 5000;
     final tickMs = 100; // Update every 100ms for smoother performance

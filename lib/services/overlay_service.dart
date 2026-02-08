@@ -130,8 +130,8 @@ class OverlayService {
     }
 
     await FlutterOverlayWindow.showOverlay(
-      height: 88,
-      width: 88,
+      height: 80,
+      width: 80,
       enableDrag: true,
       alignment: OverlayAlignment.centerRight,
       flag: OverlayFlag.defaultFlag,
@@ -142,8 +142,8 @@ class OverlayService {
     _requestShowing = false;
     await FlutterOverlayWindow.shareData({
       "type": "SHOW_BUBBLE",
-      "overlayWidth": 88,
-      "overlayHeight": 88,
+      "overlayWidth": 80,
+      "overlayHeight": 80,
     });
   }
 

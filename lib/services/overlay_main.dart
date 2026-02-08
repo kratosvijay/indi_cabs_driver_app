@@ -131,7 +131,7 @@ class _OverlayRootState extends State<OverlayRoot> {
 
   Future<void> _resizeForBubble() async {
     try {
-      await FlutterOverlayWindow.resizeOverlay(88, 88, false);
+      await FlutterOverlayWindow.resizeOverlay(80, 80, true);
     } catch (e) {
       debugPrint("Resize bubble failed in overlay isolate: $e");
     }
