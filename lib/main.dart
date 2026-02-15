@@ -5,13 +5,14 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:flutter_refresh_rate_control/flutter_refresh_rate_control.dart';
 
 import 'package:get/get.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:project_taxi_driver_app/controllers/auth_controller.dart';
 import 'package:project_taxi_driver_app/screens/splash_screen.dart';
 
-import 'package:flutter_refresh_rate_control/flutter_refresh_rate_control.dart';
+// import 'package:flutter_refresh_rate_control/flutter_refresh_rate_control.dart';
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
 import 'package:project_taxi_driver_app/utils/app_translations.dart';
 
