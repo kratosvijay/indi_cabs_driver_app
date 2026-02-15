@@ -40,7 +40,7 @@ dependencies:
   audioplayers:
   volume_controller: 
   vibration:
-  url_launcher: 
+  url_launcher: ^6.3.2 
   firebase_app_check: ^0.4.1+3
   get: 
 
@@ -61,6 +61,7 @@ dependencies:
   path_provider: ^2.1.5
   permission_handler: ^12.0.1
   flutter_overlay_window: ^0.5.0
+  package_info_plus: ^9.0.0
   
 
 dev_dependencies:

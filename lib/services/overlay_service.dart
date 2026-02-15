@@ -117,34 +117,62 @@ class OverlayService {
   Future<void> showFloatingBubble() async {
     _cancelStopService();
 
+    // If overlay is already active, just resize and update it
+    if (await _isOverlayActive()) {
+      log("OverlayService: Overlay active. Switching to Bubble Mode.");
+
+      // 1. Send Data First (so UI knows to switch)
+      await FlutterOverlayWindow.shareData({
+        "type": "SHOW_BUBBLE",
+        "overlayWidth": 80,
+        "overlayHeight": 80,
+      });
+
+      // 2. Resize
+      await _resizeOverlay(80, 80);
+
+      _overlayVisible = true;
+      _requestShowing = false;
+      return;
+    }
+
+    // Cold Start
+    // DELAY FIX: Wait for previous overlay close/service stop interactions to settle
+    await Future.delayed(const Duration(milliseconds: 500));
+
+    // Permission check
     if (!await ensurePermission()) return;
 
+    // Ensure service is running (or restart it)
+    await _initForegroundTask();
     await _ensureForegroundService(
       title: "Driver Online",
       text: "Waiting for rides",
     );
 
-    // Force close to apply new drag settings
-    if (await _isOverlayActive()) {
-      await FlutterOverlayWindow.closeOverlay();
+    try {
+      await FlutterOverlayWindow.showOverlay(
+        height: 80,
+        width: 80,
+        enableDrag: true,
+        alignment: OverlayAlignment.centerRight,
+        flag: OverlayFlag.defaultFlag,
+      );
+
+      log("OverlayService: Bubble overlay created (Cold Start).");
+      _overlayVisible = true;
+      _requestShowing = false;
+
+      await Future.delayed(const Duration(milliseconds: 100));
+      await FlutterOverlayWindow.shareData({
+        "type": "SHOW_BUBBLE",
+        "overlayWidth": 80,
+        "overlayHeight": 80,
+      });
+    } catch (e) {
+      debugPrint("CRITICAL: Failed to show bubble overlay: $e");
+      _overlayVisible = false;
     }
-
-    await FlutterOverlayWindow.showOverlay(
-      height: 80,
-      width: 80,
-      enableDrag: true,
-      alignment: OverlayAlignment.centerRight,
-      flag: OverlayFlag.defaultFlag,
-    );
-    log("OverlayService: Bubble overlay created.");
-
-    _overlayVisible = true;
-    _requestShowing = false;
-    await FlutterOverlayWindow.shareData({
-      "type": "SHOW_BUBBLE",
-      "overlayWidth": 80,
-      "overlayHeight": 80,
-    });
   }
 
   /* ---------------- Incoming Request ---------------- */
@@ -186,32 +214,54 @@ class OverlayService {
     }
 
     _requestShowing = true;
+    final requestSize = _requestOverlaySizeDp();
 
+    // If overlay is already active, just resize and update it
+    if (await _isOverlayActive()) {
+      log("OverlayService: Overlay active. Switching to Request Mode.");
+
+      // 1. Push Data
+      await FlutterOverlayWindow.shareData({
+        "type": "SHOW_REQUEST",
+        "ride": _rideQueue.first,
+        "overlayWidth": requestSize.width.round(),
+        "overlayHeight": requestSize.height.round(),
+      });
+
+      // 2. Resize
+      await _resizeOverlay(
+        requestSize.width.round(),
+        requestSize.height.round(),
+      );
+
+      _overlayVisible = true;
+      return;
+    }
+
+    // Cold Start
     await _ensureForegroundService(
       title: "New Ride Request",
       text: "Tap to view details",
     );
     await Future.delayed(const Duration(milliseconds: 150));
 
-    final requestSize = _requestOverlaySizeDp();
+    try {
+      await FlutterOverlayWindow.showOverlay(
+        height: requestSize.height.round(),
+        width: requestSize.width.round(),
+        enableDrag: false,
+        alignment: OverlayAlignment.center,
+        flag: OverlayFlag.defaultFlag,
+      );
+      log("OverlayService: Request overlay created (Cold Start).");
+      _overlayVisible = true;
+      await Future.delayed(const Duration(milliseconds: 120));
 
-    // Force close to apply new drag settings (disable drag for request)
-    if (await _isOverlayActive()) {
-      await FlutterOverlayWindow.closeOverlay();
+      await _pushCurrentRequest();
+    } catch (e) {
+      debugPrint("CRITICAL: Failed to show request overlay: $e");
+      _overlayVisible = false;
     }
-
-    await FlutterOverlayWindow.showOverlay(
-      height: requestSize.height.round(),
-      width: requestSize.width.round(),
-      enableDrag: false,
-      alignment: OverlayAlignment.center,
-      flag: OverlayFlag.defaultFlag,
-    );
-    log("OverlayService: Request overlay created.");
-    _overlayVisible = true;
-    await Future.delayed(const Duration(milliseconds: 120));
-
-    await _pushCurrentRequest();
   }
 
   Future<void> _pushCurrentRequest() async {
@@ -310,17 +360,46 @@ class OverlayService {
     }
   }
 
+  Future<void> _initForegroundTask() async {
+    FlutterForegroundTask.init(
+      androidNotificationOptions: AndroidNotificationOptions(
+        channelId: 'indi_cabs_overlay_silent_v2',
+        channelName: 'Indi Cabs Overlay',
+        channelDescription: 'Floating bubble service',
+        channelImportance: NotificationChannelImportance.LOW, // Silent
+        priority: NotificationPriority.LOW,
+      ),
+      iosNotificationOptions: const IOSNotificationOptions(
+        showNotification: true,
+        playSound: false,
+      ),
+      foregroundTaskOptions: ForegroundTaskOptions(
+        autoRunOnBoot: false,
+        allowWakeLock: true,
+        allowWifiLock: true,
+        eventAction: ForegroundTaskEventAction.repeat(5000),
+      ),
+    );
+  }
+
   Future<void> _ensureForegroundService({
     required String title,
     required String text,
   }) async {
     try {
-      await FlutterForegroundTask.startService(
-        notificationTitle: title,
-        notificationText: text,
-      );
+      if (await FlutterForegroundTask.isRunningService) {
+        await FlutterForegroundTask.updateService(
+          notificationTitle: title,
+          notificationText: text,
+        );
+      } else {
+        await FlutterForegroundTask.startService(
+          notificationTitle: title,
+          notificationText: text,
+        );
+      }
     } catch (e) {
-      debugPrint("OverlayService: Foreground service start skipped: $e");
+      debugPrint("OverlayService: Foreground service start/update failed: $e");
     }
   }
 
@@ -380,6 +459,9 @@ class OverlayService {
       'dropoffFullAddress': strVal(ride['dropoffFullAddress']),
       'rideFare': numVal(ride['rideFare']) ?? 0,
       'tip': numVal(ride['tip']),
+      'durationHours': numVal(ride['durationHours']),
+      'kmLimit': numVal(ride['kmLimit']),
+      'packageName': strVal(ride['packageName']),
       'stops': safeStops,
     };
   }

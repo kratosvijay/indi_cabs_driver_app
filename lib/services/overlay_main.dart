@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
+import 'package:project_taxi_driver_app/widgets/rental_overlay_card.dart';
 
 @pragma("vm:entry-point")
 void overlayMain() {
@@ -223,8 +224,8 @@ class _OverlayRootState extends State<OverlayRoot> {
           boxShadow: [
             BoxShadow(
               color: Colors.black.withValues(alpha: 0.3),
-              blurRadius: 10,
-              spreadRadius: 2,
+              // blurRadius: 1,
+              // spreadRadius: 0,
             ),
           ],
         ),
@@ -266,7 +267,13 @@ class _OverlayRootState extends State<OverlayRoot> {
                   maxWidth: math.min(560, constraints.maxWidth),
                   maxHeight: maxCardHeight,
                 ),
-                child: SingleChildScrollView(child: _card()),
+                child: _ride?['rideType'] == 'rental'
+                    ? RentalOverlayCard(
+                        ride: _ride!,
+                        onAccept: _accept,
+                        onReject: _reject,
+                      )
+                    : SingleChildScrollView(child: _card()),
               ),
             ),
           ),

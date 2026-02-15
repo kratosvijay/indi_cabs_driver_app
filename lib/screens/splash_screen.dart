@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:project_taxi_driver_app/controllers/splash_controller.dart';
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -41,7 +42,15 @@ class _SplashScreenState extends State<SplashScreen> {
             const SizedBox(height: 24),
             CircularProgressIndicator(color: AppColors.lightEnd),
             const SizedBox(height: 16),
-            // Removed Text widget to prevent 'incorrect configuration id' crash on hot restart
+            Obx(
+              () => Text(
+                Get.find<SplashController>().statusText.value,
+                style: GoogleFonts.notoSans(
+                  fontSize: 14,
+                  color: isDark ? Colors.white70 : Colors.black54,
+                ),
+              ),
+            ),
           ],
         ),
       ),

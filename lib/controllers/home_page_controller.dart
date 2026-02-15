@@ -302,6 +302,9 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       'dropoffFullAddress': request.dropoffFullAddress,
       'rideFare': request.rideFare,
       'tip': request.tip,
+      'durationHours': request.durationHours, // Added for Rental
+      'kmLimit': request.kmLimit, // Added for Rental
+      'packageName': request.packageName, // Added for Rental
       'stops': request.stops
           .map((s) => {'address': s.fullAddress, 'status': s.status})
           .toList(),
@@ -1413,7 +1416,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   }
 
   Future<void> _speakRentalLoop() async {
-    await Future.delayed(const Duration(milliseconds: 500));
+    await Future.delayed(const Duration(milliseconds: 100));
 
     while (_isRentalRinging) {
       if (isClosed) break;
@@ -1437,7 +1440,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
         // Manual delay to ensure TTS finishes before sound starts
         // "Acting Driver Request" is slightly longer, so 2s is good safe buffer
-        await Future.delayed(const Duration(seconds: 2));
+        await Future.delayed(const Duration(milliseconds: 500));
       } catch (e) {
         debugPrint("TTS Error: $e");
       }
