@@ -57,6 +57,7 @@ class RideRequest {
   final String vehicleClass;
   final String endRidePin;
   final DateTime? startedAt;
+  final DateTime? createdAt; // Added for distributed timer logic
   final double? actualDistance;
   final double? actualDuration;
 
@@ -97,6 +98,7 @@ class RideRequest {
     required this.vehicleClass,
     this.endRidePin = '',
     this.startedAt,
+    this.createdAt,
     this.actualDistance,
     this.actualDuration,
     this.waitingCharge = 0.0,
@@ -135,6 +137,7 @@ class RideRequest {
     String? vehicleClass,
     String? endRidePin,
     DateTime? startedAt,
+    DateTime? createdAt,
     double? actualDistance,
     double? actualDuration,
     double? waitingCharge,
@@ -172,6 +175,7 @@ class RideRequest {
       vehicleClass: vehicleClass ?? this.vehicleClass,
       endRidePin: endRidePin ?? this.endRidePin,
       startedAt: startedAt ?? this.startedAt,
+      createdAt: createdAt ?? this.createdAt,
       actualDistance: actualDistance ?? this.actualDistance,
       actualDuration: actualDuration ?? this.actualDuration,
       waitingCharge: waitingCharge ?? this.waitingCharge,
@@ -217,6 +221,7 @@ class RideRequest {
       'vehicleClass': vehicleClass,
       'endRidePin': endRidePin,
       'startedAt': startedAt != null ? Timestamp.fromDate(startedAt!) : null,
+      'createdAt': createdAt != null ? Timestamp.fromDate(createdAt!) : null,
       'actualDistance': actualDistance,
       'actualDuration': actualDuration,
       'waitingCharge': waitingCharge,
@@ -225,7 +230,7 @@ class RideRequest {
   }
 
   factory RideRequest.fromJson(Map<String, dynamic> json) {
-    // Parse stops - check both 'stops' (Firestore) and 'intermediateStops' (legacy)
+    // Parse stops - check both 'stops' (intermediateStops) and 'intermediateStops' (legacy)
     var rawStops = json['stops'] ?? json['intermediateStops'];
     List<RideStop> parsedStops = [];
     if (rawStops != null && rawStops is List) {
@@ -344,6 +349,11 @@ class RideRequest {
       endRidePin: json['endRidePin'] ?? '',
       startedAt: (json['startedAt'] != null)
           ? (json['startedAt'] as Timestamp).toDate()
+          : null,
+      createdAt: (json['createdAt'] != null)
+          ? (json['createdAt'] is Timestamp
+                ? (json['createdAt'] as Timestamp).toDate()
+                : null)
           : null,
       actualDistance: (json['actualDistance'] as num?)?.toDouble(),
       actualDuration: (json['actualDuration'] as num?)?.toDouble(),
@@ -493,21 +503,43 @@ class _RideRequestCardState extends State<RideRequestCard> {
   }
 
   void _startTimer() {
-    // 5 seconds for debugging
-    final totalDurationMs = 5000;
-    final tickMs = 100; // Update every 100ms for smoother performance
-    final decrement = tickMs / totalDurationMs;
+    int totalSeconds = 20; // 20 seconds global TTL
+    int remainingMs = totalSeconds * 1000;
 
-    _timer = Timer.periodic(Duration(milliseconds: tickMs), (timer) {
+    if (widget.rideRequest.createdAt != null) {
+      final elapsed = DateTime.now().difference(widget.rideRequest.createdAt!);
+      remainingMs = (totalSeconds * 1000) - elapsed.inMilliseconds;
+    }
+
+    if (remainingMs <= 0) {
+      // Already expired
+      remainingMs = 0;
+      _progressValue = 0.0;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        widget.onReject();
+      });
+      return;
+    }
+
+    // Set initial progress
+    _progressValue = remainingMs / (totalSeconds * 1000);
+
+    // Timer tick calculation
+    const tickMs = 100;
+    final decrement = tickMs / (totalSeconds * 1000);
+
+    _timer = Timer.periodic(const Duration(milliseconds: tickMs), (timer) {
       if (!mounted) {
         timer.cancel();
         return;
       }
+
       setState(() {
         _progressValue -= decrement;
       });
+
       if (_progressValue <= 0) {
-        timer.cancel(); // Stop timer
+        timer.cancel();
         widget.onReject();
       }
     });

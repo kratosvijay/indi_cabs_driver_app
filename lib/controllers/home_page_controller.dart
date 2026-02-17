@@ -89,6 +89,8 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   StreamSubscription? overlaySubscription; // Added this line
   Timer? locationUpdateTimer;
   final Map<String, Timer> rideTimers = {};
+  final Map<String, StreamSubscription> _activeRideSubscriptions =
+      {}; // Track individual ride listeners
 
   // Audio
   // Static to ensure singleton control over audio across controller lifecycles
@@ -148,16 +150,13 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
     // Safe API Key Initialization
     try {
-      // Check if we can assign to it (late final cannot be checked easily, but we can rely on try-catch or just remove final if needed.
-      // Actually, if we just fix the stream error, this shouldn't recur.
-      // But to be safe, let's wrap line 110 too? No, let's just properly handle the stream first.
-      // If onInit runs once, apiKey is fine.
+      // Check API Key
     } catch (e) {
       // ignore
     }
 
-    // Overlay Listener is handled by OverlayService to avoid stream conflict.
-    // overlaySubscription = FlutterOverlayWindow.overlayListener.listen((data) { ... });
+    // Configure Audio Context for Background Playback
+    _configureAudioSession();
 
     // Listen for Polygon Updates from QueueService
     ever(QueueService().airportPolygon, (List<LatLng> points) {
@@ -302,6 +301,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       'dropoffFullAddress': request.dropoffFullAddress,
       'rideFare': request.rideFare,
       'tip': request.tip,
+      'createdAt': request.createdAt?.millisecondsSinceEpoch,
       'durationHours': request.durationHours, // Added for Rental
       'kmLimit': request.kmLimit, // Added for Rental
       'packageName': request.packageName, // Added for Rental
@@ -333,6 +333,11 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     WakelockPlus.disable();
     WidgetsBinding.instance.removeObserver(this);
     _stopDemandMonitoring();
+    // Cancel all active ride subscriptions
+    for (var sub in _activeRideSubscriptions.values) {
+      sub.cancel();
+    }
+    _activeRideSubscriptions.clear();
     super.onClose();
   }
 
@@ -353,26 +358,90 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   // Multi-Ride Support Methods
   // ------------------------------------------------------------------
 
-  Future<void> passRide(String rideId) async {
-    if (_isAcceptingRide) return; // Don't pass if we are accepting
+  // ------------------------------------------------------------------
+  // Individual Ride Status Listener
+  // ------------------------------------------------------------------
 
-    debugPrint("Passing ride: $rideId");
+  void _listenToRideStatus(String rideId, String rideType) {
+    if (_activeRideSubscriptions.containsKey(rideId)) return;
 
-    // Get the ride object before removing it to check type/details
-    final ride = activeRequests.firstWhereOrNull((r) => r.rideId == rideId);
-    final isRental = ride?.rideType == 'rental';
-    final collection = isRental ? 'rental_requests' : 'ride_requests';
+    final collection = (rideType == 'rental')
+        ? 'rental_requests'
+        : 'ride_requests';
+    debugPrint("Starting status listener for $rideId in $collection");
 
-    // TRIGGER SERVER SIDE REJECTION
-    // We do this un-awaited or awaited? Better awaited to ensure data consistency,
-    // but for UI speed we might want to fire-and-forget or update UI first.
-    // Let's update UI first, then fire network call.
+    _activeRideSubscriptions[rideId] = FirebaseFirestore.instance
+        .collection(collection)
+        .doc(rideId)
+        .snapshots()
+        .listen(
+          (snapshot) {
+            if (!snapshot.exists) {
+              // Doc deleted? Treat as cancelled or just remove
+              debugPrint("Ride $rideId document deleted. Cleaning up.");
+              _clearLocalRide(rideId);
+              return;
+            }
 
-    // 1. Local Cleanup
+            final data = snapshot.data();
+            final status = data?['status'];
+            debugPrint("Ride $rideId status update: $status");
+
+            // Ignore updates if we are in the middle of accepting THIS ride
+            // (We rely on onRideAccepted info, but just in case)
+            if (status == 'accepted' && data?['driverId'] == user.uid) {
+              return;
+            }
+
+            if (status != 'searching') {
+              debugPrint(
+                "Ride $rideId is no longer searching (Status: $status). Removing.",
+              );
+
+              // Specific Messages
+              if (status == 'cancelled' || status == 'canceled') {
+                if (Get.isSnackbarOpen) Get.closeCurrentSnackbar();
+                Get.snackbar(
+                  "Ride Cancelled",
+                  "User cancelled the ride",
+                  backgroundColor: Colors.orange,
+                  colorText: Colors.white,
+                  duration: const Duration(seconds: 4),
+                  snackPosition: SnackPosition.TOP,
+                );
+              } else if (status == 'accepted') {
+                // Accepted by someone else (checked above that it's not us)
+                if (Get.isSnackbarOpen) Get.closeCurrentSnackbar();
+                Get.snackbar(
+                  "Ride Missed",
+                  "Accepted by another driver",
+                  backgroundColor: Colors.redAccent,
+                  colorText: Colors.white,
+                  duration: const Duration(seconds: 4),
+                );
+              }
+
+              _clearLocalRide(rideId);
+            }
+          },
+          onError: (e) {
+            debugPrint("Error listening to ride $rideId status: $e");
+          },
+        );
+  }
+
+  void _clearLocalRide(String rideId) {
+    debugPrint("Clearing local ride: $rideId");
+
+    // 1. Cancel Subscription
+    _activeRideSubscriptions[rideId]?.cancel();
+    _activeRideSubscriptions.remove(rideId);
+
+    // 2. Local Cleanup
     _ignoredRides[rideId] = DateTime.now();
 
     // Remove from overlay queue immediately
-    await OverlayService.instance.removeRide(rideId);
+    OverlayService.instance.removeRide(rideId);
 
     // Remove from active list
     activeRequests.removeWhere((r) => r.rideId == rideId);
@@ -385,12 +454,30 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     activeRequests.refresh();
     update();
 
+    // Check if we need to close Rental Screen
+    // logic: if top active request matches rideId (before removal) - effectively handled by removeWhere
+    // But if we are ON the screen, we might need to pop.
+    // However, startRideTimeout handles the pop for rental if it expires.
+    // Here we should probably check if we are on the rental screen for THIS ride.
+    // A simple way is to check if activeRequests is empty or if the top one changed.
+
+    // If we were showing a rental screen for this ride, we should probably close it.
+    // But safely. For now, rely on strict "activeRequests" binding in UI or `Obx`.
+    // Actually, `RentalRequestScreen` might effectively be checking `activeRideRequest`.
+    // If `activeRideRequest` becomes null, we might want to pop.
+    if (Get.currentRoute == '/RentalRequestScreen') {
+      // We can't easily check args here without Get.arguments.
+      // Safe bet: just close it if no active rental request remains.
+      if (activeRequests.isEmpty || activeRequests.first.rideType != 'rental') {
+        Get.back(); // close rental screen
+      }
+    }
+
     // Stop sound if no requests left
     if (activeRequests.isEmpty) {
       stopRideRequestSound();
       hasActiveRide.value = false;
-      // If online AND app is backgrounded, show status bubble
-      // If app is open (resumed), we don't want the bubble
+
       if (driverStatus.value == DriverStatus.online &&
           _appLifecycleState != AppLifecycleState.resumed) {
         showStatusBubble();
@@ -398,7 +485,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         OverlayService.instance.hideFloatingBubble();
       }
     } else {
-      // If there are more requests, just ensure sorting is applied
+      // If there are more requests, ensure sorting is applied
       _applySort();
       // Update overlay with next ride if backgrounded
       if (activeRequests.isNotEmpty &&
@@ -406,14 +493,35 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         _showOverlayForRide(activeRequests.first);
       }
     }
+  }
+
+  Future<void> passRide(String rideId) async {
+    if (_isAcceptingRide) return; // Don't pass if we are accepting
+
+    debugPrint("Passing ride: $rideId");
+
+    final ride = activeRequests.firstWhereOrNull((r) => r.rideId == rideId);
+    if (ride == null) {
+      // Already removed?
+      _clearLocalRide(rideId);
+      return;
+    }
+
+    final isRental = ride.rideType == 'rental';
+    final collection = isRental ? 'rental_requests' : 'ride_requests';
+
+    // 1. Local Cleanup
+    _clearLocalRide(rideId);
 
     // 2. Server Side Update
     try {
-      await FirebaseFirestore.instance.collection(collection).doc(rideId).update({
-        'driverId': '', // Unassign me
-        'rejectedBy': FieldValue.arrayUnion([user.uid]),
-        // 'status': 'searching', // Should already be searching, but safe to enforcing
-      });
+      await FirebaseFirestore.instance
+          .collection(collection)
+          .doc(rideId)
+          .update({
+            'driverId': '', // Unassign me
+            'rejectedBy': FieldValue.arrayUnion([user.uid]),
+          });
       debugPrint("Server rejection successful for $rideId");
     } catch (e) {
       debugPrint("Error rejecting ride on server: $e");
@@ -1174,6 +1282,11 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       paymentMethod: data['paymentMethod'] ?? 'Cash',
       status: data['status'] ?? 'searching',
       vehicleClass: data['vehicleClass'] ?? data['vehicleType'] ?? 'Unknown',
+      createdAt: (data['createdAt'] != null)
+          ? (data['createdAt'] is Timestamp
+                ? (data['createdAt'] as Timestamp).toDate()
+                : null)
+          : null,
     );
 
     if (activeRequests.any((r) => r.rideId == newRequest.rideId)) {
@@ -1182,6 +1295,10 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     }
 
     activeRequests.add(newRequest);
+    _listenToRideStatus(
+      newRequest.rideId,
+      newRequest.rideType,
+    ); // Start monitoring
     _applySort();
     hasActiveRide.value = true;
 
@@ -1380,18 +1497,57 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         }, onError: (error) => debugPrint("Rental Earnings Error: $error"));
   }
 
+  Future<void> _configureAudioSession() async {
+    try {
+      await audioPlayer.setAudioContext(
+        AudioContext(
+          iOS: AudioContextIOS(
+            category: AVAudioSessionCategory.playback,
+            options: {
+              AVAudioSessionOptions.defaultToSpeaker,
+              AVAudioSessionOptions.mixWithOthers,
+            },
+          ),
+          android: AudioContextAndroid(
+            isSpeakerphoneOn: true,
+            stayAwake: true,
+            usageType: AndroidUsageType.alarm,
+            contentType: AndroidContentType.music,
+            audioFocus: AndroidAudioFocus.gainTransientMayDuck,
+          ),
+        ),
+      );
+      debugPrint("Audio Session Configured for Background Playback");
+    } catch (e) {
+      debugPrint("Error configuring audio session: $e");
+    }
+  }
+
   Future<void> playRideRequestSound() async {
     if (isClosed || _isAcceptingRide) {
       return; // Guard against playing during acceptance
     }
     try {
       debugPrint("Attempting to play sound...");
-      originalVolume = await volumeController.getVolume();
-      volumeController.showSystemUI = false;
-      await volumeController.setVolume(1.0);
+
+      // Ensure Audio Context is active
+      await _configureAudioSession();
+
+      try {
+        originalVolume = await volumeController.getVolume();
+        volumeController.showSystemUI = false;
+        await volumeController.setVolume(1.0);
+      } catch (e) {
+        debugPrint("Error setting volume: $e");
+      }
+
+      // Reset player if needed
+      await audioPlayer.stop(); // Safe to call even if stopped
+
       await audioPlayer.setReleaseMode(ReleaseMode.loop);
       await audioPlayer.play(AssetSource('sounds/ride_request_alert.mp3'));
       debugPrint("Sound playing successfully.");
+
       if (await Vibration.hasVibrator() == true) {
         Vibration.vibrate(pattern: [500, 1000, 500, 2000], repeat: 0);
       }
@@ -1481,9 +1637,8 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     try {
       // 1. Stop Audio
       try {
-        if (audioPlayer.state == PlayerState.playing) {
-          await audioPlayer.stop();
-        }
+        await audioPlayer
+            .stop(); // Just call stop, it handles state internally or throws specific errors we can catch
         await audioPlayer.setReleaseMode(
           ReleaseMode.release,
         ); // Reset release mode
@@ -1531,6 +1686,12 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       timer.cancel();
     }
     rideTimers.clear();
+
+    // Cancel all active ride subscriptions
+    for (var sub in _activeRideSubscriptions.values) {
+      sub.cancel();
+    }
+    _activeRideSubscriptions.clear();
 
     // --- Subscription Auto-Activation Check ---
     try {
@@ -1619,7 +1780,17 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
       Get.offAll(() => RideAcceptedScreen(rideRequest: request));
     } catch (e) {
-      Get.snackbar("Error", "Could not accept ride: $e");
+      if (e.toString().contains("Ride is no longer available")) {
+        Get.snackbar(
+          "Ride Missed",
+          "Ride accepted by another driver",
+          backgroundColor: Colors.redAccent,
+          colorText: Colors.white,
+          duration: const Duration(seconds: 4),
+        );
+      } else {
+        Get.snackbar("Error", "Could not accept ride: $e");
+      }
       debugPrint("Accept Error: $e");
       _isAcceptingRide = false;
       isRideAcceptanceInProgress.value = false;
@@ -1664,8 +1835,13 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     rideTimers[rideId]?.cancel();
 
     final isRental = activeRideRequest?.rideType == 'rental';
-    final timeoutDuration =
-        5; // Reduced from 30/40 to 5 seconds per user request
+
+    int timeoutDuration = 20; // Default max duration
+    if (activeRideRequest?.createdAt != null) {
+      final elapsed = DateTime.now().difference(activeRideRequest!.createdAt!);
+      final remaining = 20 - elapsed.inSeconds;
+      timeoutDuration = remaining > 0 ? remaining : 0;
+    }
 
     debugPrint("Starting Ride Timeout for $rideId: $timeoutDuration seconds");
 

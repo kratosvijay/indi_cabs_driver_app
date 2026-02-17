@@ -142,18 +142,40 @@ class _OverlayRootState extends State<OverlayRoot> {
 
   void _startTimer() {
     _timer?.cancel();
-    _progress = 1;
 
-    const totalSeconds = 5;
+    int totalSeconds = 20;
+    int remainingMs = totalSeconds * 1000;
+
+    final createdAtMs = _ride?['createdAt'] as int?;
+    if (createdAtMs != null) {
+      final createdAt = DateTime.fromMillisecondsSinceEpoch(createdAtMs);
+      final elapsed = DateTime.now().difference(createdAt);
+      remainingMs = (totalSeconds * 1000) - elapsed.inMilliseconds;
+    }
+
+    if (remainingMs <= 0) {
+      _progress = 0;
+      _reject();
+      return;
+    }
+
+    _progress = remainingMs / (totalSeconds * 1000);
+
     const tickMs = 100;
-    const decrement = tickMs / (totalSeconds * 1000);
+    final decrement = tickMs / (totalSeconds * 1000); // Decrement per tick
+
     _timer = Timer.periodic(const Duration(milliseconds: tickMs), (t) {
       if (!mounted) {
         t.cancel();
         return;
       }
-      setState(() => _progress = (_progress - decrement).clamp(0.0, 1.0));
-      if (_progress <= 0) _reject();
+      setState(() {
+        _progress = (_progress - decrement).clamp(0.0, 1.0);
+      });
+      if (_progress <= 0) {
+        t.cancel();
+        _reject();
+      }
     });
   }
 
@@ -267,13 +289,36 @@ class _OverlayRootState extends State<OverlayRoot> {
                   maxWidth: math.min(560, constraints.maxWidth),
                   maxHeight: maxCardHeight,
                 ),
-                child: _ride?['rideType'] == 'rental'
-                    ? RentalOverlayCard(
-                        ride: _ride!,
-                        onAccept: _accept,
-                        onReject: _reject,
-                      )
-                    : SingleChildScrollView(child: _card()),
+                child: Stack(
+                  children: [
+                    _ride?['rideType'] == 'rental'
+                        ? RentalOverlayCard(
+                            ride: _ride!,
+                            onAccept: _accept,
+                            onReject: _reject,
+                          )
+                        : SingleChildScrollView(child: _card()),
+                    Positioned(
+                      bottom: 0,
+                      left: 0,
+                      right: 0,
+                      child: ClipRRect(
+                        borderRadius: const BorderRadius.only(
+                          bottomLeft: Radius.circular(20),
+                          bottomRight: Radius.circular(20),
+                        ),
+                        child: LinearProgressIndicator(
+                          value: _progress,
+                          backgroundColor: Colors.white.withValues(alpha: 0.1),
+                          valueColor: const AlwaysStoppedAnimation<Color>(
+                            Colors.white,
+                          ),
+                          minHeight: 4,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -432,210 +477,185 @@ class _OverlayRootState extends State<OverlayRoot> {
           ),
         ],
       ),
-      child: Stack(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 20, 16, 24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // 1. Header
-                Center(
-                  child: Text(
-                    headerText,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white.withValues(alpha: 0.9),
-                    ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 20, 16, 24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 1. Header
+            Center(
+              child: Text(
+                headerText,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white.withValues(alpha: 0.9),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            // 2. Pickup
+            _buildDetailRow(
+              Icons.location_on,
+              pickupTitle,
+              pickupAddress,
+              isRental
+                  ? "Rental"
+                  : "$driverDist km Away${driverDur != null ? " (~$driverDur mins)" : ""}",
+            ),
+
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 4, horizontal: 12),
+              child: Icon(Icons.more_vert, color: Colors.white54, size: 16),
+            ),
+
+            // 3. Dropoff
+            _buildDetailRow(
+              Icons.flag,
+              dropoffTitle,
+              dropoffAddress,
+              isRental
+                  ? ""
+                  : "$rideDist km Ride${rideDur != null ? " (~$rideDur mins)" : ""}",
+            ),
+
+            // 4. Stops (if any)
+            if (hasStops) ...[
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.3),
                   ),
                 ),
-                const SizedBox(height: 12),
-
-                // 2. Pickup
-                _buildDetailRow(
-                  Icons.location_on,
-                  pickupTitle,
-                  pickupAddress,
-                  isRental
-                      ? "Rental"
-                      : "$driverDist km Away${driverDur != null ? " (~$driverDur mins)" : ""}",
-                ),
-
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 4, horizontal: 12),
-                  child: Icon(Icons.more_vert, color: Colors.white54, size: 16),
-                ),
-
-                // 3. Dropoff
-                _buildDetailRow(
-                  Icons.flag,
-                  dropoffTitle,
-                  dropoffAddress,
-                  isRental
-                      ? ""
-                      : "$rideDist km Ride${rideDur != null ? " (~$rideDur mins)" : ""}",
-                ),
-
-                // 4. Stops (if any)
-                if (hasStops) ...[
-                  const SizedBox(height: 12),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 8,
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.add_location_alt_outlined,
+                      color: Colors.yellowAccent,
+                      size: 20,
                     ),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.3),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        "${stops.length} Stops Added",
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
                       ),
                     ),
-                    child: Row(
-                      children: [
-                        const Icon(
-                          Icons.add_location_alt_outlined,
-                          color: Colors.yellowAccent,
-                          size: 20,
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.yellowAccent,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        "+ ₹${stops.length * 30}",
+                        style: const TextStyle(
+                          color: Colors.black87,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
                         ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            "${stops.length} Stops Added",
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 16,
-                            ),
-                          ),
-                        ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 4,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.yellowAccent,
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            "+ ₹${stops.length * 30}",
-                            style: const TextStyle(
-                              color: Colors.black87,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 14,
-                            ),
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
+              ),
+            ],
 
-                const SizedBox(height: 20),
+            const SizedBox(height: 20),
 
-                // 5. Price & Actions
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            // 5. Price & Actions
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                // Price
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Price
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          "₹${ride['rideFare'] ?? '0'}",
-                          style: const TextStyle(
-                            fontSize: 28,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                          ),
-                        ),
-                        if (ride['tip'] != null && (ride['tip'] as num) > 0)
-                          Text(
-                            "+ ₹${ride['tip']} Tip",
-                            style: const TextStyle(
-                              color: Colors.greenAccent,
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                      ],
+                    Text(
+                      "₹${ride['rideFare'] ?? '0'}",
+                      style: const TextStyle(
+                        fontSize: 28,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
                     ),
+                    if (ride['tip'] != null && (ride['tip'] as num) > 0)
+                      Text(
+                        "+ ₹${ride['tip']} Tip",
+                        style: const TextStyle(
+                          color: Colors.greenAccent,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                  ],
+                ),
 
-                    // Actions
-                    Row(
-                      children: [
-                        // Pass (Styled like TextButton in card)
-                        TextButton(
-                          onPressed: _reject,
-                          style: TextButton.styleFrom(
-                            backgroundColor: Colors.white.withValues(
-                              alpha: 0.1,
-                            ),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(30),
-                            ),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 10,
-                            ),
-                          ),
-                          child: const Text(
-                            "Pass",
-                            style: TextStyle(
-                              color: Colors.white70,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
+                // Actions
+                Row(
+                  children: [
+                    // Pass (Styled like TextButton in card)
+                    TextButton(
+                      onPressed: _reject,
+                      style: TextButton.styleFrom(
+                        backgroundColor: Colors.white.withValues(alpha: 0.1),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(30),
                         ),
-                        const SizedBox(width: 12),
-                        // Accept
-                        ElevatedButton.icon(
-                          onPressed: _accept,
-                          icon: const Icon(Icons.check_circle, size: 18),
-                          label: const Text("Accept"),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.green,
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(30),
-                            ),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 20,
-                              vertical: 10,
-                            ),
-                          ),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 10,
                         ),
-                      ],
+                      ),
+                      child: const Text(
+                        "Pass",
+                        style: TextStyle(
+                          color: Colors.white70,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    // Accept
+                    ElevatedButton.icon(
+                      onPressed: _accept,
+                      icon: const Icon(Icons.check_circle, size: 18),
+                      label: const Text("Accept"),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(30),
+                        ),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 10,
+                        ),
+                      ),
                     ),
                   ],
                 ),
               ],
             ),
-          ),
-
-          // Timer Progress Bar
-          Positioned(
-            bottom: 0,
-            left: 0,
-            right: 0,
-            child: ClipRRect(
-              borderRadius: const BorderRadius.only(
-                bottomLeft: Radius.circular(20),
-                bottomRight: Radius.circular(20),
-              ),
-              child: LinearProgressIndicator(
-                value: _progress,
-                backgroundColor: Colors.white.withValues(alpha: 0.1),
-                valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
-                minHeight: 4,
-              ),
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
