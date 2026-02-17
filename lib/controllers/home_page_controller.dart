@@ -308,6 +308,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       'stops': request.stops
           .map((s) => {'address': s.fullAddress, 'status': s.status})
           .toList(),
+      'tollPrice': request.tollPrice,
     };
   }
 
@@ -1027,9 +1028,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         );
 
         if (snapshot.docs.isEmpty) {
-          debugPrint(
-            "Rental Request collection is empty or query matched nothing.",
-          );
+          debugPrint("Rental Requests: No active rentals found.");
         }
 
         for (var doc in snapshot.docs) {
@@ -1194,8 +1193,9 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
     // Use defaults if route calculation fails
     // Use defaults if route calculation fails
+    // Use defaults if route calculation fails
     final driverDist = driverRouteDetails?['distance'] ?? 0.0;
-    final driverDuration = driverRouteDetails?['duration'] ?? 0.0;
+    // final driverDuration = driverRouteDetails?['duration'] ?? 0.0; // Unused
     final rideDist = rideRouteDetails?['distance'] ?? 0.0;
 
     if (driverRouteDetails == null) {
@@ -1229,112 +1229,133 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         ? RideRequest.extractTitle(data['destinationAddress'])
         : dropoffDetails['area']!;
 
-    final newRequest = RideRequest(
-      rideId: doc.id,
-      userId: data['userId'],
-      userName: data['userName'],
-      pickupTitle: pickupTitle,
-      dropoffTitle: dropoffTitle,
-      pickupFullAddress: pickupFull,
-      dropoffFullAddress: dropoffFull,
-      driverDistance: driverDist,
-      rideDistance: rideDist,
-      rideFare: (data['totalFare'] ?? data['fare'] ?? 0.0).toDouble(),
-      tip: data['tip']?.toDouble(),
-      // FIX: Fallback to vehicleClass if vehicleType is missing or null
-      vehicleType: data['vehicleType'] ?? data['vehicleClass'] ?? 'Unknown',
-      pickupLocation: pickupLocation,
-      dropoffLocation: finalDestination,
-      rideType: data['rideType'] ?? 'daily',
-      endRidePin: data['endRidePin'] ?? '',
-      stops:
-          (data['intermediateStops'] as List<dynamic>?)?.map((stop) {
-            final loc = stop['location'];
-            double lat = 0.0;
-            double lng = 0.0;
-            if (loc is GeoPoint) {
-              lat = loc.latitude;
-              lng = loc.longitude;
-            } else if (loc is Map) {
-              lat = (loc['latitude'] as num).toDouble();
-              lng = (loc['longitude'] as num).toDouble();
-            }
+    // Extract common fields
+    final rideId = doc.id;
+    final userId = data['userId'];
+    final userName = data['userName'];
+    final rideType = data['rideType'] ?? 'ride'; // Default to 'ride'
+    final driverDistance = driverDist;
+    final rideDistance = rideDist;
 
-            return RideStop(
-              title: stop['address']?.split(',')[0] ?? 'Stop',
-              fullAddress: stop['address'] ?? '',
-              location: LatLng(lat, lng),
-            );
-          }).toList() ??
-          [],
-      driverId: data['driverId'],
-      packageName: data['packageName'],
-      durationHours: data['durationHours'],
-      kmLimit: data['kmLimit'],
-      extraHourCharge: data['extraHourCharge'],
-      extraKmCharge: data['extraKmCharge'],
-      driverDuration: driverDuration,
-      rideDuration: (data['estimatedDurationSeconds'] != null)
-          ? (data['estimatedDurationSeconds'] as num).toDouble() / 60
-          : null,
-      convenienceFee: (data['convenienceFee'] ?? 0).toDouble(),
-      safetyPin: data['startRidePin'] ?? data['safetyPin'] ?? '0000',
-      paymentMethod: data['paymentMethod'] ?? 'Cash',
-      status: data['status'] ?? 'searching',
-      vehicleClass: data['vehicleClass'] ?? data['vehicleType'] ?? 'Unknown',
-      createdAt: (data['createdAt'] != null)
-          ? (data['createdAt'] is Timestamp
-                ? (data['createdAt'] as Timestamp).toDate()
-                : null)
-          : null,
-    );
+    try {
+      final paymentMethod = data['paymentMethod'] ?? 'Cash';
+      final status = data['status'] ?? 'searching';
+      final vehicleClass = data['vehicleClass'] ?? 'Unknown';
+      var stops = data['stops'] ?? data['intermediateStops'];
 
-    if (activeRequests.any((r) => r.rideId == newRequest.rideId)) {
-      debugPrint("Process Ride: ${newRequest.rideId} duplicate add skipped.");
-      return;
-    }
+      // Parse Toll Price
+      double? tollPrice;
+      if (data.containsKey('tollPrice')) {
+        tollPrice = (data['tollPrice'] as num?)?.toDouble();
+      }
 
-    activeRequests.add(newRequest);
-    _listenToRideStatus(
-      newRequest.rideId,
-      newRequest.rideType,
-    ); // Start monitoring
-    _applySort();
-    hasActiveRide.value = true;
+      // Create RideRequest object
+      RideRequest newRequest = RideRequest(
+        rideId: rideId,
+        userId: userId,
+        userName: userName,
+        pickupTitle: pickupTitle,
+        dropoffTitle: dropoffTitle,
+        pickupFullAddress: pickupFull,
+        dropoffFullAddress: dropoffFull,
+        driverDistance: driverDistance,
+        rideDistance: rideDistance,
+        rideFare: (data['totalFare'] ?? data['fare'] ?? data['rideFare'] ?? 0)
+            .toDouble(),
+        tip: (data['tip'] as num?)?.toDouble(),
+        vehicleType: data['vehicleType'] ?? data['vehicleClass'] ?? 'Unknown',
+        pickupLocation: pickupLocation,
+        dropoffLocation: finalDestination,
+        rideType: rideType,
+        stops: (stops != null && stops is List)
+            ? stops.map<RideStop>((s) {
+                return RideStop(
+                  title: s['address']?.split(',')[0] ?? 'Stop',
+                  fullAddress: s['address'] ?? '',
+                  location: LatLng(
+                    (s['latitude'] as num?)?.toDouble() ?? 0.0,
+                    (s['longitude'] as num?)?.toDouble() ?? 0.0,
+                  ),
+                  status: s['status'] ?? 'pending',
+                );
+              }).toList()
+            : [],
+        driverId: data['driverId'],
+        packageName: data['packageName'],
+        durationHours: data['durationHours'],
+        kmLimit: data['kmLimit'],
+        extraHourCharge: data['extraHourCharge'],
+        extraKmCharge: data['extraKmCharge'],
+        driverDuration: (data['driverDuration'] as num?)?.toDouble(),
+        rideDuration: (data['estimatedDurationSeconds'] != null)
+            ? (data['estimatedDurationSeconds'] as num).toDouble() / 60
+            : null,
+        convenienceFee: (data['convenienceFee'] as num?)?.toDouble() ?? 0.0,
+        safetyPin: data['startRidePin'] ?? data['safetyPin'] ?? '',
+        paymentMethod: paymentMethod,
+        status: status,
+        vehicleClass: vehicleClass,
+        endRidePin: data['endRidePin'] ?? '',
+        startedAt: (data['startedAt'] != null)
+            ? (data['startedAt'] as Timestamp).toDate()
+            : null,
+        createdAt: (data['createdAt'] != null)
+            ? (data['createdAt'] is Timestamp
+                  ? (data['createdAt'] as Timestamp).toDate()
+                  : null)
+            : null,
+        actualDistance: (data['actualDistance'] as num?)?.toDouble(),
+        actualDuration: (data['actualDuration'] as num?)?.toDouble(),
+        waitingCharge: (data['waitingCharge'] as num?)?.toDouble() ?? 0.0,
+        paidByWallet:
+            (data['paidByWallet'] as num?)?.toDouble() ??
+            (data['walletAmountUsed'] as num?)?.toDouble(),
+        tollPrice: tollPrice,
+      );
 
-    // Trigger Overlay if Backgrounded
-    if (_appLifecycleState == AppLifecycleState.paused) {
-      _showOverlayForRide(newRequest);
-    }
-
-    if (newRequest.rideType == 'rental') {
-      // Guard: Don't show rental screen again if we're already accepting
-      if (_isAcceptingRide) {
-        debugPrint("Skipping rental screen navigation (already accepting)");
+      if (activeRequests.any((r) => r.rideId == newRequest.rideId)) {
+        debugPrint("Process Ride: ${newRequest.rideId} duplicate add skipped.");
         return;
       }
-      playRentalNotification();
-      Get.to(
-        () => RentalRequestScreen(
-          rideRequest: newRequest,
-          onAccept: () => onRideAccepted(newRequest),
-          onPass: () => onRideRejected("rental_screen_pass"),
-        ),
-      );
-    } else {
-      // Only play sound for new searching rides
-      // GUARD: If we are already accepting, DO NOT play sound again
-      if (activeRideRequest?.status == 'searching' && !_isAcceptingRide) {
-        playRideRequestSound();
-      } else {
-        // If status changed to accepted/cancelled/etc, force stop sound!
-        // This catches cases where stream updates before we manually stopped it
-        stopRideRequestSound();
-      }
-    }
 
-    startRideTimeout(doc.id);
-    debugPrint("Ride Request Active: ${doc.id}");
+      activeRequests.add(newRequest);
+      _listenToRideStatus(
+        newRequest.rideId,
+        newRequest.rideType,
+      ); // Start monitoring
+      _applySort();
+      hasActiveRide.value = true;
+
+      // Trigger Overlay if Backgrounded
+      if (_appLifecycleState == AppLifecycleState.paused) {
+        _showOverlayForRide(newRequest);
+      }
+
+      if (newRequest.rideType == 'rental') {
+        // Guard: Don't show rental screen again if we're already accepting
+        if (_isAcceptingRide) {
+          debugPrint("Skipping rental screen navigation (already accepting)");
+          return;
+        }
+        playRentalNotification();
+        Get.to(
+          () => RentalRequestScreen(
+            rideRequest: newRequest,
+            onAccept: () => onRideAccepted(newRequest),
+            onPass: () => onRideRejected("rental_screen_pass"),
+          ),
+        );
+      } else {
+        // Only play sound for new searching rides
+        // GUARD: If we are already accepting, DO NOT play sound again
+        if (activeRideRequest?.status == 'searching' && !_isAcceptingRide) {
+          playRideRequestSound();
+        }
+      }
+      startRideTimeout(newRequest.rideId);
+    } catch (e) {
+      debugPrint("Error processing ride document $rideId: $e");
+    }
   }
 
   // Removed Mock Rental Trigger
@@ -1868,6 +1889,8 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   // -------------------------
   // Overlay Helper
   // -------------------------
+
+  // NOTE: Overlay methods moved below to avoid duplicates.
 
   Future<bool> _handleLocationPermission() async {
     bool serviceEnabled;

@@ -434,6 +434,7 @@ class _OverlayRootState extends State<OverlayRoot> {
     // Logic matching RideRequestCard _getPaymentHeaderText
     final paymentMethod = ride['paymentMethod'] ?? 'Cash';
     final walletUsed = (ride['paidByWallet'] as num?)?.toDouble() ?? 0.0;
+    final tollPrice = (ride['tollPrice'] as num?)?.toDouble() ?? 0.0;
 
     if (isRental) {
       headerText = "$vehicleClass Rental";
@@ -596,6 +597,18 @@ class _OverlayRootState extends State<OverlayRoot> {
                         color: Colors.white,
                       ),
                     ),
+                    if (tollPrice > 0)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Text(
+                          "Includes ₹${tollPrice.toStringAsFixed(0)} Toll",
+                          style: const TextStyle(
+                            color: Colors.orangeAccent,
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
                     if (ride['tip'] != null && (ride['tip'] as num) > 0)
                       Text(
                         "+ ₹${ride['tip']} Tip",

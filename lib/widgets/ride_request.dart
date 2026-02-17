@@ -63,6 +63,7 @@ class RideRequest {
 
   final double waitingCharge;
   final double? paidByWallet; // Amount paid by wallet in a split payment
+  final double? tollPrice; // Added toll price
 
   final String? userName;
 
@@ -103,6 +104,7 @@ class RideRequest {
     this.actualDuration,
     this.waitingCharge = 0.0,
     this.paidByWallet,
+    this.tollPrice,
   });
 
   RideRequest copyWith({
@@ -142,6 +144,7 @@ class RideRequest {
     double? actualDuration,
     double? waitingCharge,
     double? paidByWallet,
+    double? tollPrice,
   }) {
     return RideRequest(
       rideId: rideId ?? this.rideId,
@@ -180,6 +183,7 @@ class RideRequest {
       actualDuration: actualDuration ?? this.actualDuration,
       waitingCharge: waitingCharge ?? this.waitingCharge,
       paidByWallet: paidByWallet ?? this.paidByWallet,
+      tollPrice: tollPrice ?? this.tollPrice,
     );
   }
 
@@ -226,6 +230,7 @@ class RideRequest {
       'actualDuration': actualDuration,
       'waitingCharge': waitingCharge,
       'paidByWallet': paidByWallet,
+      'tollPrice': tollPrice,
     };
   }
 
@@ -262,77 +267,27 @@ class RideRequest {
     return RideRequest(
       rideId: json['rideId'] ?? '',
       userId: json['userId'] ?? '',
-      userName: json['userName'] ?? '',
-      pickupTitle:
-          json['pickupTitle'] ??
-          extractTitle(
-            json['pickupAddress'] ?? json['pickupFullAddress'] ?? '',
-          ),
-      dropoffTitle:
-          json['dropoffTitle'] ??
-          extractTitle(
-            json['destinationAddress'] ??
-                json['dropoffAddress'] ??
-                json['dropoffFullAddress'] ??
-                '',
-          ),
-      pickupFullAddress:
-          json['pickupFullAddress'] ?? json['pickupAddress'] ?? '',
-      dropoffFullAddress:
-          json['dropoffFullAddress'] ?? json['destinationAddress'] ?? '',
-      driverDistance: (json['driverDistance'] as num? ?? 0).toDouble(),
-      rideDistance: (json['rideDistance'] as num? ?? 0).toDouble(),
-      rideFare: (json['totalFare'] ?? json['fare'] ?? json['rideFare'] ?? 0)
-          .toDouble(),
+      userName: json['userName'],
+      pickupTitle: json['pickupTitle'] ?? '',
+      dropoffTitle: json['dropoffTitle'] ?? '',
+      pickupFullAddress: json['pickupFullAddress'] ?? '',
+      dropoffFullAddress: json['dropoffFullAddress'] ?? '',
+      driverDistance: (json['driverDistance'] as num?)?.toDouble() ?? 0.0,
+      rideDistance: (json['rideDistance'] as num?)?.toDouble() ?? 0.0,
+      rideFare: (json['rideFare'] as num?)?.toDouble() ?? 0.0,
       tip: (json['tip'] as num?)?.toDouble(),
-      vehicleType: json['vehicleType'] ?? 'Car',
+      vehicleType: json['vehicleType'] ?? '',
       pickupLocation: LatLng(
-        (json['pickupLocation'] is Map)
-            ? (json['pickupLocation']['lat'] as num? ?? 0).toDouble()
-            : (json['pickupLocation'] as GeoPoint).latitude,
-        (json['pickupLocation'] is Map)
-            ? (json['pickupLocation']['lng'] as num? ?? 0).toDouble()
-            : (json['pickupLocation'] as GeoPoint).longitude,
+        (json['pickupLocation']?['lat'] as num?)?.toDouble() ?? 0.0,
+        (json['pickupLocation']?['lng'] as num?)?.toDouble() ?? 0.0,
       ),
-      dropoffLocation:
-          ((json['destinationLocation'] ?? json['dropoffLocation']) != null)
-          ? LatLng(
-              ((json['destinationLocation'] ?? json['dropoffLocation']) is Map)
-                  ? ((json['destinationLocation'] ??
-                                    json['dropoffLocation'])['lat']
-                                as num? ??
-                            (json['destinationLocation'] ??
-                                    json['dropoffLocation'])['latitude']
-                                as num? ??
-                            0)
-                        .toDouble()
-                  : ((json['destinationLocation'] ?? json['dropoffLocation'])
-                            as GeoPoint)
-                        .latitude,
-              ((json['destinationLocation'] ?? json['dropoffLocation']) is Map)
-                  ? ((json['destinationLocation'] ??
-                                    json['dropoffLocation'])['lng']
-                                as num? ??
-                            (json['destinationLocation'] ??
-                                    json['dropoffLocation'])['longitude']
-                                as num? ??
-                            0)
-                        .toDouble()
-                  : ((json['destinationLocation'] ?? json['dropoffLocation'])
-                            as GeoPoint)
-                        .longitude,
-            )
-          : LatLng(
-              (json['pickupLocation'] is Map)
-                  ? (json['pickupLocation']['lat'] as num? ?? 0).toDouble()
-                  : (json['pickupLocation'] as GeoPoint).latitude,
-              (json['pickupLocation'] is Map)
-                  ? (json['pickupLocation']['lng'] as num? ?? 0).toDouble()
-                  : (json['pickupLocation'] as GeoPoint).longitude,
-            ),
+      dropoffLocation: LatLng(
+        (json['dropoffLocation']?['lat'] as num?)?.toDouble() ?? 0.0,
+        (json['dropoffLocation']?['lng'] as num?)?.toDouble() ?? 0.0,
+      ),
       rideType: json['rideType'] ?? 'daily',
       stops: parsedStops,
-      driverId: json['driverId'] ?? '',
+      driverId: json['driverId'],
       packageName: json['packageName'],
       durationHours: json['durationHours'],
       kmLimit: json['kmLimit'],
@@ -341,14 +296,15 @@ class RideRequest {
       driverDuration: (json['driverDuration'] as num?)?.toDouble(),
       rideDuration: (json['rideDuration'] as num?)?.toDouble(),
       convenienceFee: (json['convenienceFee'] as num?)?.toDouble() ?? 0.0,
-      safetyPin: json['startRidePin'] ?? json['safetyPin'] ?? '',
-
-      paymentMethod: json['paymentMethod'] ?? 'Cash',
-      status: json['status'] ?? 'searching',
-      vehicleClass: json['vehicleClass'] ?? 'Unknown',
+      safetyPin: json['safetyPin'] ?? '',
+      paymentMethod: json['paymentMethod'] ?? '',
+      status: json['status'] ?? '',
+      vehicleClass: json['vehicleClass'] ?? '',
       endRidePin: json['endRidePin'] ?? '',
       startedAt: (json['startedAt'] != null)
-          ? (json['startedAt'] as Timestamp).toDate()
+          ? (json['startedAt'] is Timestamp
+                ? (json['startedAt'] as Timestamp).toDate()
+                : null)
           : null,
       createdAt: (json['createdAt'] != null)
           ? (json['createdAt'] is Timestamp
@@ -358,9 +314,8 @@ class RideRequest {
       actualDistance: (json['actualDistance'] as num?)?.toDouble(),
       actualDuration: (json['actualDuration'] as num?)?.toDouble(),
       waitingCharge: (json['waitingCharge'] as num?)?.toDouble() ?? 0.0,
-      paidByWallet:
-          (json['paidByWallet'] as num?)?.toDouble() ??
-          (json['walletAmountUsed'] as num?)?.toDouble(),
+      paidByWallet: (json['paidByWallet'] as num?)?.toDouble(),
+      tollPrice: (json['tollPrice'] as num?)?.toDouble(),
     );
   }
 
@@ -690,14 +645,30 @@ class _RideRequestCardState extends State<RideRequestCard> {
                             color: Colors.white,
                           ),
                         ),
+                        if (widget.rideRequest.tollPrice != null &&
+                            widget.rideRequest.tollPrice! > 0)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Text(
+                              "Includes ₹${widget.rideRequest.tollPrice!.toStringAsFixed(0)} Toll",
+                              style: const TextStyle(
+                                color: Colors.orangeAccent,
+                                fontSize: 13, // Slightly larger
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
                         if (widget.rideRequest.tip != null &&
                             widget.rideRequest.tip! > 0)
-                          Text(
-                            "+ ₹${widget.rideRequest.tip!.toStringAsFixed(0)} Tip",
-                            style: const TextStyle(
-                              color: Colors.greenAccent,
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Text(
+                              "+ ₹${widget.rideRequest.tip!.toStringAsFixed(0)} Tip",
+                              style: const TextStyle(
+                                color: Colors.greenAccent,
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
                           ),
                       ],
