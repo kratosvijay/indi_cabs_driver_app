@@ -88,7 +88,8 @@ class _DriverHomePageState extends State<DriverHomePage>
   @override
   Widget build(BuildContext context) {
     return Obx(() {
-      if (controller.isLoading.value) {
+      if (controller.isLoading.value ||
+          controller.isRideAcceptanceInProgress.value) {
         final bool isDark = Theme.of(context).brightness == Brightness.dark;
         return Scaffold(
           backgroundColor: isDark ? Colors.black : Colors.white,
@@ -106,6 +107,17 @@ class _DriverHomePageState extends State<DriverHomePage>
                 ),
                 SizedBox(height: 24),
                 CircularProgressIndicator(color: AppColors.lightEnd),
+                if (controller.isRideAcceptanceInProgress.value) ...[
+                  SizedBox(height: 16),
+                  Text(
+                    "Accepting Ride...",
+                    style: TextStyle(
+                      color: isDark ? Colors.white : Colors.black,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),

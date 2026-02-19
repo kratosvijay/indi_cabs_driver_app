@@ -270,21 +270,42 @@ class RideRequest {
       userName: json['userName'],
       pickupTitle: json['pickupTitle'] ?? '',
       dropoffTitle: json['dropoffTitle'] ?? '',
-      pickupFullAddress: json['pickupFullAddress'] ?? '',
-      dropoffFullAddress: json['dropoffFullAddress'] ?? '',
+      pickupFullAddress:
+          json['pickupFullAddress'] ?? json['pickupAddress'] ?? '',
+      dropoffFullAddress:
+          json['dropoffFullAddress'] ??
+          json['destinationAddress'] ??
+          json['dropoffAddress'] ??
+          '',
       driverDistance: (json['driverDistance'] as num?)?.toDouble() ?? 0.0,
       rideDistance: (json['rideDistance'] as num?)?.toDouble() ?? 0.0,
       rideFare: (json['rideFare'] as num?)?.toDouble() ?? 0.0,
       tip: (json['tip'] as num?)?.toDouble(),
       vehicleType: json['vehicleType'] ?? '',
-      pickupLocation: LatLng(
-        (json['pickupLocation']?['lat'] as num?)?.toDouble() ?? 0.0,
-        (json['pickupLocation']?['lng'] as num?)?.toDouble() ?? 0.0,
-      ),
-      dropoffLocation: LatLng(
-        (json['dropoffLocation']?['lat'] as num?)?.toDouble() ?? 0.0,
-        (json['dropoffLocation']?['lng'] as num?)?.toDouble() ?? 0.0,
-      ),
+      pickupLocation: () {
+        final loc = json['pickupLocation'];
+        if (loc is GeoPoint) {
+          return LatLng(loc.latitude, loc.longitude);
+        } else if (loc is Map) {
+          return LatLng(
+            (loc['lat'] as num?)?.toDouble() ?? 0.0,
+            (loc['lng'] as num?)?.toDouble() ?? 0.0,
+          );
+        }
+        return const LatLng(0.0, 0.0);
+      }(),
+      dropoffLocation: () {
+        final loc = json['dropoffLocation'];
+        if (loc is GeoPoint) {
+          return LatLng(loc.latitude, loc.longitude);
+        } else if (loc is Map) {
+          return LatLng(
+            (loc['lat'] as num?)?.toDouble() ?? 0.0,
+            (loc['lng'] as num?)?.toDouble() ?? 0.0,
+          );
+        }
+        return const LatLng(0.0, 0.0);
+      }(),
       rideType: json['rideType'] ?? 'daily',
       stops: parsedStops,
       driverId: json['driverId'],

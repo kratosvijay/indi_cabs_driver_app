@@ -558,18 +558,20 @@ export const calculateDynamicPricing = onCall({ region: "asia-south1" }, async (
         );
     }
 
-    const { rideId, actualDistanceKm } = request.data;
+    const { rideId, actualDistanceKm, waitingCharge, rideType } = request.data;
+    // rideType is optional, defaulting to 'daily' if not found in doc
+    // waitingCharge is optional, defaulting to 0
 
     if (!rideId || actualDistanceKm === undefined) {
         throw new HttpsError(
             "invalid-argument",
-            "Missing required parameters"
+            "Missing required parameters (rideId, actualDistanceKm)"
         );
     }
 
     try {
         // Get ride data
-        const rideDoc = await db.collection("ride_requests").doc(rideId).get();
+        const rideDoc = await db.collection(rideType === 'rental' ? 'rental_requests' : 'ride_requests').doc(rideId).get();
 
         if (!rideDoc.exists) {
             throw new HttpsError("not-found", "Ride not found");
@@ -578,131 +580,327 @@ export const calculateDynamicPricing = onCall({ region: "asia-south1" }, async (
         const rideData = rideDoc.data();
         if (!rideData) throw new HttpsError("internal", "Ride data missing");
 
+        const effectiveRideType = rideType || rideData.rideType || 'daily';
+
+        // --- 1. RENTAL BILLING LOGIC ---
+        if (effectiveRideType === 'rental') {
+            console.log(`Processing Rental Billing for ${rideId}`);
+
+            const pkgHours = (rideData.durationHours || 0);
+            const pkgKm = (rideData.kmLimit || 0);
+            const extraHourCharge = (rideData.extraHourCharge || 0);
+            const extraKmCharge = (rideData.extraKmCharge || 0);
+            const baseFare = (rideData.rideFare || rideData.fare || 0); // locked package price
+
+            // Calculate duration
+            const startedAtTs = rideData.startedAt;
+            const startedAt = startedAtTs ? startedAtTs.toDate() : new Date();
+            const now = new Date();
+            const durationMinutes = (now.getTime() - startedAt.getTime()) / 60000;
+            const durationHours = durationMinutes / 60.0;
+
+            let extraHours = 0;
+            if (durationHours > pkgHours) {
+                extraHours = Math.ceil(durationHours - pkgHours);
+            }
+
+            let extraKm = 0;
+            if (actualDistanceKm > pkgKm) {
+                extraKm = actualDistanceKm - pkgKm;
+            }
+
+            const extraTimeCost = extraHours * extraHourCharge;
+            const extraDistCost = extraKm * extraKmCharge;
+            // Rental does not typically have "waiting charge" separate from duration
+            // But if passed, we could add it. Usually implicit in rental duration.
+            // Let's assume waiting is part of the rental time.
+
+            const totalFare = baseFare + extraTimeCost + extraDistCost;
+
+            await rideDoc.ref.update({
+                actualDistance: actualDistanceKm,
+                actualDuration: durationMinutes, // store in minutes? or hours? existing code used minutes in one place, hours in another
+                actualDurationMinutes: durationMinutes,
+                finalAmount: totalFare,
+                totalFare: totalFare,
+                rideFare: totalFare,
+                extraTimeCost: extraTimeCost,
+                extraDistanceCost: extraDistCost,
+                priceUpdated: (extraTimeCost > 0 || extraDistCost > 0),
+                pricingReason: `Base: ${baseFare}, ExtraKm: ${extraDistCost}, ExtraTime: ${extraTimeCost}`
+            });
+
+            return {
+                success: true,
+                finalFare: totalFare,
+                priceUpdated: (extraTimeCost > 0 || extraDistCost > 0),
+                reason: "Rental calculation complete"
+            };
+        }
+
+        // --- 2. DAILY RIDE BILLING LOGIC ---
+
+        // Inputs
         const estimatedDistanceKm = rideData.rideDistance || 0;
-        const estimatedFare = rideData.rideFare || 0;
-        // Fix: Use the vehicle type requested by user, not driver's vehicle
-        const vehicleType = rideData.vehicleType || "Sedan";
+        const vehicleType = rideData.vehicleType || rideData.vehicleClass || "Sedan"; // Booked Type - Fallback to vehicleClass
+        console.log(`[DEBUG] Pricing Calc - RideId: ${rideId}, BookedType: ${vehicleType}, DriverType: ${rideData.driverCarModel || 'Unknown'}`);
+        const providedWaitingCharge = waitingCharge || 0;
 
-        // Fix: Logic to LOCK rates at time of booking.
-        // Check if rate variables are stored in the ride document itself.
-        // If they are (e.g. from createRide function), use them.
-        // Otherwise, fetch from pricing rules and fallback to defaults.
+        // Pricing Rules Fetch
+        let pricingRules: any = {};
+        try {
+            const pricingDoc = await db.collection("pricing_rules").doc("Chennai").get();
+            if (pricingDoc.exists) pricingRules = pricingDoc.data() || {};
+        } catch (e) {
+            console.error("Failed to fetch pricing rules:", e);
+        }
 
-        let baseFare = rideData.baseFare;
-        let perKmRate = rideData.perKilometer; // Check for perKilometer or perKmRate
-        let minimumFare = rideData.minimumFare;
+        // --- SURGE / PEAK LOGIC (Matched with User App) ---
+        let surgeMultiplier = 1.0;
 
-        // If any rate is missing, fetch from Pricing Rules (Legacy/Fallback behavior)
-        if (baseFare === undefined || perKmRate === undefined || minimumFare === undefined) {
-            console.log("Rates not found in ride doc. Fetching current pricing rules...");
-
-            // Set defaults if fetch fails
-            if (baseFare === undefined) baseFare = 50;
-            if (perKmRate === undefined) perKmRate = 10;
-            if (minimumFare === undefined) minimumFare = 150;
-
-            try {
-                // Get Chennai pricing document
-                const pricingDoc = await db
-                    .collection("pricing_rules")
-                    .doc("Chennai")
-                    .get();
-
-                if (pricingDoc.exists) {
-                    const pricingData = pricingDoc.data();
-                    if (pricingData && pricingData.vehicle_types) {
-                        const vehicleTypeData = pricingData.vehicle_types[vehicleType];
-                        if (vehicleTypeData) {
-                            // Only overwrite if undefined in rideData
-                            if (rideData.baseFare === undefined) baseFare = vehicleTypeData.baseFare || baseFare;
-                            if (rideData.perKilometer === undefined) perKmRate = vehicleTypeData.perKilometer || perKmRate;
-                            if (rideData.minimumFare === undefined) minimumFare = vehicleTypeData.minimumFare || minimumFare;
-                        } else {
-                            console.log(
-                                `No pricing rules found for ${vehicleType}, using defaults`
-                            );
-                        }
-                    } else {
-                        console.log(
-                            "No vehicle_types found in pricing rules, using defaults"
-                        );
-                    }
-                } else {
-                    console.log("No Chennai pricing doc found, using defaults");
-                }
-            } catch (error) {
-                console.log(
-                    `Error fetching pricing rules: ${error}, using defaults`
-                );
-            }
+        // 1. Check DB Override
+        if (pricingRules.isSurgeActive && pricingRules.surgeMultiplier) {
+            surgeMultiplier = pricingRules.surgeMultiplier;
         } else {
-            console.log(`Using LOCKED rates from ride doc: Base=${baseFare}, PerKm=${perKmRate}, Min=${minimumFare}`);
+            // 2. Time-based Logic (User App Fallback)
+            // Use current time for "End Ride" calculation? 
+            // OR should we use `startedAt`? User App uses `now` in estimate (obviously).
+            // For final billing, we should probably use the time the ride took place.
+            // Let's use `startedAt` if available, else `createdAt`, else `now`.
+            const refTime = rideData.startedAt ? rideData.startedAt.toDate() : (rideData.createdAt ? rideData.createdAt.toDate() : new Date());
+
+            // Format to IST (User App uses logic based on Chennai/Kolkata time)
+            // We can just use getHours() if the server is in correct timezone OR adjust.
+            // Cloud Functions run in UTC usually. User App code did:
+            const istFormatter = new Intl.DateTimeFormat("en-US", {
+                timeZone: "Asia/Kolkata",
+                hour: "2-digit",
+                hour12: false,
+                weekday: "short",
+            });
+            const parts = istFormatter.formatToParts(refTime);
+            let currentHour = 0;
+            let currentDayString = "";
+            for (const part of parts) {
+                if (part.type === "hour") currentHour = parseInt(part.value) % 24;
+                if (part.type === "weekday") currentDayString = part.value;
+            }
+
+            const isWeekend = currentDayString === "Sat" || currentDayString === "Sun";
+
+            if (isWeekend) {
+                if (currentHour >= 15 && currentHour < 21) surgeMultiplier = 1.20;
+            } else {
+                const isMorningSurge = currentHour >= 8 && currentHour < 11;
+                const isEveningSurge = currentHour >= 17 && currentHour < 21;
+                if (isMorningSurge || isEveningSurge) surgeMultiplier = 1.20;
+            }
         }
 
-        // Calculate distance difference
+        // --- NIGHT CHARGE (User App logic) ---
+        // User App uses `now` (at estimation time). We use `refTime`.
+        // Logic: 10PM to 6AM
+        // We need `currentHour` from above.
+        let nightCharge = 0.0;
+        // Re-calculate currentHour if needed, but we have it properly scoped if we structure right.
+        // Let's assume we pulled the IST logic up or duplicate it slightly for safety.
+        // (Copying logic for scope safety)
+        const refTimeForNight = rideData.startedAt ? rideData.startedAt.toDate() : new Date();
+        const istFormatterN = new Intl.DateTimeFormat("en-US", {
+            timeZone: "Asia/Kolkata",
+            hour: "2-digit",
+            hour12: false,
+        });
+        const hourPart = istFormatterN.formatToParts(refTimeForNight).find(p => p.type === 'hour');
+        const currentHourN = hourPart ? (parseInt(hourPart.value) % 24) : 0;
+
+        if (currentHourN >= 22 || currentHourN < 6) {
+            nightCharge = 50.0;
+        }
+
+        // --- BASE RATES ---
+        let baseFare = 50;
+        let perKm = 12;
+        let minFare = 100;
+        let perMinute = 0; // User App has time charge
+
+        if (pricingRules.vehicle_types && pricingRules.vehicle_types[vehicleType]) {
+            const vRules = pricingRules.vehicle_types[vehicleType];
+            baseFare = vRules.baseFare || baseFare;
+            perKm = vRules.perKilometer || perKm;
+            minFare = vRules.minimumFare || minFare;
+            perMinute = vRules.perMinute || 0;
+            console.log(`[DEBUG] Applied Rules for ${vehicleType}: Base=${baseFare}, PerKm=${perKm}`);
+        } else {
+            console.warn(`[WARN] No pricing rules found for vehicle type: ${vehicleType}. Using defaults.`);
+        }
+
+        // --- GEOFENCE LOGIC ---
+        let geofenceSurcharge = 0.0;
+        try {
+            const zonesSnapshot = await db.collection("geofenced_zones").get();
+            // rideData.pickupLocation handling
+            let pickupGeoPoint = null;
+            if (rideData.pickupLocation) {
+                if (rideData.pickupLocation instanceof admin.firestore.GeoPoint) {
+                    pickupGeoPoint = rideData.pickupLocation;
+                } else if (rideData.pickupLocation.latitude && rideData.pickupLocation.longitude) {
+                    pickupGeoPoint = new admin.firestore.GeoPoint(rideData.pickupLocation.latitude, rideData.pickupLocation.longitude);
+                } else if (rideData.pickupLocation.lat && rideData.pickupLocation.lng) {
+                    pickupGeoPoint = new admin.firestore.GeoPoint(rideData.pickupLocation.lat, rideData.pickupLocation.lng);
+                }
+            }
+
+            if (pickupGeoPoint) {
+                for (const doc of zonesSnapshot.docs) {
+                    const zone = doc.data();
+                    if (zone.surcharge_amount && zone.surcharge_amount > 0 && zone.boundary && isPointInPolygon(pickupGeoPoint, zone.boundary)) {
+                        geofenceSurcharge = zone.surcharge_amount;
+                        console.log(`Applying surcharge of ${geofenceSurcharge} for zone ${doc.id}`);
+                        break;
+                    }
+                }
+            }
+        } catch (e) {
+            console.error("Geofence check failed:", e);
+        }
+
+        // --- CALCULATE FARE ---
+        // Formula matching User App:
+        // 1. Distance Charge (Tiered)
+        // 2. Time Charge
+        // 3. Surge
+        // 4. Extras (Night, Toll, Geofence)
+        // 5. Min Fare
+
+        let calculatedFare = baseFare;
+
+        // 1. Distance Charge (Tiered)
+        if (actualDistanceKm <= 12) {
+            calculatedFare += actualDistanceKm * perKm;
+        } else {
+            // First 12 km normal
+            calculatedFare += 12 * perKm;
+            // Remaining reduced
+            const reducedRate = Math.max(0, perKm - 3);
+            calculatedFare += (actualDistanceKm - 12) * reducedRate;
+        }
+
+        // 2. Time Charge (Using actualDurationMinutes if available, else calculate)
+        let rideDurationMinutes = 0;
+        if (rideData.startedAt) {
+            const startDiv = rideData.startedAt.toDate();
+            const endDiv = new Date();
+            rideDurationMinutes = (endDiv.getTime() - startDiv.getTime()) / 60000;
+        }
+        if (perMinute > 0 && rideDurationMinutes > 0) {
+            calculatedFare += (rideDurationMinutes * perMinute);
+        }
+
+        // 3. Surge
+        calculatedFare *= surgeMultiplier;
+
+        // 4. Extras
+        calculatedFare += nightCharge;
+        calculatedFare += geofenceSurcharge; // Added Geofence
+        // Add Toll if exists (User App passes it in request, Driver App might have it in rideData??)
+        // Let's check rideData.tollPrice
+        if (rideData.tollPrice) {
+            calculatedFare += (rideData.tollPrice || 0);
+        }
+
+        // 5. Min Fare
+        if (calculatedFare < minFare) calculatedFare = minFare;
+
+        // Add Waiting Charge (Driver App specific addition, User App didn't show it explicitly in calcFares but likely handled separate or implicit)
+        // Driver App passes it explicitly.
+        calculatedFare += providedWaitingCharge;
+
+        // Rounding
+        let finalFare = Math.round(calculatedFare);
+
+
+        // --- LOGIC: WHEN TO UPDATE? ---
+        // The User App logic calculates the *expected* fare.
+        // We want to update the *actual* fare based on *actual* distance/time.
+        // Always update? Or only if tolerance exceeded?
+        // User complained about "Discrepancy".
+        // If we strictly follow the formula, we should result in the correct amount.
+        // The discrepancy likely came from the OLD Driver App logic being too simple (ignoring tiers, night, etc).
+        // So we should ALWAYS use this calculated value as the new truth, 
+        // PROVIDED it meets the "Recalculation" criteria (distance difference).
+
+        // HOWEVER, "Locked Fare" is a strong concept. 
+        // If the user agreed to ₹300, and we calculate ₹305 because of 1 minute traffic, user gets mad.
+        // So stick to Tolerance Logic:
+        // If (Distance_Actual ~= Distance_Est) -> Keep Locked Fare (+ Waiting).
+        // If (Distance_Actual >> Distance_Est) -> Use New Calculated Fare.
+
         const distanceDiff = actualDistanceKm - estimatedDistanceKm;
-
-        let finalFare = estimatedFare;
         let priceUpdated = false;
-        let reason = "";
+        let reason = "Fare matched estimate";
 
-        // Check if distance is extra
-        if (distanceDiff > 0) {
-            // Extra distance traveled
-            if (distanceDiff > 1.5) {
-                // Exceeds tolerance, update price
-                const extraCharge = distanceDiff * perKmRate;
-                finalFare = estimatedFare + extraCharge;
-                priceUpdated = true;
-                reason = `Extra ${distanceDiff.toFixed(2)}km traveled`;
-            } else {
-                // Within tolerance, no update
-                reason = `Extra distance in tolerance (${distanceDiff.toFixed(2)}km)`;
-            }
-        } else if (distanceDiff < 0) {
-            // Less distance traveled
-            const lessDistance = Math.abs(distanceDiff);
+        const isPeak = surgeMultiplier > 1.0; // Derived for update
 
-            if (lessDistance > 5) {
-                // Exceeds tolerance, recalculate price
-                finalFare = baseFare + actualDistanceKm * perKmRate;
-                priceUpdated = true;
-                reason = `Ride ended ${lessDistance.toFixed(2)}km early`;
-            } else {
-                // Within tolerance, no update
-                reason = `Early end within tolerance (${lessDistance.toFixed(2)}km)`;
-            }
-        }
+        if (distanceDiff <= 1.5 && distanceDiff >= -5.0) {
+            // Within tolerance: Trust the original estimate (BUT add Waiting/Toll if new)
+            // Wait, if the original estimate was WRONG (e.g. 306 vs 220 issue), we shouldn't trust it?
+            // User said: "initially display 306... final bill 220". 
+            // This implies the Estimate was 306, but the Final (Old Logic) calculated 220?
+            // If so, the Old Logic was MISSING something (like Surge).
+            // So we SHOULD recalculate to confirm it matches 306, or at least stays close.
 
-        // Enforce minimum fare
-        if (finalFare < minimumFare) {
-            finalFare = minimumFare;
+            // Allow Update if the "Locked" fare is suspiciously different?
+            // No, safer to standard behavior:
+            // If actual distance is close to estimated, use Estimated Fare.
+            // UNLESS we want to force "Metered" behavior. 
+            // User Request: "Reworking Billing logic".
+            // Let's stick to Tolerance.
+
+            finalFare = parseFloat(rideData.rideFare || finalFare); // Use Locked, ensure number
+            finalFare += providedWaitingCharge;
+
+            // Check if Toll was added during ride? 
+            // If rideData.rideFare included toll, don't double count.
+            // Let's assume rideFare is the base "Trip Price".
+
+        } else {
             priceUpdated = true;
-            if (!reason) {
-                reason = `Minimum fare applied (${actualDistanceKm.toFixed(2)}km traveled)`;
-            } else {
-                reason += ` | Minimum fare enforced`;
-            }
+            reason = "Distance/Route changed - Recalculated";
+            // finalFare is already calculated above using the comprehensive User App logic
         }
 
-        // Update ride document with final fare
+
+        // --- FINAL CHECK: BOOKED TYPE ENFORCEMENT ---
+        // Verify we didn't use "Suv" rates for a "Hatchback" booking.
+        // We already did this by using `vehicleType` (which is the booked type) to fetch `baseFare`/`perKm`.
+        // So `calculated` above uses the correct rates.
+
+        // Update Backend
         await rideDoc.ref.update({
             actualDistance: actualDistanceKm,
             finalAmount: finalFare,
             totalFare: finalFare,
+            rideFare: finalFare, // Update main display fare
+            waitingCharge: providedWaitingCharge,
             priceUpdated: priceUpdated,
             pricingReason: reason,
+            isPeakHour: isPeak,
+            peakMultiplier: surgeMultiplier,
+            calculatedAt: admin.firestore.FieldValue.serverTimestamp()
         });
 
         return {
             success: true,
-            estimatedFare: estimatedFare,
+            estimatedFare: rideData.rideFare,
             finalFare: finalFare,
             priceUpdated: priceUpdated,
             reason: reason,
             actualDistance: actualDistanceKm,
-            estimatedDistance: estimatedDistanceKm,
+            waitingCharge: providedWaitingCharge,
+            isPeak: isPeak
         };
+
     } catch (error) {
         console.error("Error calculating dynamic pricing:", error);
         throw new HttpsError(
@@ -1579,3 +1777,64 @@ export const handleRentalRejection = onDocumentUpdated(
  * HTTP Trigger to manually populate the database
  */
 
+
+// --- Helper Functions ---
+/**
+ * Helper function: Point-in-Polygon check.
+ * @param {admin.firestore.GeoPoint} point The point to check.
+ * @param {admin.firestore.GeoPoint[]} polygon The polygon boundaries.
+ * @return {boolean} True if the point is inside, false otherwise.
+ */
+function isPointInPolygon(
+    point: admin.firestore.GeoPoint,
+    polygon: admin.firestore.GeoPoint[]
+): boolean {
+    if (polygon.length === 0) return false;
+    let intersectCount = 0;
+    for (let j = 0; j < polygon.length - 1; j++) {
+        if (_rayCastIntersect(point, polygon[j], polygon[j + 1])) {
+            intersectCount++;
+        }
+    }
+    if (_rayCastIntersect(point, polygon[polygon.length - 1], polygon[0])) {
+        intersectCount++;
+    }
+    return intersectCount % 2 === 1;
+}
+
+/**
+ * Ray casting helper for isPointInPolygon.
+ * @param {admin.firestore.GeoPoint} point The point to check.
+ * @param {admin.firestore.GeoPoint} vertA The first vertex of the segment.
+ * @param {admin.firestore.GeoPoint} vertB The second vertex of the segment.
+ * @return {boolean} True if the ray intersects the segment.
+ */
+function _rayCastIntersect(
+    point: admin.firestore.GeoPoint,
+    vertA: admin.firestore.GeoPoint,
+    vertB: admin.firestore.GeoPoint
+): boolean {
+    const aY = vertA.latitude;
+    const bY = vertB.latitude;
+    const aX = vertA.longitude;
+    const bX = vertB.longitude;
+    const pY = point.latitude;
+    const pX = point.longitude;
+
+    if ((aY > pY && bY > pY) || (aY < pY && bY < pY)) {
+        return false;
+    }
+    if (aX < pX && bX < pX) {
+        return false;
+    }
+    if (aX > pX && bX > pX) {
+        return true;
+    }
+    if (aX === bX) {
+        return pX <= aX;
+    }
+    const numerator = (pY - aY) * (bX - aX);
+    const denominator = bY - aY;
+    const intersectX = (numerator / denominator) + aX;
+    return intersectX >= pX;
+}

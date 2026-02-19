@@ -992,12 +992,19 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
         "Ending Ride. Accumulated Distance: ${_accumulatedDistance}m. Final used km: $actualDistance",
       );
 
+      // Calculate Paid Waiting Charge locally to pass to backend
+      // _paidWaitSeconds is total seconds beyond the free 3 mins per stop
+      int totalPaidMinutes = (_paidWaitSeconds / 60).ceil();
+      double waitingCharge = totalPaidMinutes * 5.0; // ₹5 per min
+
       // Start Cloud Function Call (Pricing)
       final pricingFuture = FirebaseFunctions.instanceFor(region: 'asia-south1')
           .httpsCallable('calculateDynamicPricing')
           .call({
             'rideId': _rideRequest.rideId,
             'actualDistanceKm': actualDistance,
+            'waitingCharge': waitingCharge,
+            'rideType': 'daily',
           });
 
       // Start Address Fetch in Parallel if location known
@@ -1007,17 +1014,17 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
       }
 
       // Wait for Pricing
-      final result = await pricingFuture;
+      final resultFuture = await pricingFuture;
+      final resultData =
+          resultFuture.data as Map<String, dynamic>; // Explicit cast
 
-      final baseFare = (result.data['finalFare'] ?? _rideRequest.rideFare)
+      final baseFare = (resultData['finalFare'] ?? _rideRequest.rideFare)
           .toDouble();
 
-      // Calculate Paid Waiting Charge
-      // _paidWaitSeconds is total seconds beyond the free 3 mins per stop
-      int totalPaidMinutes = (_paidWaitSeconds / 60).ceil();
-      double waitingCharge = totalPaidMinutes * 5.0; // ₹5 per min
-
-      final finalFare = baseFare + waitingCharge;
+      // Final fare returned by backend SHOULD include waiting charge if we used it correctly,
+      // OR we can trust the backend's 'finalFare' as the source of truth.
+      // The backend adds waitingCharge to the total.
+      final finalFare = baseFare; // backend finalFare includes everything.
 
       final Map<String, dynamic> updateData = {
         'status': 'completed',
@@ -1098,215 +1105,358 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
   @override
   Widget build(BuildContext context) {
     // FIX: Force fresh MediaQueryData to avoid "incorrect configuration id" crash on Android 14+
-    final mediaQueryData = MediaQueryData.fromView(View.of(context)).copyWith(
-      textScaler: const TextScaler.linear(1.0),
-    );
+    final mediaQueryData = MediaQueryData.fromView(
+      View.of(context),
+    ).copyWith(textScaler: const TextScaler.linear(1.0));
 
     return MediaQuery(
       data: mediaQueryData,
       child: PopScope(
         canPop: false,
         child: Scaffold(
-        appBar: AppBar(
-          title: Text('rideStartedTitle'.tr),
-          automaticallyImplyLeading: false,
-          actions: [
-            // Info Button logic
-            PopupMenuButton(
-              icon: const Icon(Icons.info_outline),
-              itemBuilder: (context) {
-                // Calculate Duration - Handled by LiveRideTimer now
+          appBar: AppBar(
+            title: Text('rideStartedTitle'.tr),
+            automaticallyImplyLeading: false,
+            actions: [
+              // Info Button logic
+              PopupMenuButton(
+                icon: const Icon(Icons.info_outline),
+                itemBuilder: (context) {
+                  // Calculate Duration - Handled by LiveRideTimer now
 
-                // Calculate Distance
-                String distanceString = "0.0 km";
-                if (_accumulatedDistance > 0) {
-                  distanceString =
-                      "${(_accumulatedDistance / 1000).toStringAsFixed(2)} km";
-                }
+                  // Calculate Distance
+                  String distanceString = "0.0 km";
+                  if (_accumulatedDistance > 0) {
+                    distanceString =
+                        "${(_accumulatedDistance / 1000).toStringAsFixed(2)} km";
+                  }
 
-                return <PopupMenuEntry<dynamic>>[
-                  PopupMenuItem(
-                    enabled: false,
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          '${'timeElapsed'.tr}: ',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: Theme.of(context).textTheme.bodyLarge?.color,
+                  return <PopupMenuEntry<dynamic>>[
+                    PopupMenuItem(
+                      enabled: false,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            '${'timeElapsed'.tr}: ',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Theme.of(
+                                context,
+                              ).textTheme.bodyLarge?.color,
+                            ),
                           ),
+                          LiveRideTimer(startedAt: _rideRequest.startedAt),
+                        ],
+                      ),
+                    ),
+                    PopupMenuItem(
+                      enabled: false,
+                      child: Text(
+                        '${'distance'.tr}: $distanceString',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Theme.of(context).textTheme.bodyLarge?.color,
                         ),
-                        LiveRideTimer(startedAt: _rideRequest.startedAt),
-                      ],
-                    ),
-                  ),
-                  PopupMenuItem(
-                    enabled: false,
-                    child: Text(
-                      '${'distance'.tr}: $distanceString',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: Theme.of(context).textTheme.bodyLarge?.color,
                       ),
                     ),
-                  ),
-                  const PopupMenuDivider(),
-                  PopupMenuItem(
-                    enabled: false,
-                    child: Text(
-                      '${'vehicle'.tr}: ${_rideRequest.vehicleClass}',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: Theme.of(context).textTheme.bodyLarge?.color,
+                    const PopupMenuDivider(),
+                    PopupMenuItem(
+                      enabled: false,
+                      child: Text(
+                        '${'vehicle'.tr}: ${_rideRequest.vehicleClass}',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Theme.of(context).textTheme.bodyLarge?.color,
+                        ),
                       ),
                     ),
-                  ),
-                ];
-              },
-            ),
-          ],
-        ),
-        body: Stack(
-          children: [
-            maps.GoogleMap(
-              initialCameraPosition: maps.CameraPosition(
-                target: _driverLocation ?? const maps.LatLng(0, 0),
-                zoom: 16,
+                  ];
+                },
               ),
-              mapType: maps.MapType.normal,
-              onMapCreated: (maps.GoogleMapController controller) {
-                _controller.complete(controller);
-                // Immediately try to fit bounds if we have locations
-                if (_driverLocation != null && _dropLocation != null) {
-                  _fitCameraToRoute(_driverLocation!, _dropLocation!);
-                } else {
-                  // Fallback to ride request locations if driver loc not yet ready
-                  final pickup = maps.LatLng(
-                    widget.rideRequest.pickupLocation.latitude,
-                    widget.rideRequest.pickupLocation.longitude,
-                  );
-                  final dropoff = maps.LatLng(
-                    widget.rideRequest.dropoffLocation.latitude,
-                    widget.rideRequest.dropoffLocation.longitude,
-                  );
-                  _fitCameraToRoute(pickup, dropoff);
-                  // Also trigger route fetch if we are using fallback locations!
-                  _getRoute(pickup, dropoff);
-                }
-              },
-              markers: _markers,
-              polylines: _polylines,
-              myLocationEnabled: true,
-              myLocationButtonEnabled: true,
-            ),
+            ],
+          ),
+          body: Stack(
+            children: [
+              maps.GoogleMap(
+                initialCameraPosition: maps.CameraPosition(
+                  target: _driverLocation ?? const maps.LatLng(0, 0),
+                  zoom: 16,
+                ),
+                mapType: maps.MapType.normal,
+                onMapCreated: (maps.GoogleMapController controller) {
+                  _controller.complete(controller);
+                  // Immediately try to fit bounds if we have locations
+                  if (_driverLocation != null && _dropLocation != null) {
+                    _fitCameraToRoute(_driverLocation!, _dropLocation!);
+                  } else {
+                    // Fallback to ride request locations if driver loc not yet ready
+                    final pickup = maps.LatLng(
+                      widget.rideRequest.pickupLocation.latitude,
+                      widget.rideRequest.pickupLocation.longitude,
+                    );
+                    final dropoff = maps.LatLng(
+                      widget.rideRequest.dropoffLocation.latitude,
+                      widget.rideRequest.dropoffLocation.longitude,
+                    );
+                    _fitCameraToRoute(pickup, dropoff);
+                    // Also trigger route fetch if we are using fallback locations!
+                    _getRoute(pickup, dropoff);
+                  }
+                },
+                markers: _markers,
+                polylines: _polylines,
+                myLocationEnabled: true,
+                myLocationButtonEnabled: true,
+              ),
 
-            Positioned(
-              bottom: 0,
-              left: 0,
-              right: 0,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // Navigate Button
-                  FloatingActionButton.extended(
-                    heroTag: 'ride_started_navigate_btn',
-                    onPressed: _onNavigatePressed,
-                    icon: const Icon(Icons.navigation),
-                    label: Text('navigateBtn'.tr),
-                    backgroundColor: Colors.blue,
-                    foregroundColor: Colors.white,
-                  ),
-                  const SizedBox(height: 16),
-
-                  // Bottom Sheet
-                  Container(
-                    padding: const EdgeInsets.all(16.0),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).scaffoldBackgroundColor,
-                      borderRadius: const BorderRadius.vertical(
-                        top: Radius.circular(20),
-                      ),
-                      boxShadow: const [
-                        BoxShadow(color: Colors.black12, blurRadius: 10),
-                      ],
+              Positioned(
+                bottom: 0,
+                left: 0,
+                right: 0,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Navigate Button
+                    FloatingActionButton.extended(
+                      heroTag: 'ride_started_navigate_btn',
+                      onPressed: _onNavigatePressed,
+                      icon: const Icon(Icons.navigation),
+                      label: Text('navigateBtn'.tr),
+                      backgroundColor: Colors.blue,
+                      foregroundColor: Colors.white,
                     ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        // Customer Info
-                        Row(
-                          children: [
-                            const CircleAvatar(child: Icon(Icons.person)),
-                            const SizedBox(width: 10),
-                            Text(
-                              _customerName,
-                              style: const TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
+                    const SizedBox(height: 16),
+
+                    // Bottom Sheet
+                    Container(
+                      padding: const EdgeInsets.all(16.0),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).scaffoldBackgroundColor,
+                        borderRadius: const BorderRadius.vertical(
+                          top: Radius.circular(20),
+                        ),
+                        boxShadow: const [
+                          BoxShadow(color: Colors.black12, blurRadius: 10),
+                        ],
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // Customer Info
+                          Row(
+                            children: [
+                              const CircleAvatar(child: Icon(Icons.person)),
+                              const SizedBox(width: 10),
+                              Text(
+                                _customerName,
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const Spacer(),
+                              IconButton(
+                                onPressed: _makePhoneCall,
+                                icon: const Icon(
+                                  Icons.phone,
+                                  color: Colors.green,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const Divider(),
+                          // Destination Info
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Theme.of(context).cardColor,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: Theme.of(context).dividerColor,
                               ),
                             ),
-                            const Spacer(),
-                            IconButton(
-                              onPressed: _makePhoneCall,
-                              icon: const Icon(
-                                Icons.phone,
+                            child: Row(
+                              children: [
+                                const Icon(Icons.flag, color: Colors.red),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Builder(
+                                    builder: (context) {
+                                      final pendingStop =
+                                          _rideRequest.stops
+                                              .where((s) => s.isPending)
+                                              .isNotEmpty
+                                          ? _rideRequest.stops.firstWhere(
+                                              (s) => s.isPending,
+                                            )
+                                          : null;
+
+                                      String title = "";
+                                      String address = "";
+
+                                      if (pendingStop != null) {
+                                        title = pendingStop.title;
+                                        address = pendingStop.fullAddress;
+                                      } else {
+                                        title = _rideRequest.dropoffTitle;
+                                        address =
+                                            _rideRequest.dropoffFullAddress;
+                                      }
+
+                                      // Fallback if address is empty but we have fetched one
+                                      if (address.isEmpty &&
+                                          _fetchedAddress.isNotEmpty) {
+                                        address = _fetchedAddress;
+                                      }
+
+                                      return Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          if (title.isNotEmpty)
+                                            Text(
+                                              title,
+                                              style: TextStyle(
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 16,
+                                                color: Theme.of(
+                                                  context,
+                                                ).textTheme.bodyLarge?.color,
+                                              ),
+                                            ),
+                                          Text(
+                                            address,
+                                            style: TextStyle(
+                                              fontSize: 13,
+                                              color: Theme.of(
+                                                context,
+                                              ).textTheme.bodySmall?.color,
+                                            ),
+                                          ),
+                                        ],
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          // Fare display
+                          Row(
+                            children: [
+                              const Icon(
+                                Icons.currency_rupee,
                                 color: Colors.green,
                               ),
-                            ),
-                          ],
-                        ),
-                        const Divider(),
-                        // Destination Info
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Theme.of(context).cardColor,
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: Theme.of(context).dividerColor,
-                            ),
-                          ),
-                          child: Row(
-                            children: [
-                              const Icon(Icons.flag, color: Colors.red),
                               const SizedBox(width: 10),
-                              Expanded(
-                                child: Builder(
-                                  builder: (context) {
-                                    final pendingStop =
-                                        _rideRequest.stops
-                                            .where((s) => s.isPending)
-                                            .isNotEmpty
-                                        ? _rideRequest.stops.firstWhere(
-                                            (s) => s.isPending,
-                                          )
-                                        : null;
-
-                                    String title = "";
-                                    String address = "";
-
-                                    if (pendingStop != null) {
-                                      title = pendingStop.title;
-                                      address = pendingStop.fullAddress;
-                                    } else {
-                                      title = _rideRequest.dropoffTitle;
-                                      address = _rideRequest.dropoffFullAddress;
-                                    }
-
-                                    // Fallback if address is empty but we have fetched one
-                                    if (address.isEmpty &&
-                                        _fetchedAddress.isNotEmpty) {
-                                      address = _fetchedAddress;
-                                    }
-
-                                    return Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        if (title.isNotEmpty)
+                              Text(
+                                _rideRequest.rideType == 'rental'
+                                    ? "${'packageRate'.tr}: ₹${_rideRequest.rideFare}"
+                                    : "${'rideFare'.tr}: ₹${_rideRequest.rideFare}",
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: Theme.of(
+                                    context,
+                                  ).textTheme.bodyLarge?.color,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          if (_isWaiting) ...[
+                            Text(
+                              (_waitTimeRemaining > 0)
+                                  ? "${'freeWait'.tr}: ${_formatTime(_waitTimeRemaining)}"
+                                  : "${'paidWait'.tr}: ${_formatTime(_paidWaitSeconds)}",
+                              style: TextStyle(
+                                fontSize: 24,
+                                fontWeight: FontWeight.bold,
+                                color: (_waitTimeRemaining > 0)
+                                    ? Colors.orange
+                                    : Colors.red,
+                              ),
+                            ),
+                            if (_paidWaitSeconds > 0)
+                              Text(
+                                "+ ₹${((_paidWaitSeconds / 60).ceil() * 5)}",
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  color: Colors.redAccent,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            const SizedBox(height: 10),
+                          ] else if (_rideRequest.rideType == 'rental') ...[
+                            // Metrics Row - Only show for rentals
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 16.0),
+                              child: Row(
+                                children: [
+                                  // Duration Box
+                                  Expanded(
+                                    child: Container(
+                                      padding: const EdgeInsets.all(12),
+                                      decoration: BoxDecoration(
+                                        color: Theme.of(context).cardColor,
+                                        borderRadius: BorderRadius.circular(12),
+                                        border: Border.all(
+                                          color: Theme.of(context).dividerColor,
+                                        ),
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
                                           Text(
-                                            title,
+                                            'duration'.tr,
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              color: Theme.of(
+                                                context,
+                                              ).textTheme.bodySmall?.color,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 4),
+                                          _DurationDisplay(
+                                            startedAt: _rideRequest.startedAt,
+                                            limitHours:
+                                                _rideRequest.durationHours,
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  // Distance Box
+                                  Expanded(
+                                    child: Container(
+                                      padding: const EdgeInsets.all(12),
+                                      decoration: BoxDecoration(
+                                        color: Theme.of(context).cardColor,
+                                        borderRadius: BorderRadius.circular(12),
+                                        border: Border.all(
+                                          color: Theme.of(context).dividerColor,
+                                        ),
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            'distance'.tr,
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              color: Theme.of(
+                                                context,
+                                              ).textTheme.bodySmall?.color,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            _buildDistanceString(),
                                             style: TextStyle(
                                               fontWeight: FontWeight.bold,
                                               fontSize: 16,
@@ -1315,202 +1465,61 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
                                               ).textTheme.bodyLarge?.color,
                                             ),
                                           ),
-                                        Text(
-                                          address,
-                                          style: TextStyle(
-                                            fontSize: 13,
-                                            color: Theme.of(
-                                              context,
-                                            ).textTheme.bodySmall?.color,
-                                          ),
-                                          maxLines: 2,
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                      ],
-                                    );
-                                  },
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        // Fare display
-                        Row(
-                          children: [
-                            const Icon(
-                              Icons.currency_rupee,
-                              color: Colors.green,
-                            ),
-                            const SizedBox(width: 10),
-                            Text(
-                              _rideRequest.rideType == 'rental'
-                                  ? "${'packageRate'.tr}: ₹${_rideRequest.rideFare}"
-                                  : "${'rideFare'.tr}: ₹${_rideRequest.rideFare}",
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                                color: Theme.of(
-                                  context,
-                                ).textTheme.bodyLarge?.color,
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           ],
-                        ),
-                        const SizedBox(height: 16),
-                        if (_isWaiting) ...[
-                          Text(
-                            (_waitTimeRemaining > 0)
-                                ? "${'freeWait'.tr}: ${_formatTime(_waitTimeRemaining)}"
-                                : "${'paidWait'.tr}: ${_formatTime(_paidWaitSeconds)}",
-                            style: TextStyle(
-                              fontSize: 24,
-                              fontWeight: FontWeight.bold,
-                              color: (_waitTimeRemaining > 0)
-                                  ? Colors.orange
-                                  : Colors.red,
-                            ),
-                          ),
-                          if (_paidWaitSeconds > 0)
-                            Text(
-                              "+ ₹${((_paidWaitSeconds / 60).ceil() * 5)}",
-                              style: const TextStyle(
-                                fontSize: 18,
-                                color: Colors.redAccent,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          const SizedBox(height: 10),
-                        ] else if (_rideRequest.rideType == 'rental') ...[
-                          // Metrics Row - Only show for rentals
                           Padding(
-                            padding: const EdgeInsets.only(bottom: 16.0),
-                            child: Row(
-                              children: [
-                                // Duration Box
-                                Expanded(
-                                  child: Container(
-                                    padding: const EdgeInsets.all(12),
-                                    decoration: BoxDecoration(
-                                      color: Theme.of(context).cardColor,
-                                      borderRadius: BorderRadius.circular(12),
-                                      border: Border.all(
-                                        color: Theme.of(context).dividerColor,
-                                      ),
-                                    ),
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          'duration'.tr,
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            color: Theme.of(
-                                              context,
-                                            ).textTheme.bodySmall?.color,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 4),
-                                        _DurationDisplay(
-                                          startedAt: _rideRequest.startedAt,
-                                          limitHours:
-                                              _rideRequest.durationHours,
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                // Distance Box
-                                Expanded(
-                                  child: Container(
-                                    padding: const EdgeInsets.all(12),
-                                    decoration: BoxDecoration(
-                                      color: Theme.of(context).cardColor,
-                                      borderRadius: BorderRadius.circular(12),
-                                      border: Border.all(
-                                        color: Theme.of(context).dividerColor,
-                                      ),
-                                    ),
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          'distance'.tr,
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            color: Theme.of(
-                                              context,
-                                            ).textTheme.bodySmall?.color,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          _buildDistanceString(),
-                                          style: TextStyle(
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 16,
-                                            color: Theme.of(
-                                              context,
-                                            ).textTheme.bodyLarge?.color,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ],
+                            padding: const EdgeInsets.only(bottom: 30),
+                            child: RideStatusSlider(
+                              key: ValueKey(
+                                'slider_${_currentStopIndex}_$_isWaiting',
+                              ),
+                              label: _getSliderLabel(),
+                              color: _isWaiting
+                                  ? Colors.green
+                                  : (_getSliderLabel() == 'End Ride'
+                                        ? Colors.red
+                                        : Colors.orange),
+                              onSlideComplete: _handleSlideComplete,
                             ),
                           ),
                         ],
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 30),
-                          child: RideStatusSlider(
-                            key: ValueKey(
-                              'slider_${_currentStopIndex}_$_isWaiting',
-                            ),
-                            label: _getSliderLabel(),
-                            color: _isWaiting
-                                ? Colors.green
-                                : (_getSliderLabel() == 'End Ride'
-                                      ? Colors.red
-                                      : Colors.orange),
-                            onSlideComplete: _handleSlideComplete,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (_isLoading)
+                Container(
+                  color: Colors.black54,
+                  child: Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        CircularProgressIndicator(color: Colors.white),
+                        SizedBox(height: 16),
+                        Text(
+                          'endingRide'.tr,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
                           ),
                         ),
                       ],
                     ),
                   ),
-                ],
-              ),
-            ),
-            if (_isLoading)
-              Container(
-                color: Colors.black54,
-                child: Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      CircularProgressIndicator(color: Colors.white),
-                      SizedBox(height: 16),
-                      Text(
-                        'endingRide'.tr,
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
                 ),
-              ),
-          ],
+            ],
+          ),
         ),
       ),
-    ));
+    );
   }
 
   String _formatTime(int totalSeconds) {

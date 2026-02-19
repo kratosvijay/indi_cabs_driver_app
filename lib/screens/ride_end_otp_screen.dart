@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart' as maps;
@@ -82,80 +83,50 @@ class _RideEndOtpScreenState extends State<RideEndOtpScreen> {
     });
 
     try {
-      // --- Billing Logic from RideStartedScreen ---
-      final doc = await FirebaseFirestore.instance
-          .collection(collectionPath)
-          .doc(widget.rideRequest.rideId)
-          .get();
+      // Amount is calculated in backend now
 
       double actualDistanceKm = 0.0;
       if (widget.accumulatedDistance > 0) {
         actualDistanceKm = widget.accumulatedDistance / 1000.0;
-      } else if (widget.driverLocation != null) {
-        // Fallback calculation not strictly possibly without start loc here,
-        // relying on accumulatedDistance passed from previous screen is best.
-        // If 0, assume 0.
       }
 
-      final data = doc.data() as Map<String, dynamic>;
-      final startedAtTs = data['startedAt'] as Timestamp?;
-      final DateTime startedAt = startedAtTs?.toDate() ?? DateTime.now();
-      final DateTime now = DateTime.now();
-      final durationMinutes = now.difference(startedAt).inMinutes.toDouble();
-      final durationHours = durationMinutes / 60.0;
+      // Call Cloud Function for RENTAL billing
+      final pricingFuture = FirebaseFunctions.instanceFor(region: 'asia-south1')
+          .httpsCallable('calculateDynamicPricing')
+          .call({
+            'rideId': widget.rideRequest.rideId,
+            'actualDistanceKm': actualDistanceKm,
+            'waitingCharge': 0.0, // Usually implicit in rental duration
+            'rideType': 'rental',
+          });
 
-      final pkgHours = (data['durationHours'] as num? ?? 0).toDouble();
-      final pkgKm = (data['kmLimit'] as num? ?? 0).toDouble();
-      final extraHourCharge = (data['extraHourCharge'] as num? ?? 0).toDouble();
-      final extraKmCharge = (data['extraKmCharge'] as num? ?? 0).toDouble();
-      final baseFare = (data['fare'] as num? ?? 0).toDouble();
+      final result = await pricingFuture;
+      final resultData = result.data as Map<String, dynamic>;
 
-      double extraHours = 0;
-      if (durationHours > pkgHours) {
-        extraHours = durationHours - pkgHours;
-      }
-      final extraHoursCeiled = extraHours.ceil();
+      final totalFare = (resultData['finalFare'] ?? 0.0).toDouble();
+      final actualDuration = (resultData['actualDurationMinutes'] ?? 0.0)
+          .toDouble();
 
-      double extraKm = 0;
-      if (actualDistanceKm > pkgKm) {
-        extraKm = actualDistanceKm - pkgKm;
-      }
-
-      final extraTimeCost = extraHoursCeiled * extraHourCharge;
-      final extraDstCost = extraKm * extraKmCharge;
-
-      final totalFare = baseFare + extraTimeCost + extraDstCost;
-
-      final Map<String, dynamic> updateData = {
-        'status': 'completed',
-        'rideFare': totalFare,
-        'baseFare': baseFare,
-        'extraTimeCost': extraTimeCost,
-        'extraDistanceCost': extraDstCost,
-        'actualDistance': actualDistanceKm,
-        'actualDurationMinutes': durationMinutes,
-        'completedAt': FieldValue.serverTimestamp(),
-      };
-
-      if (widget.driverLocation != null) {
-        updateData['destinationLocation'] = GeoPoint(
-          widget.driverLocation!.latitude,
-          widget.driverLocation!.longitude,
-        );
-        // Address fetch could be here if needed, or skipped for speed
-      }
-
-      await FirebaseFirestore.instance
-          .collection(collectionPath)
-          .doc(widget.rideRequest.rideId)
-          .update(updateData);
-
+      // Local update for UI transition (Backend updates Firestore)
       RideRequest updatedRequest = widget.rideRequest.copyWith(
         rideFare: totalFare,
         status: 'completed',
         actualDistance: actualDistanceKm,
-        actualDuration: durationMinutes,
+        actualDuration: actualDuration,
       );
+
+      // Update destination if driver location is available (optional local update, usually backend handles it or we do it here)
+      if (widget.driverLocation != null) {
+        await FirebaseFirestore.instance
+            .collection(collectionPath)
+            .doc(widget.rideRequest.rideId)
+            .update({
+              'destinationLocation': GeoPoint(
+                widget.driverLocation!.latitude,
+                widget.driverLocation!.longitude,
+              ),
+            });
+      }
 
       if (mounted) {
         Get.off(
