@@ -11,8 +11,6 @@ import 'package:project_taxi_driver_app/screens/permission_screen.dart';
 
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:package_info_plus/package_info_plus.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 class SplashController extends GetxController {
   RxString statusText = "Initializing the app...".obs;
@@ -27,14 +25,7 @@ class SplashController extends GetxController {
     // 1. Basic UI Delay
     await Future.delayed(const Duration(seconds: 1));
 
-    // CHECK FOR UPDATES BEFORE ANYTHING ELSE
-    try {
-      await checkForUpdates();
-    } catch (e) {
-      if (e.toString().contains("Update Required")) {
-        return; // Stop initialization
-      }
-    }
+    // Update logic removed - handled by upgrader in the widget tree
 
     statusText.value = "Initializing the app...";
 
@@ -129,96 +120,5 @@ class SplashController extends GetxController {
       // Fallback in case of critical error reading prefs?
       Get.offAll(() => const OnboardingScreen());
     }
-  }
-
-  Future<void> checkForUpdates() async {
-    try {
-      statusText.value = "Checking for updates...";
-
-      // Get current app version
-      PackageInfo packageInfo = await PackageInfo.fromPlatform();
-      String currentVersion = packageInfo.version;
-
-      // Fetch latest version from Firestore
-      DocumentSnapshot doc = await FirebaseFirestore.instance
-          .collection('app_settings')
-          .doc('driver_app')
-          .get();
-
-      if (doc.exists) {
-        Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
-        String latestVersion = data['latest_version'] ?? currentVersion;
-        String storeUrl = data['store_url'] ?? '';
-        bool forceUpdate = data['force_update'] ?? false;
-
-        debugPrint(
-          "Splash: Current Version: $currentVersion, Latest: $latestVersion",
-        );
-
-        if (_isUpdateAvailable(currentVersion, latestVersion)) {
-          debugPrint("Splash: Update Available!");
-          if (forceUpdate) {
-            _showUpdateDialog(storeUrl, true);
-            // Verify this throws/stops execution flow if we want to BLOCK
-            // But since we are inside _init, we should return or throw to stop further execution in _init
-            throw Exception("Force Update Required");
-          } else {
-            // Optional update - maybe show a dialog but allow skip?
-            // For now, request implies "compulsory update" if available,
-            // but let's stick to the prompt: "if any update is available make sure it should be compuldary update"
-            _showUpdateDialog(storeUrl, true);
-            throw Exception("Update Required");
-          }
-        }
-      }
-    } catch (e) {
-      if (e.toString().contains("Update Required")) {
-        rethrow; // Propagate up to stop _init
-      }
-      debugPrint("Splash: Error checking updates: $e");
-      // Continue if check fails (internet issue etc)
-    }
-  }
-
-  bool _isUpdateAvailable(String current, String latest) {
-    List<int> currentParts = current.split('.').map(int.parse).toList();
-    List<int> latestParts = latest.split('.').map(int.parse).toList();
-
-    for (int i = 0; i < latestParts.length; i++) {
-      int cPart = (i < currentParts.length) ? currentParts[i] : 0;
-      int lPart = latestParts[i];
-
-      if (lPart > cPart) return true;
-      if (lPart < cPart) return false;
-    }
-    return false;
-  }
-
-  void _showUpdateDialog(String url, bool isForce) {
-    Get.dialog(
-      PopScope(
-        canPop: !isForce,
-        child: AlertDialog(
-          title: const Text("Update Available"),
-          content: const Text(
-            "A new version of the app is available. Please update to continue.",
-          ),
-          actions: [
-            TextButton(
-              onPressed: () async {
-                final Uri uri = Uri.parse(url);
-                if (await canLaunchUrl(uri)) {
-                  await launchUrl(uri, mode: LaunchMode.externalApplication);
-                } else {
-                  debugPrint("Could not launch $url");
-                }
-              },
-              child: const Text("Update Now"),
-            ),
-          ],
-        ),
-      ),
-      barrierDismissible: !isForce,
-    );
   }
 }

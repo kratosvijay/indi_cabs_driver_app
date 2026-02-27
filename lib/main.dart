@@ -11,6 +11,7 @@ import 'package:get/get.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:project_taxi_driver_app/controllers/auth_controller.dart';
 import 'package:project_taxi_driver_app/screens/splash_screen.dart';
+import 'package:upgrader/upgrader.dart';
 
 // import 'package:flutter_refresh_rate_control/flutter_refresh_rate_control.dart';
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
@@ -112,7 +113,7 @@ class _MyAppState extends State<MyApp> {
       // Automatically switch based on phone settings
       themeMode: ThemeMode.system,
 
-      home: const SplashScreen(),
+      home: UpgradeAlert(child: const SplashScreen()),
     );
   }
 }
