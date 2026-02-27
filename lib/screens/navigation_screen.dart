@@ -187,6 +187,10 @@ class _NavigationScreenState extends State<NavigationScreen> {
   }
 
   void _onViewCreated(GoogleNavigationViewController controller) {
+    // Explicitly enable UI elements
+    controller.setNavigationUIEnabled(true);
+    controller.setMyLocationEnabled(true);
+
     _startGuidance();
   }
 

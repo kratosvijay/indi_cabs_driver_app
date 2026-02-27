@@ -240,26 +240,49 @@ class RideRequest {
     List<RideStop> parsedStops = [];
     if (rawStops != null && rawStops is List) {
       parsedStops = rawStops.map((s) {
-        // Handle both direct lat/lng and nested location object
+        // Stop might be a raw GeoPoint or a Map containing a GeoPoint/lat-lng
         double lat = 0.0;
         double lng = 0.0;
+        String title = 'Stop';
+        String fullAddress = '';
+        String status = 'pending';
 
-        if (s['location'] != null) {
-          // Nested location object (legacy format)
-          final loc = s['location'];
-          lat = (loc['latitude'] as num?)?.toDouble() ?? 0.0;
-          lng = (loc['longitude'] as num?)?.toDouble() ?? 0.0;
-        } else {
-          // Direct latitude/longitude fields (Firestore format)
-          lat = (s['latitude'] as num?)?.toDouble() ?? 0.0;
-          lng = (s['longitude'] as num?)?.toDouble() ?? 0.0;
+        if (s is GeoPoint) {
+          lat = s.latitude;
+          lng = s.longitude;
+        } else if (s is Map) {
+          if (s['location'] != null) {
+            final loc = s['location'];
+            if (loc is GeoPoint) {
+              lat = loc.latitude;
+              lng = loc.longitude;
+            } else {
+              // Nested location object (legacy format)
+              lat =
+                  (loc['latitude'] as num?)?.toDouble() ??
+                  (loc['lat'] as num?)?.toDouble() ??
+                  0.0;
+              lng =
+                  (loc['longitude'] as num?)?.toDouble() ??
+                  (loc['lng'] as num?)?.toDouble() ??
+                  0.0;
+            }
+          } else {
+            // Direct latitude/longitude fields (Firestore format)
+            lat = (s['latitude'] as num?)?.toDouble() ?? 0.0;
+            lng = (s['longitude'] as num?)?.toDouble() ?? 0.0;
+          }
+
+          title = s['address']?.split(',')[0] ?? 'Stop';
+          fullAddress = s['address'] ?? '';
+          status = s['status'] ?? 'pending';
         }
 
         return RideStop(
-          title: s['address']?.split(',')[0] ?? 'Stop',
-          fullAddress: s['address'] ?? '',
+          title: title,
+          fullAddress: fullAddress,
           location: LatLng(lat, lng),
-          status: s['status'] ?? 'pending',
+          status: status,
         );
       }).toList();
     }
@@ -279,7 +302,10 @@ class RideRequest {
           '',
       driverDistance: (json['driverDistance'] as num?)?.toDouble() ?? 0.0,
       rideDistance: (json['rideDistance'] as num?)?.toDouble() ?? 0.0,
-      rideFare: (json['rideFare'] as num?)?.toDouble() ?? 0.0,
+      rideFare:
+          (json['rideFare'] as num?)?.toDouble() ??
+          (json['fare'] as num?)?.toDouble() ??
+          0.0,
       tip: (json['tip'] as num?)?.toDouble(),
       vehicleType: json['vehicleType'] ?? '',
       pickupLocation: () {
@@ -482,11 +508,6 @@ class _RideRequestCardState extends State<RideRequestCard> {
     int totalSeconds = 20; // 20 seconds global TTL
     int remainingMs = totalSeconds * 1000;
 
-    if (widget.rideRequest.createdAt != null) {
-      final elapsed = DateTime.now().difference(widget.rideRequest.createdAt!);
-      remainingMs = (totalSeconds * 1000) - elapsed.inMilliseconds;
-    }
-
     if (remainingMs <= 0) {
       // Already expired
       remainingMs = 0;
@@ -546,7 +567,7 @@ class _RideRequestCardState extends State<RideRequestCard> {
       child: Stack(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 20, 16, 20),
+            padding: const EdgeInsets.all(20),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min, // Important for list items

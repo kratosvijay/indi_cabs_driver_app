@@ -1,10 +1,10 @@
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:get/get.dart';
+import 'package:flutter/material.dart';
 
 class QueueService {
   static final QueueService _instance = QueueService._internal();
@@ -157,7 +157,7 @@ class QueueService {
   void stopMonitoring() {
     _positionStream?.cancel();
     _queueSubscription?.cancel();
-    _exitQueue("Monitoring Stopped (Offline/Logout)");
+    _exitQueue("Monitoring Stopped (Offline/Logout)", showNotification: false);
     queuePosition.value = null;
     debugPrint("QueueService: Monitoring stopped");
   }
@@ -200,7 +200,7 @@ class QueueService {
 
           _exitTimer = Timer(const Duration(minutes: 2), () async {
             debugPrint("QueueService: Exit Timer expired. Exiting queue.");
-            await _exitQueue("Left Geofence (>2 mins)");
+            await _exitQueue("Left Geofence (>2 mins)", showNotification: true);
             _exitTimer = null;
           });
         }
@@ -257,6 +257,16 @@ class QueueService {
         _isInQueue = true;
         debugPrint("QueueService: Joined Queue successfully!");
         onQueueEvent?.call('joinedQueue'.tr, 'queueJoinedMsg'.tr, 'success');
+
+        Get.snackbar(
+          'Queue Entered',
+          'You have successfully joined the airport queue.',
+          snackPosition: SnackPosition.TOP,
+          backgroundColor: Colors.green,
+          colorText: Colors.white,
+          margin: const EdgeInsets.all(16),
+          duration: const Duration(seconds: 4),
+        );
       } else {
         _isInQueue = true; // Recover state
       }
@@ -265,7 +275,7 @@ class QueueService {
     }
   }
 
-  Future<void> _exitQueue(String reason) async {
+  Future<void> _exitQueue(String reason, {bool showNotification = true}) async {
     final user = _auth.currentUser;
     if (user == null) return;
 
@@ -280,7 +290,21 @@ class QueueService {
           .delete();
 
       _isInQueue = false;
-      onQueueEvent?.call('exitedQueue'.tr, 'queueExitedMsg'.tr, 'error');
+
+      if (showNotification) {
+        onQueueEvent?.call('exitedQueue'.tr, 'queueExitedMsg'.tr, 'error');
+
+        Get.snackbar(
+          'Queue Exited',
+          'You have left the airport queue area.',
+          snackPosition: SnackPosition.TOP,
+          backgroundColor: Colors.redAccent,
+          colorText: Colors.white,
+          margin: const EdgeInsets.all(16),
+          duration: const Duration(seconds: 4),
+        );
+      }
+
       debugPrint("QueueService: Exited Queue.");
     } catch (e) {
       debugPrint("QueueService Error (Exit): $e");

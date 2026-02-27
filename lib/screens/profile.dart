@@ -1,12 +1,17 @@
+import 'dart:io';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:project_taxi_driver_app/screens/document_verificaton.dart';
 import 'package:project_taxi_driver_app/screens/qr_settings_screen.dart';
 import 'package:project_taxi_driver_app/screens/language.dart';
 import 'package:project_taxi_driver_app/screens/login.dart';
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
+import 'package:project_taxi_driver_app/utils/app_colors.dart';
 import 'package:project_taxi_driver_app/screens/driver_vehicle_selection_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -22,6 +27,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   bool _languageHasChanged = false;
   String _selectedLanguageCode = 'en';
   bool _isLoading = true;
+  bool _isUploadingImage = false;
 
   // --- Translations ---
   final Map<String, Map<String, String>> _translations = {
@@ -169,6 +175,64 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
+  Future<void> _pickImageAndUpdate() async {
+    final picker = ImagePicker();
+    final pickedFile = await picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 50,
+    );
+
+    if (pickedFile != null) {
+      setState(() {
+        _isUploadingImage = true;
+      });
+      await _uploadImageToFirebase(File(pickedFile.path));
+      setState(() {
+        _isUploadingImage = false;
+      });
+    }
+  }
+
+  Future<void> _uploadImageToFirebase(File imageFile) async {
+    try {
+      final String uid = widget.user.uid;
+      final storageRef = FirebaseStorage.instance
+          .ref()
+          .child('driver_profile_pictures')
+          .child('$uid.jpg');
+
+      final uploadTask = storageRef.putFile(imageFile);
+      final snapshot = await uploadTask.whenComplete(() => {});
+      final downloadUrl = await snapshot.ref.getDownloadURL();
+
+      // Update Firestore
+      await FirebaseFirestore.instance.collection('drivers').doc(uid).update({
+        'photoUrl': downloadUrl,
+      });
+
+      // Update Firebase Auth profile
+      await widget.user.updateProfile(photoURL: downloadUrl);
+
+      if (mounted) {
+        Get.snackbar(
+          'Success',
+          'Profile picture updated successfully!',
+          backgroundColor: Colors.green,
+          colorText: Colors.white,
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        Get.snackbar(
+          'Error',
+          'Failed to upload profile picture. Please try again.',
+          backgroundColor: Colors.red,
+          colorText: Colors.white,
+        );
+      }
+    }
+  }
+
   String _getTranslatedString(String key) {
     return _translations[_selectedLanguageCode]?[key] ??
         _translations['en']![key]!;
@@ -198,12 +262,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _deleteAccount() async {
     try {
+      // 1. Delete data from firestore
       await FirebaseFirestore.instance
           .collection('drivers')
           .doc(widget.user.uid)
           .delete();
 
+      // 2. Delete user authentication
       await widget.user.delete();
+
+      // 3. Optional: clear preferences and sign out if user.delete() didn't
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.clear();
+      await FirebaseAuth.instance.signOut();
 
       if (mounted) {
         Get.offAll(() => const LoginScreen());
@@ -259,11 +330,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
               .doc(widget.user.uid)
               .snapshots(),
           builder: (context, snapshot) {
-            if (!snapshot.hasData) {
+            if (!snapshot.hasData ||
+                snapshot.data == null ||
+                !snapshot.data!.exists) {
               return const Center(child: CircularProgressIndicator());
             }
 
-            final driverData = snapshot.data!.data() as Map<String, dynamic>;
+            final data = snapshot.data!.data();
+            if (data == null) {
+              return const Center(child: CircularProgressIndicator());
+            }
+
+            final driverData = data as Map<String, dynamic>;
 
             // Robust Name Resolution: displayName -> name -> firstName+lastName -> "Driver"
             dynamic rawName = driverData['displayName'] ?? driverData['name'];
@@ -300,37 +378,82 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   delay: 0.4,
                   child: Column(
                     children: [
-                      Container(
-                        padding: const EdgeInsets.all(4),
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                            color: isDark
-                                ? Colors.blueAccent
-                                : Colors.blue.shade600,
-                            width: 2,
-                          ),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.blue.withValues(alpha: 0.2),
-                              blurRadius: 20,
-                              offset: const Offset(0, 10),
+                      GestureDetector(
+                        onTap: _isUploadingImage ? null : _pickImageAndUpdate,
+                        child: Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(4),
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: isDark
+                                      ? Colors.blueAccent
+                                      : Colors.blue.shade600,
+                                  width: 2,
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.blue.withValues(alpha: 0.2),
+                                    blurRadius: 20,
+                                    offset: const Offset(0, 10),
+                                  ),
+                                ],
+                              ),
+                              child: CircleAvatar(
+                                radius: 50,
+                                backgroundColor: Colors.grey.shade200,
+                                backgroundImage: photoUrl != null
+                                    ? NetworkImage(photoUrl)
+                                    : null,
+                                child: photoUrl == null
+                                    ? Icon(
+                                        Icons.person,
+                                        size: 50,
+                                        color: Colors.grey.shade400,
+                                      )
+                                    : null,
+                              ),
                             ),
+                            if (_isUploadingImage)
+                              Container(
+                                width: 100,
+                                height: 100,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: Colors.black.withValues(alpha: 0.5),
+                                ),
+                                child: const Center(
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              )
+                            else
+                              Positioned(
+                                bottom: 0,
+                                right: 0,
+                                child: Container(
+                                  padding: const EdgeInsets.all(6),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.primary,
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                      color: isDark
+                                          ? const Color(0xFF121212)
+                                          : const Color(0xFFF5F5F5),
+                                      width: 2,
+                                    ),
+                                  ),
+                                  child: const Icon(
+                                    Icons.edit,
+                                    color: Colors.white,
+                                    size: 16,
+                                  ),
+                                ),
+                              ),
                           ],
-                        ),
-                        child: CircleAvatar(
-                          radius: 50,
-                          backgroundColor: Colors.grey.shade200,
-                          backgroundImage: photoUrl != null
-                              ? NetworkImage(photoUrl)
-                              : null,
-                          child: photoUrl == null
-                              ? Icon(
-                                  Icons.person,
-                                  size: 50,
-                                  color: Colors.grey.shade400,
-                                )
-                              : null,
                         ),
                       ),
                       const SizedBox(height: 16),

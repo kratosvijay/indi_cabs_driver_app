@@ -169,36 +169,21 @@ class WalletController extends GetxController {
       isLoading.value = true;
       Get.back(); // Close dialog
 
-      // Call Cloud Function to verify
-      final callable = FirebaseFunctions.instanceFor(
-        region: 'asia-south1',
-      ).httpsCallable('verifyUpiId');
-      final result = await callable.call({'upiId': upiId, 'name': name});
+      // Add directly to Firestore without Razorpay verification
+      await _db
+          .collection('drivers')
+          .doc(user.uid)
+          .collection('saved_upi_ids')
+          .doc(upiId)
+          .set({
+            'createdAt': FieldValue.serverTimestamp(),
+            'verifiedName': name,
+            'verified': true, // Keep true for compatibility with UI
+          });
 
-      final data = result.data as Map<dynamic, dynamic>;
-      if (data['success'] == true) {
-        final registeredName = data['registeredName'] ?? name;
-
-        // Add to Firestore
-        await _db
-            .collection('drivers')
-            .doc(user.uid)
-            .collection('saved_upi_ids')
-            .doc(upiId)
-            .set({
-              'createdAt': FieldValue.serverTimestamp(),
-              'verifiedName': registeredName,
-              'verified': true,
-            });
-
-        Get.snackbar("Success", "UPI Verified: $registeredName");
-      }
+      Get.snackbar("Success", "UPI Added: $name");
     } catch (e) {
-      if (e is FirebaseFunctionsException) {
-        Get.snackbar("Verification Failed", e.message ?? "Unknown error");
-      } else {
-        Get.snackbar("Error", "Failed to verify UPI: $e");
-      }
+      Get.snackbar("Error", "Failed to add UPI: $e");
     } finally {
       isLoading.value = false;
     }

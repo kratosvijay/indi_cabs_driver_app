@@ -221,6 +221,15 @@ class _SignUpScreenState extends State<SignUpScreen> {
         );
         return;
       }
+      if (_imageFile == null) {
+        Get.snackbar(
+          'Error',
+          'Please select a profile photo.',
+          backgroundColor: Colors.red,
+          colorText: Colors.white,
+        );
+        return;
+      }
       userData = {
         'firstName': _firstNameController.text.trim(),
         'lastName': _lastNameController.text.trim(),

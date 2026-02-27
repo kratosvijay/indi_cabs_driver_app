@@ -2,6 +2,7 @@
 
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:geolocator/geolocator.dart';
@@ -12,6 +13,7 @@ import 'package:project_taxi_driver_app/widgets/ride_status_slider.dart';
 import 'package:project_taxi_driver_app/screens/ride_payment.dart';
 import 'package:project_taxi_driver_app/screens/navigation_screen.dart'; // Import NavigationScreen
 import 'package:project_taxi_driver_app/screens/ride_end_otp_screen.dart';
+import 'package:project_taxi_driver_app/controllers/home_page_controller.dart';
 
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:cloud_functions/cloud_functions.dart';
@@ -135,6 +137,54 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
         }
       }
     }
+
+    // --- PATCH: Fix Invalid Dropoff Location (0,0) ---
+    if (_rideRequest.dropoffLocation.latitude == 0 &&
+        _rideRequest.dropoffLocation.longitude == 0) {
+      debugPrint(
+        "PATCH: Invalid Dropoff (0,0) detected. Waiting for driver location...",
+      );
+
+      // Wait for driver location (up to 5 seconds)
+      int retries = 0;
+      while (_driverLocation == null && retries < 10) {
+        await Future.delayed(const Duration(milliseconds: 500));
+        retries++;
+      }
+
+      if (_driverLocation != null) {
+        debugPrint(
+          "PATCH: Updating Dropoff to current driver location: $_driverLocation",
+        );
+        try {
+          await _firestore
+              .collection(collectionPath)
+              .doc(widget.rideRequest.rideId)
+              .update({
+                'dropoffLocation': {
+                  'lat': _driverLocation!.latitude,
+                  'lng': _driverLocation!.longitude,
+                },
+                'dropoffFullAddress': 'Current Location (Patched)',
+                'dropoffTitle': 'Test Dropoff',
+              });
+          debugPrint("PATCH: Firestore updated successfully.");
+
+          if (mounted) {
+            setState(() {
+              _dropLocation = _driverLocation;
+              _fetchedAddress = 'Current Location (Patched)';
+            });
+            _getRoute(_driverLocation!, _dropLocation!);
+          }
+        } catch (e) {
+          debugPrint("PATCH: Error updating dropoff: $e");
+        }
+      } else {
+        debugPrint("PATCH: Driver location timeout. Cannot fix dropoff.");
+      }
+    }
+    // --- END PATCH ---
   }
 
   void _listenToRideUpdates() {
@@ -465,6 +515,9 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
 
           _lastRecordedLocation = newLoc;
 
+          // --- ROBUST B2B: Check for Availability (AvailableSoon) ---
+          _checkDriverAvailability(newLoc);
+
           setState(() {
             _driverLocation = newLoc;
             _updateMarkers();
@@ -476,6 +529,69 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
             }
           });
         });
+  }
+
+  // Track previous status to avoid redundant writes
+  String _lastSetStatus = '';
+
+  Future<void> _checkDriverAvailability(maps.LatLng currentLocation) async {
+    // Only applies if we have a valid dropoff and NO pending intermediate stops
+    if (_dropLocation == null) return;
+
+    // If there are pending stops, we are NOT finishing the ride yet.
+    final hasPendingStops = _rideRequest.stops.any((s) => s.isPending);
+    if (hasPendingStops) {
+      if (_lastSetStatus == 'availableSoon') {
+        _updateDriverStatus('on_trip'); // Revert if we added a stop
+      }
+      return;
+    }
+
+    final distToDropoff = Geolocator.distanceBetween(
+      currentLocation.latitude,
+      currentLocation.longitude,
+      _dropLocation!.latitude,
+      _dropLocation!.longitude,
+    );
+
+    // Threshold: 3km (3000 meters)
+    // You could also add ETA logic here if you had routing duration.
+    if (distToDropoff <= 3000) {
+      if (_lastSetStatus != 'availableSoon') {
+        debugPrint(
+          "B2B: Driver is within 3km ($distToDropoff m). Setting AvailableSoon.",
+        );
+        await _updateDriverStatus('availableSoon');
+      }
+    } else {
+      // Revert if we moved away (e.g. detour)
+      if (_lastSetStatus == 'availableSoon') {
+        debugPrint(
+          "B2B: Driver moved away ($distToDropoff m). Reverting to OnTrip.",
+        );
+        await _updateDriverStatus('on_trip');
+      }
+    }
+  }
+
+  Future<void> _updateDriverStatus(String status) async {
+    try {
+      final driverId = FirebaseAuth.instance.currentUser?.uid;
+
+      if (driverId == null) return;
+
+      await _firestore.collection('drivers').doc(driverId).update({
+        'status': status,
+        'lastLocation': GeoPoint(
+          _driverLocation!.latitude,
+          _driverLocation!.longitude,
+        ),
+        // We might want to store 'heading' for better matching later
+      });
+      _lastSetStatus = status;
+    } catch (e) {
+      debugPrint("Error updating driver status to $status: $e");
+    }
   }
 
   void _updateMarkers() {
@@ -1210,6 +1326,70 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
                 myLocationButtonEnabled: true,
               ),
 
+              // Back-to-Back Ride Offer
+              if (Get.isRegistered<HomePageController>())
+                Obx(() {
+                  final homeController = Get.find<HomePageController>();
+                  final queued = homeController.queuedRide.value;
+
+                  if (queued == null) return const SizedBox.shrink();
+
+                  // If already accepted, show small indicator
+                  if (queued.status == 'accepted') {
+                    return Positioned(
+                      top: 100,
+                      left: 16,
+                      right: 16,
+                      child: Card(
+                        color: Colors.green,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        elevation: 4,
+                        child: ListTile(
+                          leading: const Icon(
+                            Icons.check_circle,
+                            color: Colors.white,
+                            size: 30,
+                          ),
+                          title: const Text(
+                            "Next Ride Queued",
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          subtitle: Text(
+                            "Pickup: ${queued.pickupTitle}",
+                            style: const TextStyle(color: Colors.white70),
+                          ),
+                        ),
+                      ),
+                    );
+                  }
+
+                  // If searching (Offered), show full request card
+                  // We use a Stack/Positioned to overlay it nicely
+                  return Positioned(
+                    top: 80,
+                    left: 0,
+                    right: 0,
+                    // Ensure it doesn't cover the bottom sheet too much, but RideRequestCard is compact enough
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: RideRequestCard(
+                        rideRequest: queued,
+                        onAccept: () {
+                          homeController.acceptBackToBackRide(queued);
+                        },
+                        onReject: () {
+                          homeController.queuedRide.value = null;
+                        },
+                      ),
+                    ),
+                  );
+                }),
+
               Positioned(
                 bottom: 0,
                 left: 0,
@@ -1533,9 +1713,10 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
       return 'continueRide'.tr;
     }
     // Check for any pending stop dynamically
-    final hasPendingStop = _rideRequest.stops.any((s) => s.isPending);
-    if (hasPendingStop) {
-      return 'arrivedAtStop'.tr;
+    final pendingStopIndex = _rideRequest.stops.indexWhere((s) => s.isPending);
+    if (pendingStopIndex != -1) {
+      final stopNumber = pendingStopIndex + 1;
+      return '${'arrivedAtStop'.tr} $stopNumber';
     }
     return 'endRide'.tr;
   }

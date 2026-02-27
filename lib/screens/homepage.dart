@@ -21,6 +21,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
 import 'package:project_taxi_driver_app/widgets/ride_request.dart';
 import 'package:project_taxi_driver_app/widgets/status_slider.dart';
+import 'package:project_taxi_driver_app/widgets/airport_queue_bar.dart';
 import 'package:project_taxi_driver_app/screens/subscription_plans.dart';
 import 'package:project_taxi_driver_app/screens/demand_areas_screen.dart';
 
@@ -55,7 +56,15 @@ class _DriverHomePageState extends State<DriverHomePage>
         isActingDriver: widget.isActingDriver,
         initialStatus: widget.initialStatus,
       ),
+      permanent: true,
     );
+
+    // If controller is already in memory, onInit won't run again, so force status if provided
+    if (widget.initialStatus != null) {
+      if (controller.driverStatus.value != widget.initialStatus) {
+        controller.handleStatusChange(widget.initialStatus!);
+      }
+    }
 
     // Add lifecycle observer
     WidgetsBinding.instance.addObserver(this);
@@ -187,12 +196,38 @@ class _DriverHomePageState extends State<DriverHomePage>
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Icon(
-                            Icons.power_settings_new,
-                            size: 80,
-                            color: Colors.grey.withValues(alpha: 0.5),
+                          InkWell(
+                            onTap: () {
+                              controller.handleStatusChange(
+                                DriverStatus.online,
+                              );
+                            },
+                            borderRadius: BorderRadius.circular(80),
+                            child: Container(
+                              width: 160,
+                              height: 160,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: AppColors.primary,
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: AppColors.primary.withValues(
+                                      alpha: 0.4,
+                                    ),
+                                    blurRadius: 20,
+                                    spreadRadius: 2,
+                                    offset: const Offset(0, 8),
+                                  ),
+                                ],
+                              ),
+                              child: const Icon(
+                                Icons.power_settings_new,
+                                size: 80,
+                                color: Colors.white,
+                              ),
+                            ),
                           ),
-                          const SizedBox(height: 24),
+                          const SizedBox(height: 32),
                           Text(
                             'turnOnToGetRides'.tr,
                             style: Theme.of(context).textTheme.headlineSmall
@@ -241,16 +276,32 @@ class _DriverHomePageState extends State<DriverHomePage>
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              FloatingActionButton(
-                                heroTag: 'recenter',
-                                backgroundColor: Colors.white,
-                                onPressed: () =>
-                                    controller.goToCurrentUserLocation(),
-                                child: const Icon(
-                                  Icons.my_location,
-                                  color: Colors.blue,
-                                ),
-                              ),
+                              Obx(() {
+                                final pos = QueueService().queuePosition.value;
+                                return Padding(
+                                  padding: EdgeInsets.only(
+                                    bottom: pos != null ? 110.0 : 0.0,
+                                  ),
+                                  child: FloatingActionButton(
+                                    heroTag: 'recenter',
+                                    backgroundColor:
+                                        Theme.of(context).brightness ==
+                                            Brightness.dark
+                                        ? const Color(0xFF252525)
+                                        : Colors.white,
+                                    onPressed: () =>
+                                        controller.goToCurrentUserLocation(),
+                                    child: Icon(
+                                      Icons.my_location,
+                                      color:
+                                          Theme.of(context).brightness ==
+                                              Brightness.dark
+                                          ? Colors.blueAccent
+                                          : Colors.blue,
+                                    ),
+                                  ),
+                                );
+                              }),
                             ],
                           ),
                         ),
@@ -258,66 +309,11 @@ class _DriverHomePageState extends State<DriverHomePage>
                     ),
             ),
 
-            // Queue Position Banner
-            Obx(() {
-              final pos = QueueService().queuePosition.value;
-              if (pos != null) {
-                return Positioned(
-                  top: 90, // Moved down to accommodate Dashboard
-                  left: 16,
-                  right: 16,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.black87,
-                      borderRadius: BorderRadius.circular(12),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black26,
-                          blurRadius: 8,
-                          offset: Offset(0, 4),
-                        ),
-                      ],
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(
-                          Icons.flight_takeoff,
-                          color: Colors.white,
-                          size: 20,
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          "${'airportQueue'.tr}: #$pos",
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
-                          ),
-                        ),
-                        if (QueueService().queueStatus.value == 'offered_ride')
-                          Padding(
-                            padding: const EdgeInsets.only(left: 8.0),
-                            child: Text(
-                              "(${'offeringRide'.tr})",
-                              style: TextStyle(
-                                color: Colors.greenAccent,
-                                fontSize: 14,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                );
-              }
-              return const SizedBox.shrink();
-            }),
+            // Queue Position Bottom Bar
+            const Align(
+              alignment: Alignment.bottomCenter,
+              child: AirportQueueBottomBar(),
+            ),
 
             // Dashboard - Collapsible
             Positioned(

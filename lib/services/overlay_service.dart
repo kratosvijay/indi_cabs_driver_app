@@ -129,7 +129,7 @@ class OverlayService {
       });
 
       // 2. Resize
-      await _resizeOverlay(80, 80);
+      await _resizeOverlay(80, 80, enableDrag: true);
 
       _overlayVisible = true;
       _requestShowing = false;
@@ -155,8 +155,9 @@ class OverlayService {
         height: 80,
         width: 80,
         enableDrag: true,
-        alignment: OverlayAlignment.centerRight,
+        alignment: OverlayAlignment.centerLeft,
         flag: OverlayFlag.defaultFlag,
+        positionGravity: PositionGravity.auto,
       );
 
       log("OverlayService: Bubble overlay created (Cold Start).");
@@ -232,6 +233,7 @@ class OverlayService {
       await _resizeOverlay(
         requestSize.width.round(),
         requestSize.height.round(),
+        enableDrag: false,
       );
 
       _overlayVisible = true;
@@ -267,7 +269,11 @@ class OverlayService {
   Future<void> _pushCurrentRequest() async {
     if (_rideQueue.isEmpty) return;
     final requestSize = _requestOverlaySizeDp();
-    await _resizeOverlay(requestSize.width.round(), requestSize.height.round());
+    await _resizeOverlay(
+      requestSize.width.round(),
+      requestSize.height.round(),
+      enableDrag: false,
+    );
     await FlutterOverlayWindow.shareData({
       "type": "SHOW_REQUEST",
       "ride": _rideQueue.first,
@@ -300,7 +306,18 @@ class OverlayService {
     // Check if the ride to remove is currently being shown (head of queue)
     if (_rideQueue.first['rideId']?.toString() == rideId) {
       log("OverlayService: Current ride removed via app. Popping queue.");
-      await popQ();
+      _rideQueue.removeFirst();
+      _requestShowing = false;
+
+      if (_rideQueue.isNotEmpty) {
+        await _showNextRequest();
+      } else {
+        if (_shouldKeepBubbleVisible()) {
+          await showFloatingBubble();
+        } else {
+          await _cleanupIfIdle();
+        }
+      }
     } else {
       // Just remove from queue if it's waiting
       _rideQueue.removeWhere((r) => r['rideId']?.toString() == rideId);
@@ -403,9 +420,13 @@ class OverlayService {
     }
   }
 
-  Future<void> _resizeOverlay(int width, int height) async {
+  Future<void> _resizeOverlay(
+    int width,
+    int height, {
+    bool enableDrag = false,
+  }) async {
     try {
-      await FlutterOverlayWindow.resizeOverlay(width, height, false);
+      await FlutterOverlayWindow.resizeOverlay(width, height, enableDrag);
     } catch (_) {}
   }
 
@@ -463,6 +484,7 @@ class OverlayService {
       'kmLimit': numVal(ride['kmLimit']),
       'packageName': strVal(ride['packageName']),
       'stops': safeStops,
+      'tollPrice': numVal(ride['tollPrice']),
     };
   }
 }

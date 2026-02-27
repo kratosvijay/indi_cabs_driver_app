@@ -13,6 +13,7 @@ import 'package:project_taxi_driver_app/widgets/ride_request.dart';
 import 'package:project_taxi_driver_app/screens/ride_acepted.dart';
 import 'package:project_taxi_driver_app/screens/ride_started.dart';
 import 'package:project_taxi_driver_app/screens/ride_payment.dart';
+import 'package:project_taxi_driver_app/controllers/home_page_controller.dart';
 
 class AuthController extends GetxController {
   static AuthController get instance => Get.find();
@@ -92,9 +93,27 @@ class AuthController extends GetxController {
             );
 
             if (status == 'accepted' || status == 'arrived') {
+              // Initialize Controller
+              Get.put(
+                HomePageController(
+                  user: user,
+                  isActingDriver: data['role'] == 'actingDriver',
+                  initialStatus: DriverStatus.goTo,
+                ),
+                permanent: true,
+              );
               Get.offAll(() => RideAcceptedScreen(rideRequest: rideRequest));
               return;
             } else if (status == 'started') {
+              // Initialize Controller
+              Get.put(
+                HomePageController(
+                  user: user,
+                  isActingDriver: data['role'] == 'actingDriver',
+                  initialStatus: DriverStatus.goTo,
+                ),
+                permanent: true,
+              );
               Get.offAll(() => RideStartedScreen(rideRequest: rideRequest));
               return;
             } else if (status == 'completed') {

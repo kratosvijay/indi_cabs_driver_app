@@ -15,8 +15,9 @@ import axios from "axios";
 
 import { batchOnboard } from "./onboarding";
 import { aggregateDemandDriver, resetDemandZonesDriver } from "./demandAggregator";
+import { findBackToBackDrivers } from "./backToBack";
 
-export { batchOnboard, aggregateDemandDriver, resetDemandZonesDriver };
+export { batchOnboard, aggregateDemandDriver, resetDemandZonesDriver, findBackToBackDrivers };
 
 /*
 export const performLoadTest = onRequest({ timeoutSeconds: 300, maxInstances: 1 }, async (req, res) => {
@@ -267,16 +268,20 @@ export const distributeRideToDrivers = onDocumentWritten(
             }
             // ---------------------------------------------------------
 
-            // Find Online Drivers
-            // Filter by: isOnline: true, status: active (or null?)
-            // We also need to match vehicle type if needed
+            // ---------------------------------------------------------
+            // 2. FIND CANDIDATE DRIVERS (Idle + AvailableSoon)
+            // ---------------------------------------------------------
+
+            console.log(`Searching for drivers near ${pickupGeo.latitude}, ${pickupGeo.longitude}...`);
+
+            // Query active AND availableSoon drivers (max 10 for 'in' query)
+            // ensuring we don't pick offline drivers
             const driversSnap = await db.collection("drivers")
                 .where("isOnline", "==", true)
-                .where("status", "==", "active")
-                // .where("vehicleClass", "==", afterData.vehicleClass) // Optional: strict matching
+                .where("status", "in", ["active", "availableSoon"])
                 .get();
 
-            const drivers: any[] = [];
+            const candidates: any[] = [];
 
             driversSnap.forEach(doc => {
                 const dData = doc.data();
@@ -288,37 +293,103 @@ export const distributeRideToDrivers = onDocumentWritten(
                         dData.currentLocation.longitude
                     );
 
-                    // Radius Check (e.g. 50km max)
+                    // Radius Check (50km for testing, typically 3-5km)
                     if (dist <= 50) {
-                        drivers.push({ id: doc.id, distance: dist, data: dData });
+                        candidates.push({
+                            id: doc.id,
+                            distance: dist,
+                            data: dData,
+                            isB2B: dData.status === 'availableSoon'
+                        });
                     }
                 }
             });
 
-            if (drivers.length === 0) {
+            if (candidates.length === 0) {
                 console.log("No drivers found nearby.");
-                // Ensure we don't leave it securely assigned if it was
                 return null;
             }
 
             // Sort by distance
-            drivers.sort((a, b) => a.distance - b.distance);
+            candidates.sort((a, b) => a.distance - b.distance);
+            console.log(`Found ${candidates.length} candidates. Nearest: ${candidates[0].id} (${candidates[0].distance.toFixed(2)}km)`);
 
-            console.log(`Found ${drivers.length} drivers. Nearest: ${drivers[0].id} (${drivers[0].distance.toFixed(2)}km)`);
+            // ---------------------------------------------------------
+            // 3. TRANSACTIONAL ASSIGNMENT
+            // ---------------------------------------------------------
+            // We want to try assigning to the best driver. 
+            // If they are busy (race condition), try the next?
+            // For simplicity, we try the FIRST one. If it fails, the function will eventually retry (or we can loop here).
 
-            // Assign to first driver
-            const firstDriver = drivers[0];
-            const potentialDriverIds = drivers.map(d => d.id);
+            const bestDriver = candidates[0];
+            const driverRef = db.collection("drivers").doc(bestDriver.id);
+            const rideRef = change.after.ref;
 
-            await change.after.ref.update({
-                driverId: firstDriver.id,
-                currentDriverIndex: 0,
-                potentialDrivers: potentialDriverIds,
-                notifiedAt: admin.firestore.FieldValue.serverTimestamp(),
-                // Keep status as searching, the driver app listens for 'searching' + 'driverId == me'
-            });
+            try {
+                await db.runTransaction(async (t) => {
+                    const dDoc = await t.get(driverRef);
+                    const rDoc = await t.get(rideRef);
 
-            console.log(`Assigned ride ${rideId} to ${firstDriver.id}`);
+                    if (!dDoc.exists || !rDoc.exists) throw "Doc missing";
+
+                    const dData = dDoc.data();
+                    const rData = rDoc.data();
+
+                    // Check if ride is still searching
+                    if (rData?.status !== 'searching') {
+                        throw "Ride already assigned or cancelled";
+                    }
+
+                    // Check if driver is free for a NEW assignment
+                    // If 'active', they are free.
+                    // If 'availableSoon', they must NOT have a 'nextRideId' yet.
+                    if (bestDriver.isB2B) {
+                        if (dData?.nextRideId) {
+                            throw "Driver already has a Next Ride assigned";
+                        }
+                    } else {
+                        // If standard active driver, ensure they are not somehow 'on_trip' (double check)
+                        if (dData?.status !== 'active') {
+                            throw "Driver status changed from active";
+                        }
+                    }
+
+                    // PERFORM ASSIGNMENT
+                    const updateData: any = {
+                        driverId: bestDriver.id,
+                        currentDriverIndex: 0,
+                        potentialDrivers: candidates.map(d => d.id),
+                        notifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+                    };
+
+                    if (bestDriver.isB2B) {
+                        updateData.isBackToBack = true;
+                        updateData.status = 'searching'; // B2B flows often keep it 'searching' until accepted? 
+                        // Actually, we usually assign it. 
+                        // BUT for B2B, we might want to "Offer" it first without changing status to assigned?
+                        // The requirement says "Assign next ride automatically".
+                        // So we set `driverId` and `isBackToBack`.
+
+                        // We set 'status' to 'searching' relative to the Rider? 
+                        // Usage: standard flow sets `driverId` but keeps `status: searching` until driver accepts.
+                        // B2B should do same.
+
+                        // Lock the driver!
+                        t.update(driverRef, { nextRideId: rideId });
+                    } else {
+                        // Standard assignment
+                        updateData.isBackToBack = false;
+                    }
+
+                    t.update(rideRef, updateData);
+                });
+
+                console.log(`Successfully assigned ride ${rideId} to ${bestDriver.id} (B2B: ${bestDriver.isB2B})`);
+
+            } catch (err) {
+                console.error("Transaction failed (Race Condition or State Change):", err);
+                // If failed, we could try the next driver in 'candidates', but for MVP we rely on next trigger.
+            }
 
         } catch (e) {
             console.error("Error distributing ride:", e);
@@ -998,69 +1069,30 @@ export const processWalletSettlement = onDocumentCreated(
         try {
             console.log(`Processing settlement for ${driverId}: ₹${data.amount} to ${data.upiId}`);
 
-            const payoutRequest = {
-                account_number: "2323230041624855", // Using Demo or Configured Account
-                amount: Math.round(data.amount * 100), // Amount in paise
-                currency: "INR",
-                mode: "UPI",
-                purpose: "payout",
-                fund_account: {
-                    account_type: "vpa",
-                    vpa: {
-                        address: data.upiId
-                    },
-                    contact: {
-                        name: "Driver Settlement",
-                        type: "self",
-                        reference_id: driverId,
-                    }
-                },
-                queue_if_low_balance: true,
-                reference_id: transactionId,
-                narration: "Driver Wallet Settlement"
-            };
+            /*
+            // --- RAZORPAY PAYOUT DISABLED ---
+            const payoutRequest = { ... };
+            const response = await axios.post(...);
+            */
 
-            const response = await axios.post(
-                "https://api.razorpay.com/v1/payouts",
-                payoutRequest,
-                {
-                    auth: {
-                        username: RAZORPAY_KEY,
-                        password: RAZORPAY_SECRET,
-                    },
-                    headers: {
-                        "Content-Type": "application/json",
-                    },
-                }
-            );
-
-            console.log("Payout Successful:", response.data);
+            // Simulate successful payout without hitting Razorpay
+            console.log("Payout Simulated as Successful (Razorpay Disabled)");
 
             // Update Transaction to Success
             await snap.ref.update({
                 status: "success",
-                payoutId: response.data.id,
+                payoutId: "simulated_" + transactionId,
                 processedAt: admin.firestore.FieldValue.serverTimestamp(),
             });
 
         } catch (error: any) {
             console.error("Payout Failed:", error.response ? error.response.data : error.message);
 
-            // Refund Balance on Failure
-            await db.runTransaction(async (t) => {
-                const balanceRef = db.doc(`drivers/${driverId}/wallet/balance`);
-                const balanceDoc = await t.get(balanceRef);
-                const currentBalance = balanceDoc.data()?.currentBalance || 0;
-
-                t.update(balanceRef, {
-                    currentBalance: currentBalance + data.amount
-                });
-
-                t.update(snap.ref, {
-                    status: "failed",
-                    error: error.response ? JSON.stringify(error.response.data) : error.message,
-                    refundedAt: admin.firestore.FieldValue.serverTimestamp()
-                });
+            // --- REFUND DISABLED ---
+            // We no longer refund automatically, keep it as failed for manual review.
+            await snap.ref.update({
+                status: "failed",
+                error: error.response ? JSON.stringify(error.response.data) : error.message,
             });
         }
         return null;

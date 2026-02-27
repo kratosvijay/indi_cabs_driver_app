@@ -4,14 +4,17 @@ import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:project_taxi_driver_app/controllers/home_page_controller.dart';
 import 'package:project_taxi_driver_app/screens/homepage.dart';
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
 import 'package:project_taxi_driver_app/widgets/ride_request.dart';
+import 'package:project_taxi_driver_app/screens/ride_acepted.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:project_taxi_driver_app/widgets/status_slider.dart';
 import 'package:project_taxi_driver_app/controllers/wallet_controller.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class RidePaymentScreen extends StatefulWidget {
   final RideRequest rideRequest;
@@ -233,10 +236,39 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
       final bool isCashPlusWallet = _isCashPlusWallet;
       final double walletAmt = _walletAmount;
 
-      // 2. Navigate HOME Immediately (Optimistic Success)
-      Get.offAll(
-        () => DriverHomePage(user: user, initialStatus: DriverStatus.online),
-      );
+      // 2. Navigation Logic (Handle Back-to-Back Ride)
+      final homeController = Get.find<HomePageController>();
+      final queued = homeController.queuedRide.value;
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('details_accepted_ride_id');
+
+      if (queued != null && queued.status == 'accepted') {
+        debugPrint("Transitioning to Queued Ride: ${queued.rideId}");
+
+        // Stop ignoring the queued ride if it was ignored
+        homeController.removeIgnoredRide(queued.rideId);
+
+        // Reset State for New Ride
+        homeController.activeRequests.clear();
+        homeController.activeRequests.add(queued);
+        homeController.queuedRide.value = null;
+        homeController.hasActiveRide.value = true;
+        // driverStatus is already goTo
+
+        Get.offAll(() => RideAcceptedScreen(rideRequest: queued));
+      } else {
+        // Standard Flow: Go Home
+
+        // Prevent the just-finished ride from ghost-triggering due to local cache lag
+        homeController.ignoreRide(localRideId);
+
+        homeController.queuedRide.value =
+            null; // Clear queue if any garbage exists
+        Get.offAll(
+          () => DriverHomePage(user: user, initialStatus: DriverStatus.online),
+        );
+      }
 
       // 3. Background Transactions
       // We use a separate async block or just continue here.
