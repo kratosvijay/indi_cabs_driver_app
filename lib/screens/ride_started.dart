@@ -732,41 +732,32 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
       if (_rideRequest.stops.isNotEmpty &&
           _currentStopIndex < _rideRequest.stops.length) {
         final stop = _rideRequest.stops[_currentStopIndex];
-        // stop.location is maps.LatLng (from model)
         target = maps.LatLng(stop.location.latitude, stop.location.longitude);
         title = stop.title;
       } else {
-        target = _dropLocation!;
+        target =
+            _dropLocation ??
+            maps.LatLng(
+              _rideRequest.dropoffLocation.latitude,
+              _rideRequest.dropoffLocation.longitude,
+            );
         title = _rideRequest.dropoffTitle;
 
-        // Fix: If _dropLocation (from dynamic request fallback) equals pickup,
-        // we check for alternative sources.
-
-        final distToPickup = Geolocator.distanceBetween(
-          target.latitude,
-          target.longitude,
-          _rideRequest.pickupLocation.latitude,
-          _rideRequest.pickupLocation.longitude,
-        );
-
-        if (distToPickup < 50 && _rideRequest.rideType != 'rental') {
-          // Suspicious: Target is effectively Pickup.
-          // Try to use dropoffFullAddress or destinationAddress from info
-          String addressToGeocode = "";
-          if (_rideRequest.dropoffFullAddress.isNotEmpty &&
-              _rideRequest.dropoffFullAddress != "Unknown" &&
-              !_rideRequest.dropoffFullAddress.contains("getting address")) {
-            addressToGeocode = _rideRequest.dropoffFullAddress;
-          } else if (_fetchedAddress.isNotEmpty &&
-              _fetchedAddress !=
-                  "Drop-off Location" && // Don't use our placeholder
-              !_fetchedAddress.contains("getting address")) {
+        // Fallback checks
+        if (target.latitude == 0 && target.longitude == 0) {
+          // If drop is 0,0 try getting from address
+          String addressToGeocode = _rideRequest.dropoffFullAddress;
+          if (addressToGeocode.isEmpty ||
+              addressToGeocode == "Unknown" ||
+              addressToGeocode.contains("getting address")) {
             addressToGeocode = _fetchedAddress;
           }
 
-          if (addressToGeocode.isNotEmpty) {
+          if (addressToGeocode.isNotEmpty &&
+              addressToGeocode != "Drop-off Location" &&
+              !addressToGeocode.contains("getting address")) {
             debugPrint(
-              "Nav Target is Pickup (BAD). Attempting to geocode address: $addressToGeocode",
+              "Nav Target is 0,0 (BAD). Attempting to geocode address: $addressToGeocode",
             );
             final resolvedLoc = await _getLatLngFromAddress(addressToGeocode);
             if (resolvedLoc != null) {
@@ -777,8 +768,17 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
         }
       }
 
-      // We need to convert to Nav SDK types inside NavigationScreen, or pass primitive data.
-      // Let's pass the nav.LatLng to the screen constructs.
+      // Final Validity Check
+      if (target.latitude == 0 && target.longitude == 0) {
+        Get.snackbar(
+          "Error",
+          "Invalid dropoff location (0,0). Cannot start navigation.",
+          backgroundColor: Colors.red,
+          colorText: Colors.white,
+        );
+        setState(() => _isNavigating = false);
+        return;
+      }
 
       final navTarget = nav.LatLng(
         latitude: target.latitude,
@@ -1111,7 +1111,7 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
       // Calculate Paid Waiting Charge locally to pass to backend
       // _paidWaitSeconds is total seconds beyond the free 3 mins per stop
       int totalPaidMinutes = (_paidWaitSeconds / 60).ceil();
-      double waitingCharge = totalPaidMinutes * 5.0; // ₹5 per min
+      double waitingCharge = totalPaidMinutes * 3.0; // ₹3 per min
 
       // Start Cloud Function Call (Pricing)
       final pricingFuture = FirebaseFunctions.instanceFor(region: 'asia-south1')

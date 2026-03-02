@@ -240,7 +240,7 @@ export const distributeRideToDrivers = onDocumentWritten(
             // 2. FIND CANDIDATE DRIVERS (Idle + AvailableSoon) from RTDB
             // ---------------------------------------------------------
 
-            console.log(`Searching for drivers near \${pickupGeo.latitude}, \${pickupGeo.longitude} from Realtime Database...`);
+            console.log(`Searching for drivers near ${pickupGeo.latitude}, ${pickupGeo.longitude} from Realtime Database...`);
 
             const driversRef = rtdb.ref('driver_locations');
             const activeDriversSnap = await driversRef.once('value');
@@ -250,8 +250,13 @@ export const distributeRideToDrivers = onDocumentWritten(
             const candidates: any[] = [];
 
             for (const [driverId, locData] of Object.entries<any>(allDrivers)) {
+                console.log(`Evaluating RTDB Driver: ${driverId} | UpdatedAt: ${locData.updatedAt} | Diff: ${nowMs - locData.updatedAt}ms`);
+
                 // Check recency of location (e.g. within 20 seconds) to ensure they are active
-                if (nowMs - locData.updatedAt > 20000) continue;
+                if ((nowMs - locData.updatedAt) > 20000) {
+                    console.log(`-> Driver ${driverId} SKIPPED: Location stale (>${nowMs - locData.updatedAt}ms old)`);
+                    continue;
+                }
 
                 const dist = calculateDistance(
                     pickupGeo.latitude,
@@ -260,21 +265,33 @@ export const distributeRideToDrivers = onDocumentWritten(
                     locData.lng
                 );
 
+                console.log(`-> Driver ${driverId} Distance: ${dist}km`);
+
                 // Radius Check (50km for testing, typically 3-5km)
                 if (dist <= 50) {
                     // Fetch driver doc to verify they are active/availableSoon
                     const driverDoc = await db.collection('drivers').doc(driverId).get();
                     if (driverDoc.exists) {
                         const dData = driverDoc.data();
+
+                        console.log(`-> Driver ${driverId} Doc Data: isOnline=${dData?.isOnline}, status=${dData?.status}`);
+
                         if (dData && dData.isOnline && (dData.status === "active" || dData.status === "availableSoon")) {
+                            console.log(`-> Driver ${driverId} ACCEPTED AS CANDIDATE`);
                             candidates.push({
                                 id: driverId,
                                 distance: dist,
                                 data: dData,
                                 isB2B: dData.status === 'availableSoon'
                             });
+                        } else {
+                            console.log(`-> Driver ${driverId} SKIPPED: Invalid status or not online`);
                         }
+                    } else {
+                        console.log(`-> Driver ${driverId} SKIPPED: Driver doc does not exist`);
                     }
+                } else {
+                    console.log(`-> Driver ${driverId} SKIPPED: Too far away (>50km)`);
                 }
             }
 
@@ -285,7 +302,7 @@ export const distributeRideToDrivers = onDocumentWritten(
 
             // Sort by distance
             candidates.sort((a, b) => a.distance - b.distance);
-            console.log(`Found \${candidates.length} candidates. Nearest: \${candidates[0].id} (\${candidates[0].distance.toFixed(2)}km)`);
+            console.log(`Found ${candidates.length} candidates. Nearest: ${candidates[0].id} (${candidates[0].distance.toFixed(2)}km)`);
 
             // ---------------------------------------------------------
             // 3. SEQUENTIAL DISPATCH LOGIC (Max 4 drivers, 5 sec each)
@@ -301,23 +318,23 @@ export const distributeRideToDrivers = onDocumentWritten(
                 // Check if ride is still searching before offering
                 const currentRideDoc = await rideRef.get();
                 if (currentRideDoc.data()?.status !== "searching") {
-                    console.log(`Ride \${rideId} is no longer searching. Stopping dispatch sequence.`);
+                    console.log(`Ride ${rideId} is no longer searching. Stopping dispatch sequence.`);
                     break;
                 }
 
                 // Check if driver has room for more requests (Max 5)
-                const activeRequestsSnap = await db.collection(`ride_requests/\${driverId}/requests`).where('status', '==', 'pending').get();
+                const activeRequestsSnap = await db.collection(`ride_requests/${driverId}/requests`).where('status', '==', 'pending').get();
                 if (activeRequestsSnap.size >= 5) {
-                    console.log(`Driver \${driverId} has \${activeRequestsSnap.size} pending requests. Skipping.`);
+                    console.log(`Driver ${driverId} has ${activeRequestsSnap.size} pending requests. Skipping.`);
                     continue;
                 }
 
                 // Deduplication Logic - Skip if request already exists
-                const requestRef = db.doc(`ride_requests/\${driverId}/requests/\${rideId}`);
+                const requestRef = db.doc(`ride_requests/${driverId}/requests/${rideId}`);
                 const existingRequest = await requestRef.get();
                 if (existingRequest.exists) continue;
 
-                console.log(`[Dispatch Flow] Sending ride \${rideId} to driver \${driverId}`);
+                console.log(`[Dispatch Flow] Sending ride ${rideId} to driver ${driverId}`);
 
                 const expiresAt = admin.firestore.Timestamp.fromMillis(Date.now() + 5000);
 
@@ -347,11 +364,11 @@ export const distributeRideToDrivers = onDocumentWritten(
                 // Check if accepted by viewing the central ride document
                 const checkRide = await rideRef.get();
                 if (checkRide.data()?.status === "accepted") {
-                    console.log(`Ride \${rideId} was accepted! Stopping dispatch.`);
+                    console.log(`Ride ${rideId} was accepted! Stopping dispatch.`);
                     break; // End sequential sequence
                 } else {
                     // Update the request to expired
-                    console.log(`Driver \${driverId} did not accept ride \${rideId} in time. Expiring card.`);
+                    console.log(`Driver ${driverId} did not accept ride ${rideId} in time. Expiring card.`);
                     await requestRef.update({ status: "expired" }).catch(() => { });
 
                     // Also track rejection in original ride doc to avoid giving it again in future loops
@@ -809,7 +826,7 @@ export const calculateDynamicPricing = onCall({ region: "asia-south1" }, async (
         const currentHourN = hourPart ? (parseInt(hourPart.value) % 24) : 0;
 
         if (currentHourN >= 22 || currentHourN < 6) {
-            nightCharge = 50.0;
+            nightCharge = 30.0;
         }
 
         // --- BASE RATES ---
@@ -954,9 +971,11 @@ export const calculateDynamicPricing = onCall({ region: "asia-south1" }, async (
             finalFare = parseFloat(rideData.rideFare || finalFare); // Use Locked, ensure number
             finalFare += providedWaitingCharge;
 
-            // Check if Toll was added during ride? 
-            // If rideData.rideFare included toll, don't double count.
-            // Let's assume rideFare is the base "Trip Price".
+            // Add Extras: Toll and Geofence must ALWAYS be paid if crossed, regardless of locked distance
+            finalFare += geofenceSurcharge;
+            if (rideData.tollPrice) {
+                finalFare += (rideData.tollPrice || 0);
+            }
 
         } else {
             priceUpdated = true;

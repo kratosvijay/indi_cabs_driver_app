@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_database/firebase_database.dart' hide Query;
 import 'package:flutter/material.dart' hide Route;
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
@@ -841,24 +842,37 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   }
 
   StreamSubscription<Position>? _positionStreamSubscription;
+  Position? _lastSentPosition;
 
   void startLocationUpdates() async {
     final hasPermission = await _handleLocationPermission();
     if (!hasPermission) return;
 
+    final driverId = user.uid;
+    final locRef = FirebaseDatabase.instance.ref('driver_locations/$driverId');
+
+    // Auto-set offline if connection drops
+    locRef.onDisconnect().remove();
+
     // Fetch immediately first
     try {
-      final position = await Geolocator.getCurrentPosition();
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+        ),
+      );
       currentPosition.value = LatLng(position.latitude, position.longitude);
+      _updateDriverLocationInRTDB(position, locRef);
+      // Fallback for profile data if needed in Firestore
       _updateDriverLocationInFirestore(position);
     } catch (e) {
       debugPrint("Error fetching initial location: $e");
     }
 
-    // Use Stream instead of Timer
+    // Use Stream with Distance Filter
     const LocationSettings locationSettings = LocationSettings(
       accuracy: LocationAccuracy.high,
-      distanceFilter: 10,
+      distanceFilter: 15,
     );
 
     _positionStreamSubscription?.cancel();
@@ -867,8 +881,41 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
           locationSettings: locationSettings,
         ).listen((Position position) {
           currentPosition.value = LatLng(position.latitude, position.longitude);
-          _updateDriverLocationInFirestore(position);
+          _lastSentPosition = position;
         }, onError: (e) => debugPrint("Location stream error: $e"));
+
+    // Throttle RTDB Sync to Every 8 Seconds to prevent quota exhaustion but keep heartbeat fresh
+    locationUpdateTimer?.cancel();
+    locationUpdateTimer = Timer.periodic(const Duration(seconds: 8), (timer) {
+      if (_lastSentPosition != null) {
+        _updateDriverLocationInRTDB(_lastSentPosition!, locRef);
+        // Also update Firestore roughly mostly for backwards compatibility Profile views
+        _updateDriverLocationInFirestore(_lastSentPosition!);
+        _lastSentPosition = null;
+      } else if (currentPosition.value != null) {
+        // Driver is stationary, but we MUST update RTDB to keep `updatedAt` fresh
+        // otherwise the backend will skip dispatching rides to them
+        locRef
+            .set({
+              'lat': currentPosition.value!.latitude,
+              'lng': currentPosition.value!.longitude,
+              'heading': 0.0,
+              'updatedAt': ServerValue.timestamp,
+            })
+            .catchError((e) => debugPrint("RTDB Sync Error (Stationary): $e"));
+      }
+    });
+  }
+
+  void _updateDriverLocationInRTDB(Position position, DatabaseReference ref) {
+    ref
+        .set({
+          'lat': position.latitude,
+          'lng': position.longitude,
+          'heading': position.heading,
+          'updatedAt': ServerValue.timestamp,
+        })
+        .catchError((e) => debugPrint("RTDB Sync Error: $e"));
   }
 
   Future<void> _updateDriverLocationInFirestore(Position position) async {
@@ -880,8 +927,17 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   void stopLocationUpdates() {
     _positionStreamSubscription?.cancel();
     _positionStreamSubscription = null;
-    locationUpdateTimer
-        ?.cancel(); // Safety cleanup if switching from old version
+    locationUpdateTimer?.cancel();
+    locationUpdateTimer = null;
+
+    // Remove from RTDB immediately on stop
+    try {
+      if (user.uid.isNotEmpty) {
+        FirebaseDatabase.instance.ref('driver_locations/${user.uid}').remove();
+      }
+    } catch (e) {
+      debugPrint("Error removing driver location from RTDB: $e");
+    }
   }
 
   Future<void> listenForRideRequests() async {
@@ -948,7 +1004,17 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   Future<void> _processSnapshot(QuerySnapshot snapshot) async {
     debugPrint("Assigned Rides Snapshot: ${snapshot.docs.length} docs");
 
+    // Load persisted ignored rides
+    final prefs = await SharedPreferences.getInstance();
+    final ignoredList = prefs.getStringList('ignored_rides') ?? [];
+    final ignoredSet = ignoredList.toSet();
+
     for (var doc in snapshot.docs) {
+      // 1. Instant check against persisted ignored rides (survives Get.offAll)
+      if (ignoredSet.contains(doc.id)) {
+        continue;
+      }
+
       final data = doc.data() as Map<String, dynamic>?;
 
       // Client-side vehicle type check
@@ -970,7 +1036,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         continue;
       }
 
-      // Check if we recently rejected this ride locally to avoid loop
+      // 2. In-memory temporary ignore cooldown
       if (_ignoredRides.containsKey(doc.id)) {
         final ignoredTime = _ignoredRides[doc.id]!;
         // Keep a local cooldown to prevent immediate bounce-back of the same request.
@@ -979,6 +1045,12 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         } else {
           _ignoredRides.remove(doc.id); // Expired, allow processing again
         }
+      }
+
+      // Safety check: Don't process rides that are no longer searching
+      final status = data?['status'];
+      if (status != 'searching') {
+        continue;
       }
 
       debugPrint("Found new assigned ride: ${doc.id}");
@@ -2013,10 +2085,42 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
   void ignoreRide(String rideId) {
     _ignoredRides[rideId] = DateTime.now();
+    _persistIgnoredRide(rideId);
+  }
+
+  Future<void> _persistIgnoredRide(String rideId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      List<String> ignoredList = prefs.getStringList('ignored_rides') ?? [];
+      if (!ignoredList.contains(rideId)) {
+        ignoredList.add(rideId);
+        // Keep list size manageable
+        if (ignoredList.length > 50) {
+          ignoredList = ignoredList.sublist(ignoredList.length - 50);
+        }
+        await prefs.setStringList('ignored_rides', ignoredList);
+      }
+    } catch (e) {
+      debugPrint("Error persisting ignored ride: $e");
+    }
   }
 
   void removeIgnoredRide(String rideId) {
     _ignoredRides.remove(rideId);
+    _removePersistedIgnoredRide(rideId);
+  }
+
+  Future<void> _removePersistedIgnoredRide(String rideId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      List<String> ignoredList = prefs.getStringList('ignored_rides') ?? [];
+      if (ignoredList.contains(rideId)) {
+        ignoredList.remove(rideId);
+        await prefs.setStringList('ignored_rides', ignoredList);
+      }
+    } catch (e) {
+      debugPrint("Error removing persisted ignored ride: $e");
+    }
   }
 
   Future<void> onRideRejected(String reason) async {

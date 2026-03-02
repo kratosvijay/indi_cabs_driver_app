@@ -208,25 +208,41 @@ class _NavigationScreenState extends State<NavigationScreen> {
 
     final routingOptions = RoutingOptions(
       routingStrategy: NavigationRoutingStrategy.defaultBest,
+      alternateRoutesStrategy: NavigationAlternateRoutesStrategy.none,
     );
 
     try {
-      await GoogleMapsNavigator.setDestinations(
-        Destinations(
-          waypoints: [dest],
-          displayOptions: displayOptions,
-          routingOptions: routingOptions,
-        ),
-      );
+      try {
+        await GoogleMapsNavigator.setDestinations(
+          Destinations(
+            waypoints: [dest],
+            displayOptions: displayOptions,
+            routingOptions: routingOptions,
+          ),
+        );
+      } catch (e) {
+        debugPrint('Nav_Error: setDestinations failed: $e');
+        if (mounted) {
+          Get.snackbar(
+            "Route Error",
+            "Failed to calculate route: $e",
+            backgroundColor: Colors.red,
+            colorText: Colors.white,
+            duration: const Duration(seconds: 5),
+          );
+        }
+      }
 
-      // Listen for arrival?
-      // For now just start guidance.
-      await GoogleMapsNavigator.startGuidance();
+      try {
+        await GoogleMapsNavigator.startGuidance();
+      } catch (e) {
+        debugPrint('Nav_Error: startGuidance failed: $e');
+      }
 
       // Apply persisted audio settings immediately after starting guidance
       await _applyAudioSettings();
     } catch (e) {
-      debugPrint('Error starting guidance: $e');
+      debugPrint('Nav_Error: Error starting guidance flow: $e');
     }
   }
 
@@ -285,20 +301,21 @@ class _NavigationScreenState extends State<NavigationScreen> {
             ),
           ),
 
-          // Close button - Red Cross at the end of bottom bar
+          // Close button - Merged into the bottom bar area
           Positioned(
-            bottom: 20,
-            right: 20,
+            bottom:
+                10, // Aligned with the typical height of the native navigation bottom bar
+            right: 20, // Moved to the left side
             child: Material(
-              color: Colors.white,
-              elevation: 4,
+              color: Colors.red[700],
+              elevation: 6,
               shape: const CircleBorder(),
               child: InkWell(
                 customBorder: const CircleBorder(),
                 onTap: () => Get.back(),
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Icon(Icons.close, color: Colors.red[700], size: 24),
+                child: const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: Icon(Icons.close, color: Colors.white, size: 28),
                 ),
               ),
             ),
