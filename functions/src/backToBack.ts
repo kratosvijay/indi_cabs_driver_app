@@ -1,6 +1,6 @@
 import * as admin from "firebase-admin";
 import { onCall, HttpsError } from "firebase-functions/v2/https";
-
+import { onDocumentUpdated } from "firebase-functions/v2/firestore";
 
 /**
  * Calculate distance between two points using Haversine formula
@@ -14,126 +14,193 @@ function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: numbe
         Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
         Math.sin(dLon / 2) * Math.sin(dLon / 2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    const d = R * c; // Distance in km
-    return d;
+    return R * c; // Distance in km
 }
 
 function deg2rad(deg: number): number {
     return deg * (Math.PI / 180);
 }
 
-
 /**
- * Find Back-to-Back Drivers
- * 
- * Logic:
- * 1. Find drivers who are 'in_ride'.
- * 2. Check their current dropoff location (from their active ride).
- * 3. If they are close to the dropoff (e.g. < 3km or < 5 mins), AND
- * 4. Structurally ensure the new pickup is close to that dropoff.
- * 
- * Note: Real-time "time to dropoff" requires live traffic data (Google Routes API).
- * For this MVP, we will use straight-line distance to dropoff < 2km as a proxy for "about to finish".
+ * 1. Detect AvailableSoon Drivers
+ * Triggered on driver status update
  */
-export const findBackToBackDrivers = onCall(async (request) => {
-    const db = admin.firestore(); // Init DB here to ensure App is initialized
+export const checkAvailableSoonDrivers = onDocumentUpdated(
+    { document: "drivers/{driverId}", region: "asia-south1" },
+    async (event) => {
+        const driverId = event.params.driverId;
+        const driverRef = event.data?.after;
+        if (!driverRef || !event.data?.before) return;
 
-    const rideId = request.data.rideId;
-    const pickupLat = request.data.pickupLat;
-    const pickupLng = request.data.pickupLng;
+        const dData = driverRef.data();
+        const beforeData = event.data.before.data();
 
-    if (!rideId || !pickupLat || !pickupLng) {
-        throw new HttpsError('invalid-argument', 'Missing rideId or pickup location');
-    }
-
-    console.log(`[BackToBack] Searching for drivers near ${pickupLat}, ${pickupLng} for ride ${rideId}`);
-
-    // 1. Get all drivers who are currently in a ride
-    // In a real app, you would use GeoFire or geospatial queries on 'driver_locations' 
-    // filtered by status. Here we might have to scan or rely on a known list.
-    // Optimization: query 'drivers' where status == 'on_trip' (if maintained).
-
-    // For MVP efficiency: We'll query `ride_requests` where status == 'accepted' or 'arrived' or 'started'
-    // Actually, 'started' is the phase where they are moving to dropoff.
-
-    const activeRidesSnapshot = await db.collection("ride_requests")
-        .where("status", "==", "started")
-        .get();
-
-    const potentialDrivers: any[] = [];
-
-    for (const doc of activeRidesSnapshot.docs) {
-        const rideData = doc.data();
-        const driverId = rideData.driverId;
-        const dropoffLoc = rideData.dropoffLocation; // Map or GeoPoint
-
-        if (!dropoffLoc) continue;
-
-        let dLat = 0;
-        let dLng = 0;
-
-        if (dropoffLoc.latitude) {
-            dLat = dropoffLoc.latitude;
-            dLng = dropoffLoc.longitude;
-        } else if (dropoffLoc.lat) {
-            dLat = dropoffLoc.lat;
-            dLng = dropoffLoc.lng;
+        // Trigger ONLY when status changes TO "availableSoon"
+        if (dData.status !== "availableSoon" || beforeData.status === "availableSoon") {
+            return;
         }
 
-        // 2. Check distance between Active Ride Dropoff AND New Ride Pickup
-        // This ensures the driver finishes near where the new ride starts.
-        const distanceToNewPickup = calculateDistance(dLat, dLng, pickupLat, pickupLng);
+        console.log(`[B2B] Driver \${driverId} is now availableSoon. Detecting nearby rides.`);
 
-        // Threshold: 50km (DEBUGGING)
-        if (distanceToNewPickup <= 50.0) {
-            // 3. (Optional) Check if driver is ALREADY actually close to the dropoff?
-            // This requires the driver's current live location. 
-            // We can fetch driver's latest location from 'drivers/{driverId}'
+        const db = admin.firestore();
 
-            const driverDoc = await db.collection("drivers").doc(driverId).get();
-            const driverLoc = driverDoc.data()?.currentLocation; // Assuming this is updated
+        // 1. Get driver dropoff location from current ride
+        // To find the current ride, we can check ride_requests where status == 'started' for this driver
+        const activeRidesSnap = await db.collection("ride_requests")
+            .where("driverId", "==", driverId)
+            .where("status", "in", ["started", "arrived", "accepted"])
+            .get();
 
-            if (driverLoc) {
-                const currentLat = driverLoc.latitude || driverLoc.lat;
-                const currentLng = driverLoc.longitude || driverLoc.lng;
+        if (activeRidesSnap.empty) {
+            console.log(`[B2B] Driver \${driverId} has no active ride to base B2B off of.`);
+            return;
+        }
 
-                // Distance from Driver to HIS Dropoff
-                const distToDropoff = calculateDistance(currentLat, currentLng, dLat, dLng);
+        const currentRideDoc = activeRidesSnap.docs[0];
+        const currentRideId = currentRideDoc.id;
+        const currentRideData = currentRideDoc.data();
+        const dropoffLoc = currentRideData.dropoffLocation || currentRideData.destinationLocation;
 
-                // If he is within 50km of his dropoff, he is a candidate.
-                if (distToDropoff <= 50.0) {
-                    potentialDrivers.push({
-                        driverId: driverId,
-                        distance: distanceToNewPickup, // Priority metric
-                        currentRideId: doc.id
-                    });
-                }
+        if (!dropoffLoc) {
+            console.log(`[B2B] Active ride \${currentRideId} has no dropoff location.`);
+            return;
+        }
+
+        const dLat = dropoffLoc.latitude || dropoffLoc.lat;
+        const dLng = dropoffLoc.longitude || dropoffLoc.lng;
+
+        if (!dLat || !dLng) return;
+
+        // 2. Query new rides (status == 'searching')
+        // In reality you would use GeoFire. For MVP, fetch searching rides and filter by distance.
+        const searchingRidesSnap = await db.collection("ride_requests")
+            .where("status", "==", "searching")
+            .get();
+
+        const maxSearchRadiusKm = 2.0;
+        const candidates: any[] = [];
+
+        for (const rideDoc of searchingRidesSnap.docs) {
+            // Skip their own ride just in case it's mislabeled
+            if (rideDoc.id === currentRideId) continue;
+
+            const rData = rideDoc.data();
+            const pickupLoc = rData.pickupLocation;
+            if (!pickupLoc) continue;
+
+            const pLat = pickupLoc.latitude || pickupLoc.lat;
+            const pLng = pickupLoc.longitude || pickupLoc.lng;
+
+            if (!pLat || !pLng) continue;
+
+            const dist = calculateDistance(dLat, dLng, pLat, pLng);
+
+            if (dist <= maxSearchRadiusKm) {
+                candidates.push({
+                    rideId: rideDoc.id,
+                    distance: dist,
+                    data: rData
+                });
             }
         }
-    }
 
-    // Sort by proximity
-    potentialDrivers.sort((a, b) => a.distance - b.distance);
+        if (candidates.length === 0) {
+            console.log(`[B2B] No searching rides within \${maxSearchRadiusKm}km of dropoff.`);
+            return;
+        }
 
-    if (potentialDrivers.length > 0) {
-        const bestDriver = potentialDrivers[0];
-        console.log(`[BackToBack] Found driver ${bestDriver.driverId} ending ride ${bestDriver.currentRideId}`);
+        // Sort by distance
+        candidates.sort((a, b) => a.distance - b.distance);
 
-        // Update the ride request to assign this driver
-        // This triggers the driver's listener (standard or back-to-back)
-        await db.collection('ride_requests').doc(rideId).update({
-            driverId: bestDriver.driverId,
-            status: 'searching', // Ensure it is 'searching' so it appears in their list
-            isBackToBack: true,   // Flag for analytics/UI
-            backToBackPreviousRideId: bestDriver.currentRideId
+        // 3. Create B2B Ride Request
+        const bestRide = candidates[0];
+        console.log(`[B2B] Offering ride \${bestRide.rideId} to driver \${driverId}`);
+
+        // Check if driver can receive more requests (Max 5)
+        const activeRequestsSnap = await db.collection(`ride_requests/\${driverId}/requests`).where('status', '==', 'pending').get();
+        if (activeRequestsSnap.size >= 5) {
+            console.log(`[B2B] Driver \${driverId} already has 5 active requests. Skipping B2B offer.`);
+            return;
+        }
+
+        const requestRef = db.doc(`ride_requests/\${driverId}/requests/\${bestRide.rideId}`);
+        const existingRequest = await requestRef.get();
+        if (existingRequest.exists) return; // Deduplicate
+
+        const expiresAt = admin.firestore.Timestamp.fromMillis(Date.now() + 5000);
+
+        await requestRef.set({
+            rideId: bestRide.rideId,
+            riderId: bestRide.data.riderId || "",
+            pickupLocation: bestRide.data.pickupLocation,
+            destinationLocation: bestRide.data.destinationLocation || bestRide.data.dropLocation || bestRide.data.pickupLocation,
+            fareEstimate: bestRide.data.fare || bestRide.data.fareEstimate || 0,
+            vehicleType: bestRide.data.vehicleType || "Unknown",
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            expiresAt: expiresAt,
+            status: "pending",
+            isBackToBack: true,
+            previousRideId: currentRideId
         });
 
-        return {
-            found: true,
-            driverId: bestDriver.driverId,
-            currentRideId: bestDriver.currentRideId
-        };
+        console.log(`[B2B] Successfully created B2B ride request card for \${driverId}`);
     }
+);
 
-    return { found: false };
+
+/**
+ * 2. Accept B2B Ride (Atomic)
+ */
+export const acceptBackToBackRide = onCall({ region: "asia-south1" }, async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Must be logged in');
+
+    const db = admin.firestore();
+    const driverId = request.auth.uid;
+    const { rideId, previousRideId } = request.data;
+
+    // Use ride_requests collection as that's what's currently used in this DB structure as central doc
+    const rideRef = db.collection('ride_requests').doc(rideId);
+
+    try {
+        await db.runTransaction(async (tx) => {
+            const rideDoc = await tx.get(rideRef);
+
+            if (!rideDoc.exists) {
+                throw new Error("Ride does not exist");
+            }
+
+            if (rideDoc.data()?.status !== "searching") {
+                throw new Error("Already assigned or no longer searching");
+            }
+
+            tx.update(rideRef, {
+                status: "accepted",
+                driverId: driverId,
+                isBackToBack: true,
+                previousRideId: previousRideId || null,
+                driverOnAnotherRide: true,
+                estimatedDelayMinutes: 5,
+                acceptedAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+
+            const driverRef = db.collection('drivers').doc(driverId);
+            tx.update(driverRef, { nextRideId: rideId });
+        });
+
+        // Delete other pending requests for this backend driver
+        const myRequestsSnap = await db.collection(`ride_requests/\${driverId}/requests`).where('status', '==', 'pending').get();
+        const batch = db.batch();
+        myRequestsSnap.forEach(doc => {
+            if (doc.id !== rideId) {
+                batch.delete(doc.ref);
+            }
+        });
+        await batch.commit();
+
+        return { success: true, message: "Back-to-Back Ride accepted successfully" };
+
+    } catch (error: any) {
+        console.error("[B2B] Accept failed:", error);
+        throw new HttpsError('aborted', error.message || "Ride already taken");
+    }
 });

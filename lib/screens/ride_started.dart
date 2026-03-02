@@ -10,10 +10,10 @@ import 'package:get/get.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart' as maps;
 import 'package:project_taxi_driver_app/widgets/ride_request.dart';
 import 'package:project_taxi_driver_app/widgets/ride_status_slider.dart';
+import 'package:project_taxi_driver_app/widgets/back_to_back_overlay.dart';
 import 'package:project_taxi_driver_app/screens/ride_payment.dart';
 import 'package:project_taxi_driver_app/screens/navigation_screen.dart'; // Import NavigationScreen
 import 'package:project_taxi_driver_app/screens/ride_end_otp_screen.dart';
-import 'package:project_taxi_driver_app/controllers/home_page_controller.dart';
 
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:cloud_functions/cloud_functions.dart';
@@ -1327,68 +1327,7 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
               ),
 
               // Back-to-Back Ride Offer
-              if (Get.isRegistered<HomePageController>())
-                Obx(() {
-                  final homeController = Get.find<HomePageController>();
-                  final queued = homeController.queuedRide.value;
-
-                  if (queued == null) return const SizedBox.shrink();
-
-                  // If already accepted, show small indicator
-                  if (queued.status == 'accepted') {
-                    return Positioned(
-                      top: 100,
-                      left: 16,
-                      right: 16,
-                      child: Card(
-                        color: Colors.green,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        elevation: 4,
-                        child: ListTile(
-                          leading: const Icon(
-                            Icons.check_circle,
-                            color: Colors.white,
-                            size: 30,
-                          ),
-                          title: const Text(
-                            "Next Ride Queued",
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          subtitle: Text(
-                            "Pickup: ${queued.pickupTitle}",
-                            style: const TextStyle(color: Colors.white70),
-                          ),
-                        ),
-                      ),
-                    );
-                  }
-
-                  // If searching (Offered), show full request card
-                  // We use a Stack/Positioned to overlay it nicely
-                  return Positioned(
-                    top: 80,
-                    left: 0,
-                    right: 0,
-                    // Ensure it doesn't cover the bottom sheet too much, but RideRequestCard is compact enough
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: RideRequestCard(
-                        rideRequest: queued,
-                        onAccept: () {
-                          homeController.acceptBackToBackRide(queued);
-                        },
-                        onReject: () {
-                          homeController.queuedRide.value = null;
-                        },
-                      ),
-                    ),
-                  );
-                }),
+              const BackToBackOverlayWidget(),
 
               Positioned(
                 bottom: 0,

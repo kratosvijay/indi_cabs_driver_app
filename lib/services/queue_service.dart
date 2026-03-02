@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:geolocator/geolocator.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:get/get.dart';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:project_taxi_driver_app/widgets/status_slider.dart'; // Contains DriverStatus enum
+import 'package:project_taxi_driver_app/controllers/home_page_controller.dart';
 
 class QueueService {
   static final QueueService _instance = QueueService._internal();
@@ -123,24 +125,25 @@ class QueueService {
         .snapshots()
         .listen(
           (snapshot) {
-            int pos = -1;
-            bool foundMe = false;
-
-            for (int i = 0; i < snapshot.docs.length; i++) {
-              final doc = snapshot.docs[i];
-              if (doc.id == user.uid) {
-                pos = i + 1; // 1-based index
-                foundMe = true;
-                // Also update status
-                final data = doc.data();
-                queueStatus.value = data['status'] ?? 'queued';
-                break;
+            if (snapshot.docs.isNotEmpty) {
+              // Now we only care about OUR document to read the backend-calculated position
+              bool foundMe = false;
+              for (final doc in snapshot.docs) {
+                if (doc.id == user.uid) {
+                  final data = doc.data();
+                  queuePosition.value = data['position']; // Server-calculated
+                  queueStatus.value = data['status'] ?? 'queued';
+                  _isInQueue = true;
+                  foundMe = true;
+                  break;
+                }
               }
-            }
 
-            if (foundMe) {
-              queuePosition.value = pos;
-              _isInQueue = true;
+              if (!foundMe) {
+                queuePosition.value = null;
+                queueStatus.value = '';
+                _isInQueue = false;
+              }
             } else {
               queuePosition.value = null;
               queueStatus.value = '';
@@ -163,6 +166,7 @@ class QueueService {
   }
 
   Timer? _exitTimer;
+  Timer? _heartbeatTimer;
   Function(String title, String message, String type)? onQueueEvent;
 
   /// Checks if the driver is within the geofence using Ray-Casting
@@ -235,6 +239,14 @@ class QueueService {
     if (user == null) return;
 
     try {
+      if (Get.isRegistered<HomePageController>()) {
+        final homeController = Get.find<HomePageController>();
+        if (homeController.driverStatus.value != DriverStatus.online) {
+          debugPrint("QueueService: Driver is not purely online. Cannot join.");
+          return;
+        }
+      }
+
       debugPrint("QueueService: Entering Airport Queue...");
 
       // Check if already exists to avoid overwriting timestamp
@@ -250,11 +262,15 @@ class QueueService {
         await docRef.set({
           'driverId': user.uid,
           'entryTimestamp': FieldValue.serverTimestamp(),
-          'lastUpdated': FieldValue.serverTimestamp(),
+          'lastHeartbeat': FieldValue.serverTimestamp(),
           'status': 'queued',
+          'lockedForRide': false,
+          'currentOfferRideId': "",
+          'skipCount': 0,
           'location': GeoPoint(position.latitude, position.longitude),
         });
         _isInQueue = true;
+        _startHeartbeat();
         debugPrint("QueueService: Joined Queue successfully!");
         onQueueEvent?.call('joinedQueue'.tr, 'queueJoinedMsg'.tr, 'success');
 
@@ -275,6 +291,26 @@ class QueueService {
     }
   }
 
+  void _startHeartbeat() {
+    final user = _auth.currentUser;
+    if (user == null) return;
+
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 60), (timer) {
+      if (_isInQueue) {
+        _firestore
+            .collection('airport_queues')
+            .doc(_airportId)
+            .collection('drivers')
+            .doc(user.uid)
+            .update({'lastHeartbeat': FieldValue.serverTimestamp()})
+            .catchError((e) => debugPrint("Heartbeat update failed: $e"));
+      } else {
+        timer.cancel();
+      }
+    });
+  }
+
   Future<void> _exitQueue(String reason, {bool showNotification = true}) async {
     final user = _auth.currentUser;
     if (user == null) return;
@@ -290,6 +326,7 @@ class QueueService {
           .delete();
 
       _isInQueue = false;
+      _heartbeatTimer?.cancel();
 
       if (showNotification) {
         onQueueEvent?.call('exitedQueue'.tr, 'queueExitedMsg'.tr, 'error');

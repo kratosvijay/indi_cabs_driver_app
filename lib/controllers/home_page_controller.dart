@@ -63,7 +63,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   final RxBool isRideAcceptanceInProgress = false.obs;
 
   // Back-to-Back Ride State
-  final Rxn<RideRequest> queuedRide = Rxn<RideRequest>();
+  final RxList<RideRequest> queuedRides = <RideRequest>[].obs;
 
   // Helper for backward compatibility or easy access to "top" request
   RideRequest? get activeRideRequest =>
@@ -1410,7 +1410,9 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       // Back-to-Back Logic: If we are already ON TRIP, queue this ride
       if (driverStatus.value == DriverStatus.goTo) {
         debugPrint("Back-to-Back Ride Received: ${newRequest.rideId}");
-        queuedRide.value = newRequest;
+        if (!queuedRides.any((r) => r.rideId == newRequest.rideId)) {
+          queuedRides.add(newRequest);
+        }
 
         // Play notification (maybe less intrusive?)
         playRideRequestSound();
@@ -1855,8 +1857,11 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         });
       });
 
-      // Update queuedRide status locally
-      queuedRide.value = request.copyWith(status: 'accepted');
+      // Update queuedRides status locally
+      final index = queuedRides.indexWhere((r) => r.rideId == request.rideId);
+      if (index != -1) {
+        queuedRides[index] = request.copyWith(status: 'accepted');
+      }
 
       Get.snackbar(
         "Ride Queued",
@@ -1872,7 +1877,9 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         backgroundColor: Colors.red,
         colorText: Colors.white,
       );
-      queuedRide.value = null; // Clear if failed
+      queuedRides.removeWhere(
+        (r) => r.rideId == request.rideId,
+      ); // Clear if failed
     }
   }
 

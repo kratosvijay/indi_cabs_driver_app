@@ -1,4 +1,5 @@
 import * as admin from "firebase-admin";
+import { getDatabase } from "firebase-admin/database";
 import { setGlobalOptions } from "firebase-functions/v2";
 
 setGlobalOptions({ maxInstances: 1, memory: '256MiB' });
@@ -15,9 +16,13 @@ import axios from "axios";
 
 import { batchOnboard } from "./onboarding";
 import { aggregateDemandDriver, resetDemandZonesDriver } from "./demandAggregator";
-import { findBackToBackDrivers } from "./backToBack";
+import { checkAvailableSoonDrivers, acceptBackToBackRide } from "./backToBack";
+import { removeInvalidAirportDrivers, cleanupGhostAirportDrivers, onQueueDriverAdded, onQueueDriverRemoved, acceptAirportRide, assignAirportRide } from "./airportQueue";
 
-export { batchOnboard, aggregateDemandDriver, resetDemandZonesDriver, findBackToBackDrivers };
+export {
+    batchOnboard, aggregateDemandDriver, resetDemandZonesDriver, checkAvailableSoonDrivers, acceptBackToBackRide,
+    removeInvalidAirportDrivers, cleanupGhostAirportDrivers, onQueueDriverAdded, onQueueDriverRemoved, acceptAirportRide
+};
 
 /*
 export const performLoadTest = onRequest({ timeoutSeconds: 300, maxInstances: 1 }, async (req, res) => {
@@ -43,6 +48,7 @@ if (admin.apps.length === 0) {
 }
 
 const db = admin.firestore();
+const rtdb = getDatabase();
 
 const exotelSid = defineSecret("EXOTEL_SID");
 const exotelApiKey = defineSecret("EXOTEL_API_KEY");
@@ -219,91 +225,58 @@ export const distributeRideToDrivers = onDocumentWritten(
             if (isInsideAirport) {
                 console.log(`Ride ${rideId} is INSIDE Airport Polygon. Checking Queue...`);
 
-                const queueSnap = await db.collection("airport_queues")
-                    .doc("MAA")
-                    .collection("drivers")
-                    .orderBy("entryTimestamp", "asc")
-                    .limit(10) // Get top 10
-                    .get();
+                // Delegate to strict FIFO queue logic
+                const assigned = await assignAirportRide("MAA", rideId, afterData);
 
-                if (!queueSnap.empty) {
-                    // Check availability via rejection history
-                    const rejectedBy = new Set(afterData.rejectedBy || []);
-                    let selectedDriverId = null;
-
-                    for (const doc of queueSnap.docs) {
-                        const dId = doc.id;
-                        // Skip if already rejected this specific ride
-                        if (!rejectedBy.has(dId)) {
-                            selectedDriverId = dId;
-                            break;
-                        }
-                    }
-
-                    if (selectedDriverId) {
-                        console.log(`Assigning Airport Ride ${rideId} to Queued Driver: ${selectedDriverId}`);
-
-                        await change.after.ref.update({
-                            driverId: selectedDriverId,
-                            currentDriverIndex: 0,
-                            potentialDrivers: [selectedDriverId], // Only him for now
-                            notifiedAt: admin.firestore.FieldValue.serverTimestamp(),
-                            isAirportRide: true
-                        });
-
-                        // Verify if we should update queue status to 'offered_ride'
-                        await db.collection("airport_queues")
-                            .doc("MAA")
-                            .collection("drivers")
-                            .doc(selectedDriverId)
-                            .update({ status: 'offered_ride' });
-
-                        return null; // Done
-                    } else {
-                        console.log("All top 10 queued drivers have rejected this ride. Falling back to normal search.");
-                    }
+                if (assigned) {
+                    return null; // Done
                 } else {
-                    console.log("Airport Queue is empty. Falling back to normal search.");
+                    console.log("Airport Queue is empty or all drivers rejected. Falling back to normal search.");
                 }
             }
             // ---------------------------------------------------------
 
             // ---------------------------------------------------------
-            // 2. FIND CANDIDATE DRIVERS (Idle + AvailableSoon)
+            // 2. FIND CANDIDATE DRIVERS (Idle + AvailableSoon) from RTDB
             // ---------------------------------------------------------
 
-            console.log(`Searching for drivers near ${pickupGeo.latitude}, ${pickupGeo.longitude}...`);
+            console.log(`Searching for drivers near \${pickupGeo.latitude}, \${pickupGeo.longitude} from Realtime Database...`);
 
-            // Query active AND availableSoon drivers (max 10 for 'in' query)
-            // ensuring we don't pick offline drivers
-            const driversSnap = await db.collection("drivers")
-                .where("isOnline", "==", true)
-                .where("status", "in", ["active", "availableSoon"])
-                .get();
+            const driversRef = rtdb.ref('driver_locations');
+            const activeDriversSnap = await driversRef.once('value');
+            const allDrivers = activeDriversSnap.val() || {};
 
+            const nowMs = Date.now();
             const candidates: any[] = [];
 
-            driversSnap.forEach(doc => {
-                const dData = doc.data();
-                if (dData.currentLocation) {
-                    const dist = calculateDistance(
-                        pickupGeo.latitude,
-                        pickupGeo.longitude,
-                        dData.currentLocation.latitude,
-                        dData.currentLocation.longitude
-                    );
+            for (const [driverId, locData] of Object.entries<any>(allDrivers)) {
+                // Check recency of location (e.g. within 20 seconds) to ensure they are active
+                if (nowMs - locData.updatedAt > 20000) continue;
 
-                    // Radius Check (50km for testing, typically 3-5km)
-                    if (dist <= 50) {
-                        candidates.push({
-                            id: doc.id,
-                            distance: dist,
-                            data: dData,
-                            isB2B: dData.status === 'availableSoon'
-                        });
+                const dist = calculateDistance(
+                    pickupGeo.latitude,
+                    pickupGeo.longitude,
+                    locData.lat,
+                    locData.lng
+                );
+
+                // Radius Check (50km for testing, typically 3-5km)
+                if (dist <= 50) {
+                    // Fetch driver doc to verify they are active/availableSoon
+                    const driverDoc = await db.collection('drivers').doc(driverId).get();
+                    if (driverDoc.exists) {
+                        const dData = driverDoc.data();
+                        if (dData && dData.isOnline && (dData.status === "active" || dData.status === "availableSoon")) {
+                            candidates.push({
+                                id: driverId,
+                                distance: dist,
+                                data: dData,
+                                isB2B: dData.status === 'availableSoon'
+                            });
+                        }
                     }
                 }
-            });
+            }
 
             if (candidates.length === 0) {
                 console.log("No drivers found nearby.");
@@ -312,83 +285,80 @@ export const distributeRideToDrivers = onDocumentWritten(
 
             // Sort by distance
             candidates.sort((a, b) => a.distance - b.distance);
-            console.log(`Found ${candidates.length} candidates. Nearest: ${candidates[0].id} (${candidates[0].distance.toFixed(2)}km)`);
+            console.log(`Found \${candidates.length} candidates. Nearest: \${candidates[0].id} (\${candidates[0].distance.toFixed(2)}km)`);
 
             // ---------------------------------------------------------
-            // 3. TRANSACTIONAL ASSIGNMENT
+            // 3. SEQUENTIAL DISPATCH LOGIC (Max 4 drivers, 5 sec each)
             // ---------------------------------------------------------
-            // We want to try assigning to the best driver. 
-            // If they are busy (race condition), try the next?
-            // For simplicity, we try the FIRST one. If it fails, the function will eventually retry (or we can loop here).
 
-            const bestDriver = candidates[0];
-            const driverRef = db.collection("drivers").doc(bestDriver.id);
             const rideRef = change.after.ref;
+            const maxDrivers = Math.min(candidates.length, 4);
 
-            try {
-                await db.runTransaction(async (t) => {
-                    const dDoc = await t.get(driverRef);
-                    const rDoc = await t.get(rideRef);
+            for (let i = 0; i < maxDrivers; i++) {
+                const driverInfo = candidates[i];
+                const driverId = driverInfo.id;
 
-                    if (!dDoc.exists || !rDoc.exists) throw "Doc missing";
+                // Check if ride is still searching before offering
+                const currentRideDoc = await rideRef.get();
+                if (currentRideDoc.data()?.status !== "searching") {
+                    console.log(`Ride \${rideId} is no longer searching. Stopping dispatch sequence.`);
+                    break;
+                }
 
-                    const dData = dDoc.data();
-                    const rData = rDoc.data();
+                // Check if driver has room for more requests (Max 5)
+                const activeRequestsSnap = await db.collection(`ride_requests/\${driverId}/requests`).where('status', '==', 'pending').get();
+                if (activeRequestsSnap.size >= 5) {
+                    console.log(`Driver \${driverId} has \${activeRequestsSnap.size} pending requests. Skipping.`);
+                    continue;
+                }
 
-                    // Check if ride is still searching
-                    if (rData?.status !== 'searching') {
-                        throw "Ride already assigned or cancelled";
-                    }
+                // Deduplication Logic - Skip if request already exists
+                const requestRef = db.doc(`ride_requests/\${driverId}/requests/\${rideId}`);
+                const existingRequest = await requestRef.get();
+                if (existingRequest.exists) continue;
 
-                    // Check if driver is free for a NEW assignment
-                    // If 'active', they are free.
-                    // If 'availableSoon', they must NOT have a 'nextRideId' yet.
-                    if (bestDriver.isB2B) {
-                        if (dData?.nextRideId) {
-                            throw "Driver already has a Next Ride assigned";
-                        }
-                    } else {
-                        // If standard active driver, ensure they are not somehow 'on_trip' (double check)
-                        if (dData?.status !== 'active') {
-                            throw "Driver status changed from active";
-                        }
-                    }
+                console.log(`[Dispatch Flow] Sending ride \${rideId} to driver \${driverId}`);
 
-                    // PERFORM ASSIGNMENT
-                    const updateData: any = {
-                        driverId: bestDriver.id,
-                        currentDriverIndex: 0,
-                        potentialDrivers: candidates.map(d => d.id),
-                        notifiedAt: admin.firestore.FieldValue.serverTimestamp(),
-                    };
+                const expiresAt = admin.firestore.Timestamp.fromMillis(Date.now() + 5000);
 
-                    if (bestDriver.isB2B) {
-                        updateData.isBackToBack = true;
-                        updateData.status = 'searching'; // B2B flows often keep it 'searching' until accepted? 
-                        // Actually, we usually assign it. 
-                        // BUT for B2B, we might want to "Offer" it first without changing status to assigned?
-                        // The requirement says "Assign next ride automatically".
-                        // So we set `driverId` and `isBackToBack`.
-
-                        // We set 'status' to 'searching' relative to the Rider? 
-                        // Usage: standard flow sets `driverId` but keeps `status: searching` until driver accepts.
-                        // B2B should do same.
-
-                        // Lock the driver!
-                        t.update(driverRef, { nextRideId: rideId });
-                    } else {
-                        // Standard assignment
-                        updateData.isBackToBack = false;
-                    }
-
-                    t.update(rideRef, updateData);
+                // Create Ride Request for Driver
+                await requestRef.set({
+                    rideId: rideId,
+                    riderId: afterData.riderId || "",
+                    pickupLocation: afterData.pickupLocation,
+                    destinationLocation: afterData.destinationLocation || afterData.pickupLocation,
+                    fareEstimate: afterData.fare || afterData.fareEstimate || 0,
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                    expiresAt: expiresAt,
+                    status: "pending",
+                    vehicleType: afterData.vehicleType || "Unknown"
                 });
 
-                console.log(`Successfully assigned ride ${rideId} to ${bestDriver.id} (B2B: ${bestDriver.isB2B})`);
+                // Update the original ride doc potentialDrivers list for transparency
+                await rideRef.update({
+                    currentDriverIndex: i,
+                    potentialDrivers: candidates.map(d => d.id),
+                    notifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+                });
 
-            } catch (err) {
-                console.error("Transaction failed (Race Condition or State Change):", err);
-                // If failed, we could try the next driver in 'candidates', but for MVP we rely on next trigger.
+                // Wait exactly 5 seconds
+                await new Promise((resolve) => setTimeout(resolve, 5000));
+
+                // Check if accepted by viewing the central ride document
+                const checkRide = await rideRef.get();
+                if (checkRide.data()?.status === "accepted") {
+                    console.log(`Ride \${rideId} was accepted! Stopping dispatch.`);
+                    break; // End sequential sequence
+                } else {
+                    // Update the request to expired
+                    console.log(`Driver \${driverId} did not accept ride \${rideId} in time. Expiring card.`);
+                    await requestRef.update({ status: "expired" }).catch(() => { });
+
+                    // Also track rejection in original ride doc to avoid giving it again in future loops
+                    await rideRef.update({
+                        rejectedBy: admin.firestore.FieldValue.arrayUnion(driverId)
+                    });
+                }
             }
 
         } catch (e) {
@@ -398,6 +368,59 @@ export const distributeRideToDrivers = onDocumentWritten(
         return null;
     }
 );
+
+/**
+ * Atomic Accept Function
+ * Called directly by the driver app to accept a ride.
+ */
+export const acceptRide = onCall({ region: "asia-south1" }, async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Must be logged in');
+
+    const driverId = request.auth.uid;
+    const { rideId } = request.data;
+
+    const rideRef = db.collection('ride_requests').doc(rideId); // Central ride doc
+
+    try {
+        await db.runTransaction(async (tx) => {
+            const rideDoc = await tx.get(rideRef);
+
+            if (!rideDoc.exists) {
+                throw new Error("Ride does not exist");
+            }
+
+            if (rideDoc.data()?.status === "searching") {
+                tx.update(rideRef, {
+                    status: "accepted",
+                    driverId: driverId,
+                    acceptedAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+
+                // (Optional) lock driver
+                // const driverRef = db.collection('drivers').doc(driverId);
+                // tx.update(driverRef, { isBusy: true });
+            } else {
+                throw new Error("Already accepted by another driver or cancelled");
+            }
+        });
+
+        // Transaction successful. Cleanup driver's local request list.
+        const myRequestsSnap = await db.collection(`ride_requests/\${driverId}/requests`).where('status', '==', 'pending').get();
+        const batch = db.batch();
+        myRequestsSnap.forEach(doc => {
+            if (doc.id !== rideId) {
+                batch.delete(doc.ref);
+            }
+        });
+        await batch.commit();
+
+        return { success: true, message: "Ride accepted successfully" };
+
+    } catch (error: any) {
+        console.error("Accept failed:", error);
+        throw new HttpsError('aborted', error.message || "Ride already taken");
+    }
+});
 
 
 /**

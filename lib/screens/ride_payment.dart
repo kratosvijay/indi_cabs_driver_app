@@ -238,7 +238,12 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
 
       // 2. Navigation Logic (Handle Back-to-Back Ride)
       final homeController = Get.find<HomePageController>();
-      final queued = homeController.queuedRide.value;
+      final acceptedQueuedRides = homeController.queuedRides
+          .where((r) => r.status == 'accepted')
+          .toList();
+      final queued = acceptedQueuedRides.isNotEmpty
+          ? acceptedQueuedRides.first
+          : null;
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('details_accepted_ride_id');
@@ -252,7 +257,9 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
         // Reset State for New Ride
         homeController.activeRequests.clear();
         homeController.activeRequests.add(queued);
-        homeController.queuedRide.value = null;
+        homeController.queuedRides.removeWhere(
+          (r) => r.rideId == queued.rideId,
+        );
         homeController.hasActiveRide.value = true;
         // driverStatus is already goTo
 
@@ -263,8 +270,7 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
         // Prevent the just-finished ride from ghost-triggering due to local cache lag
         homeController.ignoreRide(localRideId);
 
-        homeController.queuedRide.value =
-            null; // Clear queue if any garbage exists
+        homeController.queuedRides.clear(); // Clear queue if any garbage exists
         Get.offAll(
           () => DriverHomePage(user: user, initialStatus: DriverStatus.online),
         );
