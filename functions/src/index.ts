@@ -1185,6 +1185,7 @@ export const processWalletSettlement = onDocumentCreated(
                 transfer_amount: data.amount,
                 transfer_currency: "INR",
                 transfer_mode: "upi",
+                fund_source: "CASHFREE_1778839", // Sandbox wallet ID provided by user
                 beneficiary_details: {
                     beneficiary_id: `driver_${driverId}`,
                     // Driver name isn't currently tracked in wallet_transactions, but we can pass a default or fetch it.
