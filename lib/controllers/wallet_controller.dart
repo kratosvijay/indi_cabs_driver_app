@@ -3,7 +3,11 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart'; // Changed from foundation
 import 'package:get/get.dart';
-import 'package:razorpay_flutter/razorpay_flutter.dart';
+import 'package:flutter_cashfree_pg_sdk/api/cferrorresponse/cferrorresponse.dart';
+import 'package:flutter_cashfree_pg_sdk/api/cfpayment/cfwebcheckoutpayment.dart';
+import 'package:flutter_cashfree_pg_sdk/api/cfpaymentgateway/cfpaymentgatewayservice.dart';
+import 'package:flutter_cashfree_pg_sdk/api/cfsession/cfsession.dart';
+import 'package:flutter_cashfree_pg_sdk/utils/cfenums.dart';
 
 class WalletTransaction {
   final String id;
@@ -52,49 +56,57 @@ class WalletController extends GetxController {
   // Pending Subscription State
   Map<String, dynamic>? _pendingSubscription;
 
-  late Razorpay _razorpay;
-
-  String _razorpayKeyId = "";
+  final CFPaymentGatewayService _cashfree = CFPaymentGatewayService();
 
   @override
   void onInit() {
     super.onInit();
     fetchWalletData();
     fetchUpiIds();
-    _fetchRazorpayKey();
-
-    // Initialize Razorpay
-    try {
-      _razorpay = Razorpay();
-      _razorpay.on(Razorpay.EVENT_PAYMENT_SUCCESS, _handlePaymentSuccess);
-      _razorpay.on(Razorpay.EVENT_PAYMENT_ERROR, _handlePaymentError);
-      _razorpay.on(Razorpay.EVENT_EXTERNAL_WALLET, _handleExternalWallet);
-    } catch (e) {
-      debugPrint("Error initializing Razorpay: $e");
-    }
+    _initCashfree();
   }
 
-  Future<void> _fetchRazorpayKey() async {
-    try {
-      final callable = FirebaseFunctions.instance.httpsCallable(
-        'getRazorpayKey',
-      );
-      final result = await callable.call();
-      _razorpayKeyId = result.data['keyId'] ?? "";
+  void _initCashfree() {
+    _cashfree.setCallback(verifyPayment, onError);
+  }
 
-      if (_razorpayKeyId.isEmpty) {
-        debugPrint("Cloud function returned empty key, using fallback");
-        _razorpayKeyId = "rzp_test_Re8ekEObiIuHD7";
+  void verifyPayment(String orderId) {
+    debugPrint("Cashfree Payment Success for Order: $orderId");
+    try {
+      if (_pendingSubscription != null) {
+        _finalizeSubscriptionPurchase(
+          orderId, // Use orderId as reference
+          _pendingSubscription!,
+        );
+        _pendingSubscription = null;
+      } else if (_currentAddAmount > 0) {
+        creditWallet(_currentAddAmount, orderId);
+        Get.snackbar("Success", "Money added to wallet successfully");
+        _currentAddAmount = 0;
       }
-
-      debugPrint("Fetched Razorpay Key ID: $_razorpayKeyId");
     } catch (e) {
-      debugPrint("Error fetching Razorpay Key: $e");
-      // Fallback for development/testing if cloud function fails
-      _razorpayKeyId = "rzp_test_Re8ekEObiIuHD7";
-      debugPrint("Using Fallback Razorpay Key ID: $_razorpayKeyId");
+      Get.snackbar("Error", "Post-payment processing failed: $e");
     }
   }
+
+  void onError(CFErrorResponse error, String orderId) {
+    debugPrint("Cashfree Payment Error: ${error.getMessage()}");
+    if (_pendingSubscription != null) {
+      _pendingSubscription = null;
+      Get.defaultDialog(
+        title: "Transaction Failed",
+        middleText: "Payment could not be completed. Please try again.",
+        textConfirm: "OK",
+        confirmTextColor: Colors.white,
+        onConfirm: () => Get.back(),
+      );
+    } else {
+      Get.snackbar("Error", "Payment Failed: ${error.getMessage()}");
+    }
+    isLoading.value = false;
+  }
+
+  double _currentAddAmount = 0.0;
 
   // ... (existing code)
 
@@ -102,33 +114,38 @@ class WalletController extends GetxController {
     final user = _auth.currentUser;
     if (user == null) return;
 
-    if (_razorpayKeyId.isEmpty) {
-      Get.snackbar(
-        "Configuration Error",
-        "Razorpay Key not found. Please try again later.",
-      );
-      return;
-    }
-
     try {
       isLoading.value = true;
-      _currentAddAmount = amount; // Store for success handler
+      _currentAddAmount = amount;
 
-      var options = {
-        'key': _razorpayKeyId,
-        'amount': (amount * 100).toInt(), // in paise
-        'name': 'Indi Cabs Driver',
-        'description': 'Add Money to Wallet',
-        'prefill': {
-          'contact': user.phoneNumber ?? '',
-          'email': user.email ?? 'driver@indicabs.com',
-        },
-        'external': {
-          'wallets': ['paytm'],
-        },
-      };
+      final callable = FirebaseFunctions.instance.httpsCallable(
+        'createCashfreeOrder',
+      );
+      final result = await callable.call({
+        'amount': amount,
+        'phone': user.phoneNumber ?? "9999999999",
+      });
 
-      _razorpay.open(options);
+      if (result.data['success'] == true) {
+        final paymentSessionId = result.data['paymentSessionId'];
+        final orderId = result.data['orderId'];
+
+        var session = CFSessionBuilder()
+            .setEnvironment(
+              CFEnvironment.SANDBOX,
+            ) // Or PRODUCTION based on your env
+            .setOrderId(orderId)
+            .setPaymentSessionId(paymentSessionId)
+            .build();
+
+        var cfWebCheckoutPayment = CFWebCheckoutPaymentBuilder()
+            .setSession(session)
+            .build();
+
+        _cashfree.doPayment(cfWebCheckoutPayment);
+      } else {
+        throw Exception("Failed to create Cashfree order");
+      }
     } catch (e) {
       Get.snackbar("Error", "Failed to start payment: $e");
       isLoading.value = false;
@@ -137,7 +154,7 @@ class WalletController extends GetxController {
 
   @override
   void onClose() {
-    _razorpay.clear();
+    // No explicit clear for CFPaymentGatewayService needed usually
     super.onClose();
   }
 
@@ -289,52 +306,6 @@ class WalletController extends GetxController {
       Get.snackbar("Error", "Failed to update settings: $e");
     }
   }
-
-  void _handlePaymentSuccess(PaymentSuccessResponse response) async {
-    // In a real app, verify signature on backend: response.signature, response.orderId, response.paymentId
-    // Get.snackbar("Success", "Payment Successful: ${response.paymentId}"); // Custom dialogs below
-
-    try {
-      if (_pendingSubscription != null) {
-        await _finalizeSubscriptionPurchase(
-          response.paymentId!,
-          _pendingSubscription!,
-        );
-        _pendingSubscription = null; // Clear pending
-      } else if (_currentAddAmount > 0) {
-        await creditWallet(_currentAddAmount, response.paymentId!);
-        _currentAddAmount = 0; // Reset
-        Get.snackbar("Success", "Money added to wallet successfully");
-      }
-    } catch (e) {
-      Get.snackbar("Error", "Post-payment processing failed: $e");
-    }
-  }
-
-  void _handlePaymentError(PaymentFailureResponse response) {
-    if (_pendingSubscription != null) {
-      _pendingSubscription = null;
-      Get.defaultDialog(
-        title: "Transaction Failed",
-        middleText: "Payment could not be completed. Please try again.",
-        textConfirm: "OK",
-        confirmTextColor: Colors.white,
-        onConfirm: () => Get.back(),
-      );
-    } else {
-      Get.snackbar(
-        "Error",
-        "Payment Failed: ${response.code} - ${response.message}",
-      );
-    }
-    isLoading.value = false;
-  }
-
-  void _handleExternalWallet(ExternalWalletResponse response) {
-    Get.snackbar("External Wallet", "Wallet: ${response.walletName}");
-  }
-
-  double _currentAddAmount = 0.0;
 
   Future<void> creditWallet(
     double amount,
@@ -653,14 +624,6 @@ class WalletController extends GetxController {
       return;
     }
 
-    if (_razorpayKeyId.isEmpty) {
-      Get.snackbar(
-        "Configuration Error",
-        "Razorpay Key not found. Please try again.",
-      );
-      return;
-    }
-
     try {
       isLoading.value = true;
       _pendingSubscription = {
@@ -669,21 +632,34 @@ class WalletController extends GetxController {
         'durationDays': durationDays,
       };
 
-      var options = {
-        'key': _razorpayKeyId,
-        'amount': (totalPrice * 100).toInt(),
-        'name': 'Indi Cabs Driver',
-        'description': 'Subscription: $planName',
-        'prefill': {
-          'contact': user.phoneNumber ?? '',
-          'email': user.email ?? 'driver@indicabs.com',
-        },
-        'external': {
-          'wallets': ['paytm', 'gpay'],
-        },
-      };
+      final callable = FirebaseFunctions.instance.httpsCallable(
+        'createCashfreeOrder',
+      );
+      final result = await callable.call({
+        'amount': totalPrice,
+        'phone': user.phoneNumber ?? "9999999999",
+      });
 
-      _razorpay.open(options);
+      if (result.data['success'] == true) {
+        final paymentSessionId = result.data['paymentSessionId'];
+        final orderId = result.data['orderId'];
+
+        var session = CFSessionBuilder()
+            .setEnvironment(
+              CFEnvironment.SANDBOX,
+            ) // Or PRODUCTION based on your env
+            .setOrderId(orderId)
+            .setPaymentSessionId(paymentSessionId)
+            .build();
+
+        var cfWebCheckoutPayment = CFWebCheckoutPaymentBuilder()
+            .setSession(session)
+            .build();
+
+        _cashfree.doPayment(cfWebCheckoutPayment);
+      } else {
+        throw Exception("Failed to create Cashfree order");
+      }
     } catch (e) {
       _pendingSubscription = null;
       isLoading.value = false;
@@ -739,7 +715,7 @@ class WalletController extends GetxController {
           'description': 'Plan Purchase: $planName',
           'paymentId': paymentId,
           'status': 'success',
-          'method': 'razorpay_direct',
+          'method': 'cashfree_direct',
         });
       });
 

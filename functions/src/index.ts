@@ -1082,6 +1082,70 @@ export const getRazorpayKey = onCall(async (_request) => {
     return { keyId: keyId };
 });
 
+/**
+ * Generate Cashfree Payment Session for adding money.
+ * Returns the payment_session_id required by the Cashfree Flutter SDK.
+ */
+export const createCashfreeOrder = onCall(async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Must be logged in');
+
+    const amount = request.data.amount;
+    const driverId = request.auth.uid;
+    const phone = request.data.phone || "9999999999";
+
+    if (!amount || amount <= 0) {
+        throw new HttpsError('invalid-argument', 'Valid amount is required');
+    }
+
+    const CASHFREE_PG_CLIENT_ID = process.env.CASHFREE_PG_CLIENT_ID || "TEST110086217765073309e099f3b67b12680011";
+    const CASHFREE_PG_CLIENT_SECRET = process.env.CASHFREE_PG_CLIENT_SECRET || "cfsk_ma_test_8f04dbd179deb4fe8e0bc0d6ee25592e_c16ea857";
+    const CASHFREE_ENV = process.env.CASHFREE_ENV || "SANDBOX";
+
+    const baseUrl = CASHFREE_ENV === "PRODUCTION"
+        ? "https://api.cashfree.com/pg/orders"
+        : "https://sandbox.cashfree.com/pg/orders";
+
+    const orderId = `order_${driverId}_${Date.now()}`;
+
+    try {
+        const payload = {
+            order_id: orderId,
+            order_amount: amount,
+            order_currency: "INR",
+            customer_details: {
+                customer_id: driverId,
+                customer_phone: phone,
+                customer_name: request.auth.token.name || "Driver",
+                customer_email: request.auth.token.email || "driver@indicabs.com"
+            },
+            order_meta: {
+                // Ensure the payment return URL works or is just a placeholder if using SDK
+                return_url: "https://www.cashfree.com/devstudio/preview/pg/web/payment?order_id={order_id}"
+            }
+        };
+
+        const response = await axios.post(baseUrl, payload, {
+            headers: {
+                'x-client-id': CASHFREE_PG_CLIENT_ID,
+                'x-client-secret': CASHFREE_PG_CLIENT_SECRET,
+                'x-api-version': '2023-08-01',
+                'Content-Type': 'application/json'
+            }
+        });
+
+        console.log(`Cashfree Order Created: ${orderId}`);
+
+        return {
+            success: true,
+            orderId: orderId,
+            paymentSessionId: response.data.payment_session_id,
+        };
+    } catch (error: any) {
+        console.error("Cashfree Order Creation Failed:", error.response ? JSON.stringify(error.response.data) : error.message);
+        throw new HttpsError('internal', 'Unable to create payment session.');
+    }
+});
+
 export const processWalletSettlement = onDocumentCreated(
     {
         document: "drivers/{driverId}/wallet_transactions/{transactionId}",
@@ -1100,38 +1164,59 @@ export const processWalletSettlement = onDocumentCreated(
             return null;
         }
 
-        const RAZORPAY_KEY = process.env.RAZORPAY_KEY_ID || "";
-        const RAZORPAY_SECRET = process.env.RAZORPAY_KEY_SECRET || "";
+        const CASHFREE_CLIENT_ID = process.env.CASHFREE_CLIENT_ID || "CF11008621D6K4KNB1QR0S73ATNTCG";
+        const CASHFREE_CLIENT_SECRET = process.env.CASHFREE_CLIENT_SECRET || "cfsk_ma_test_885a4a8f62266759fc7fa7cce7f23c8b_fb8599bf";
+        const CASHFREE_ENV = process.env.CASHFREE_ENV || "SANDBOX"; // SANDBOX or PRODUCTION
 
-        if (!RAZORPAY_KEY || !RAZORPAY_SECRET) {
-            console.error("Razorpay keys are not configured in .env");
+        if (!CASHFREE_CLIENT_ID || !CASHFREE_CLIENT_SECRET) {
+            console.error("Cashfree credentials are not configured in .env");
             return null;
         }
 
         try {
             console.log(`Processing settlement for ${driverId}: ₹${data.amount} to ${data.upiId}`);
 
-            /*
-            // --- RAZORPAY PAYOUT DISABLED ---
-            const payoutRequest = { ... };
-            const response = await axios.post(...);
-            */
+            const baseUrl = CASHFREE_ENV === "PRODUCTION"
+                ? "https://payout-api.cashfree.com/payout/transfers"
+                : "https://sandbox.cashfree.com/payout/transfers";
 
-            // Simulate successful payout without hitting Razorpay
-            console.log("Payout Simulated as Successful (Razorpay Disabled)");
+            const payload = {
+                transfer_id: `settle_${driverId}_${transactionId}_${Date.now()}`,
+                transfer_amount: data.amount,
+                transfer_currency: "INR",
+                transfer_mode: "upi",
+                beneficiary_details: {
+                    beneficiary_id: `driver_${driverId}`,
+                    // Driver name isn't currently tracked in wallet_transactions, but we can pass a default or fetch it.
+                    beneficiary_name: "IndiCabs Driver",
+                    beneficiary_instrument_details: {
+                        vpa: data.upiId
+                    }
+                }
+            };
+
+            const response = await axios.post(baseUrl, payload, {
+                headers: {
+                    'x-client-id': CASHFREE_CLIENT_ID,
+                    'x-client-secret': CASHFREE_CLIENT_SECRET,
+                    'x-api-version': '2024-01-01',
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            console.log("Cashfree Payout Success:", response.data);
 
             // Update Transaction to Success
             await snap.ref.update({
                 status: "success",
-                payoutId: "simulated_" + transactionId,
+                payoutId: response.data.cf_transfer_id || payload.transfer_id,
                 processedAt: admin.firestore.FieldValue.serverTimestamp(),
             });
 
         } catch (error: any) {
-            console.error("Payout Failed:", error.response ? error.response.data : error.message);
+            console.error("Cashfree Payout Failed:", error.response ? JSON.stringify(error.response.data) : error.message);
 
-            // --- REFUND DISABLED ---
-            // We no longer refund automatically, keep it as failed for manual review.
+            // Mark transaction as failed
             await snap.ref.update({
                 status: "failed",
                 error: error.response ? JSON.stringify(error.response.data) : error.message,
