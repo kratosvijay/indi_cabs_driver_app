@@ -13,6 +13,9 @@ import { onCall, HttpsError, onRequest } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { defineSecret } from "firebase-functions/params";
 import axios from "axios";
+import * as crypto from "crypto";
+import * as fs from "fs";
+import * as path from "path";
 
 import { batchOnboard } from "./onboarding";
 import { aggregateDemandDriver, resetDemandZonesDriver } from "./demandAggregator";
@@ -1168,9 +1171,17 @@ export const processWalletSettlement = onDocumentCreated(
         const CASHFREE_CLIENT_SECRET = process.env.CASHFREE_CLIENT_SECRET || "cfsk_ma_test_885a4a8f62266759fc7fa7cce7f23c8b_fb8599bf";
         const CASHFREE_ENV = process.env.CASHFREE_ENV || "SANDBOX"; // SANDBOX or PRODUCTION
 
-        if (!CASHFREE_CLIENT_ID || !CASHFREE_CLIENT_SECRET) {
+        if (!CASHFREE_CLIENT_ID) {
             console.error("Cashfree credentials are not configured in .env");
             return null;
+        }
+
+        // Load RSA Public Key (Cashfree unconventional 2FA: Encrypt with Cashfree's Public Key)
+        let cashfreePublicKey = "";
+        try {
+            cashfreePublicKey = fs.readFileSync(path.join(__dirname, "../cashfree_public_key.pem"), "utf8");
+        } catch (err) {
+            console.log("RSA Public key not found, will fallback to secret-based auth if possible.");
         }
 
         try {
@@ -1196,14 +1207,32 @@ export const processWalletSettlement = onDocumentCreated(
                 }
             };
 
-            const response = await axios.post(baseUrl, payload, {
-                headers: {
-                    'x-client-id': CASHFREE_CLIENT_ID,
-                    'x-client-secret': CASHFREE_CLIENT_SECRET,
-                    'x-api-version': '2024-01-01',
-                    'Content-Type': 'application/json'
-                }
-            });
+            const headers: Record<string, string> = {
+                'x-client-id': CASHFREE_CLIENT_ID,
+                'x-api-version': '2024-01-01',
+                'Content-Type': 'application/json'
+            };
+
+            if (cashfreePublicKey) {
+                // Generate X-Cf-Signature (RSA Public Key Encryption of clientId.timestamp)
+                const timestamp = Math.floor(Date.now() / 1000).toString();
+                const dataToSign = `${CASHFREE_CLIENT_ID}.${timestamp}`;
+
+                const signature = crypto.publicEncrypt(
+                    cashfreePublicKey,
+                    Buffer.from(dataToSign)
+                ).toString("base64");
+
+                headers['x-cf-signature'] = signature;
+                headers['x-client-signature'] = signature; // Payouts standard uses x-client-signature sometimes
+                headers['x-request-id'] = `req_${Date.now()}`;
+
+                // Note: when using signature, we don't pass the client secret.
+            } else {
+                headers['x-client-secret'] = CASHFREE_CLIENT_SECRET;
+            }
+
+            const response = await axios.post(baseUrl, payload, { headers });
 
             console.log("Cashfree Payout Success:", response.data);
 
