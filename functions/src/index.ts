@@ -250,136 +250,181 @@ export const distributeRideToDrivers = onDocumentWritten(
             const allDrivers = activeDriversSnap.val() || {};
 
             const nowMs = Date.now();
-            const candidates: any[] = [];
 
-            for (const [driverId, locData] of Object.entries<any>(allDrivers)) {
-                console.log(`Evaluating RTDB Driver: ${driverId} | UpdatedAt: ${locData.updatedAt} | Diff: ${nowMs - locData.updatedAt}ms`);
+            // Loop to expand radius
+            let currentRadius = 2.0; // Initial radius 2km
+            const maxRadius = 10.0; // Max radius 10km
 
-                // Check recency of location (e.g. within 20 seconds) to ensure they are active
-                if ((nowMs - locData.updatedAt) > 20000) {
-                    console.log(`-> Driver ${driverId} SKIPPED: Location stale (>${nowMs - locData.updatedAt}ms old)`);
-                    continue;
-                }
-
-                const dist = calculateDistance(
-                    pickupGeo.latitude,
-                    pickupGeo.longitude,
-                    locData.lat,
-                    locData.lng
-                );
-
-                console.log(`-> Driver ${driverId} Distance: ${dist}km`);
-
-                // Radius Check (50km for testing, typically 3-5km)
-                if (dist <= 50) {
-                    // Fetch driver doc to verify they are active/availableSoon
-                    const driverDoc = await db.collection('drivers').doc(driverId).get();
-                    if (driverDoc.exists) {
-                        const dData = driverDoc.data();
-
-                        console.log(`-> Driver ${driverId} Doc Data: isOnline=${dData?.isOnline}, status=${dData?.status}`);
-
-                        if (dData && dData.isOnline && (dData.status === "active" || dData.status === "availableSoon")) {
-                            console.log(`-> Driver ${driverId} ACCEPTED AS CANDIDATE`);
-                            candidates.push({
-                                id: driverId,
-                                distance: dist,
-                                data: dData,
-                                isB2B: dData.status === 'availableSoon'
-                            });
-                        } else {
-                            console.log(`-> Driver ${driverId} SKIPPED: Invalid status or not online`);
-                        }
-                    } else {
-                        console.log(`-> Driver ${driverId} SKIPPED: Driver doc does not exist`);
-                    }
-                } else {
-                    console.log(`-> Driver ${driverId} SKIPPED: Too far away (>50km)`);
-                }
-            }
-
-            if (candidates.length === 0) {
-                console.log("No drivers found nearby.");
-                return null;
-            }
-
-            // Sort by distance
-            candidates.sort((a, b) => a.distance - b.distance);
-            console.log(`Found ${candidates.length} candidates. Nearest: ${candidates[0].id} (${candidates[0].distance.toFixed(2)}km)`);
-
-            // ---------------------------------------------------------
-            // 3. SEQUENTIAL DISPATCH LOGIC (Max 4 drivers, 5 sec each)
-            // ---------------------------------------------------------
-
+            let candidates: any[] = [];
+            const previouslyCheckedDrivers = new Set<string>();
             const rideRef = change.after.ref;
-            const maxDrivers = Math.min(candidates.length, 4);
+            const isRental = afterData.rideType === 'rental';
+            const waitTimeMs = isRental ? 10000 : 5000;
 
-            for (let i = 0; i < maxDrivers; i++) {
-                const driverInfo = candidates[i];
-                const driverId = driverInfo.id;
+            console.log(`[Dispatch Flow] Ride is ${isRental ? 'Rental' : 'Daily'}. Timer set to ${waitTimeMs}ms.`);
 
-                // Check if ride is still searching before offering
-                const currentRideDoc = await rideRef.get();
-                if (currentRideDoc.data()?.status !== "searching") {
-                    console.log(`Ride ${rideId} is no longer searching. Stopping dispatch sequence.`);
-                    break;
+            let rideFinished = false;
+
+            while (currentRadius <= maxRadius && !rideFinished) {
+                console.log(`[Dispatch Flow] Expanding search radius to ${currentRadius}km...`);
+                let newCandidatesFound = false;
+
+                for (const [driverId, locData] of Object.entries<any>(allDrivers)) {
+                    if (previouslyCheckedDrivers.has(driverId)) continue;
+
+                    if ((nowMs - locData.updatedAt) > 20000) {
+                        continue;
+                    }
+
+                    const dist = calculateDistance(
+                        pickupGeo.latitude,
+                        pickupGeo.longitude,
+                        locData.lat,
+                        locData.lng
+                    );
+
+                    if (dist <= currentRadius) {
+                        previouslyCheckedDrivers.add(driverId);
+                        const driverDoc = await db.collection('drivers').doc(driverId).get();
+                        if (driverDoc.exists) {
+                            const dData = driverDoc.data();
+                            if (dData && dData.isOnline && (dData.status === "active" || dData.status === "availableSoon")) {
+                                candidates.push({
+                                    id: driverId,
+                                    distance: dist,
+                                    data: dData,
+                                    isB2B: dData.status === 'availableSoon'
+                                });
+                                newCandidatesFound = true;
+                            }
+                        }
+                    }
                 }
 
-                // Check if driver has room for more requests (Max 5)
-                const activeRequestsSnap = await db.collection(`ride_requests/${driverId}/requests`).where('status', '==', 'pending').get();
-                if (activeRequestsSnap.size >= 5) {
-                    console.log(`Driver ${driverId} has ${activeRequestsSnap.size} pending requests. Skipping.`);
-                    continue;
+                if (!newCandidatesFound && candidates.length === 0) {
+                    console.log(`No new drivers found at ${currentRadius}km. Expanding to ${currentRadius + 1}km immediately.`);
+
+                    // Check if ride is still searching before continuing
+                    const checkStateDoc = await rideRef.get();
+                    if (checkStateDoc.data()?.status !== "searching") {
+                        console.log(`Ride ${rideId} is no longer searching. Stopping dispatch sequence.`);
+                        rideFinished = true;
+                        break;
+                    }
+
+                    currentRadius += 1.0;
+                    continue; // Loop again with larger radius immediately
                 }
 
-                // Deduplication Logic - Skip if request already exists
-                const requestRef = db.doc(`ride_requests/${driverId}/requests/${rideId}`);
-                const existingRequest = await requestRef.get();
-                if (existingRequest.exists) continue;
+                // Sort by distance
+                candidates.sort((a, b) => a.distance - b.distance);
+                console.log(`Found ${candidates.length} candidates. Nearest: ${candidates[0].id} (${candidates[0].distance.toFixed(2)}km)`);
 
-                console.log(`[Dispatch Flow] Sending ride ${rideId} to driver ${driverId}`);
+                // ---------------------------------------------------------
+                // 3. SEQUENTIAL DISPATCH LOGIC
+                // ---------------------------------------------------------
 
-                const expiresAt = admin.firestore.Timestamp.fromMillis(Date.now() + 5000);
+                const maxDrivers = candidates.length;
 
-                // Create Ride Request for Driver
-                await requestRef.set({
-                    rideId: rideId,
-                    riderId: afterData.riderId || "",
-                    pickupLocation: afterData.pickupLocation,
-                    destinationLocation: afterData.destinationLocation || afterData.pickupLocation,
-                    fareEstimate: afterData.fare || afterData.fareEstimate || 0,
-                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                    expiresAt: expiresAt,
-                    status: "pending",
-                    vehicleType: afterData.vehicleType || "Unknown"
-                });
+                for (let i = 0; i < maxDrivers; i++) {
+                    const driverInfo = candidates[i];
+                    const driverId = driverInfo.id;
 
-                // Update the original ride doc potentialDrivers list for transparency
-                await rideRef.update({
-                    currentDriverIndex: i,
-                    potentialDrivers: candidates.map(d => d.id),
-                    notifiedAt: admin.firestore.FieldValue.serverTimestamp(),
-                });
+                    // Check if driver has already rejected this ride in a previous loop
+                    const currentRideDoc = await rideRef.get();
+                    const rideData = currentRideDoc.data();
+                    if (rideData?.status !== "searching") {
+                        console.log(`Ride ${rideId} is no longer searching. Stopping dispatch sequence.`);
+                        rideFinished = true;
+                        break;
+                    }
 
-                // Wait exactly 5 seconds
-                await new Promise((resolve) => setTimeout(resolve, 5000));
+                    const rejectedList = rideData?.rejectedBy || [];
+                    if (rejectedList.includes(driverId)) {
+                        // Already rejected, remove from candidates and skip
+                        continue;
+                    }
 
-                // Check if accepted by viewing the central ride document
-                const checkRide = await rideRef.get();
-                if (checkRide.data()?.status === "accepted") {
-                    console.log(`Ride ${rideId} was accepted! Stopping dispatch.`);
-                    break; // End sequential sequence
-                } else {
-                    // Update the request to expired
-                    console.log(`Driver ${driverId} did not accept ride ${rideId} in time. Expiring card.`);
-                    await requestRef.update({ status: "expired" }).catch(() => { });
+                    // Check if driver has room for more requests (Max 5)
+                    const targetCollection = isRental ? "rental_requests" : "ride_requests";
+                    const activeRequestsSnap = await db.collection(`${targetCollection}/${driverId}/requests`).where('status', '==', 'pending').get();
+                    if (activeRequestsSnap.size >= 5) {
+                        console.log(`Driver ${driverId} has ${activeRequestsSnap.size} pending requests. Skipping.`);
+                        continue;
+                    }
 
-                    // Also track rejection in original ride doc to avoid giving it again in future loops
-                    await rideRef.update({
-                        rejectedBy: admin.firestore.FieldValue.arrayUnion(driverId)
+                    // Deduplication Logic - Skip if request already exists
+                    const requestRef = db.doc(`${targetCollection}/${driverId}/requests/${rideId}`);
+                    const existingRequest = await requestRef.get();
+                    if (existingRequest.exists) continue;
+
+                    console.log(`[Dispatch Flow] Sending ride ${rideId} to driver ${driverId}`);
+
+                    const expiresAt = admin.firestore.Timestamp.fromMillis(Date.now() + waitTimeMs);
+
+                    // Create Ride Request for Driver
+                    await requestRef.set({
+                        rideId: rideId,
+                        rideType: afterData.rideType || "daily",
+                        riderId: afterData.riderId || "",
+                        pickupLocation: afterData.pickupLocation,
+                        destinationLocation: afterData.destinationLocation || afterData.pickupLocation,
+                        fareEstimate: afterData.fare || afterData.fareEstimate || afterData.rideFare || 0,
+                        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                        expiresAt: expiresAt,
+                        status: "pending",
+                        vehicleType: afterData.vehicleType || "Unknown",
+                        durationHours: afterData.durationHours || null,
+                        kmLimit: afterData.kmLimit || null,
+                        packageName: afterData.packageName || null
                     });
+
+                    // Update the original ride doc potentialDrivers list for transparency
+                    await rideRef.update({
+                        currentDriverIndex: i,
+                        potentialDrivers: candidates.map(d => d.id),
+                        notifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+                        driverId: driverId, // <-- Set driverId so frontend listener triggers
+                    });
+
+                    // Wait 
+                    await new Promise((resolve) => setTimeout(resolve, waitTimeMs));
+
+                    // Check if accepted by viewing the central ride document
+                    const checkRide = await rideRef.get();
+                    if (checkRide.data()?.status === "accepted") {
+                        console.log(`Ride ${rideId} was accepted! Stopping dispatch.`);
+                        rideFinished = true;
+                        break; // End sequential sequence
+                    } else {
+                        // Update the request to expired
+                        console.log(`Driver ${driverId} did not accept ride ${rideId} in time. Expiring card.`);
+                        await requestRef.update({ status: "expired" }).catch(() => { });
+
+                        // Also track rejection in original ride doc and clear driverId
+                        // so next dispatch triggers a fresh frontend listener event
+                        await rideRef.update({
+                            rejectedBy: admin.firestore.FieldValue.arrayUnion(driverId),
+                            driverId: admin.firestore.FieldValue.delete(),
+                        });
+                    }
+                } // end candidate for loop
+
+                if (!rideFinished) {
+                    // We exhausted all candidates at this radius.
+                    // Clear the candidates that have been processed, and expand radius.
+                    candidates = candidates.filter(c => false);
+
+                    if (currentRadius < maxRadius) {
+                        console.log(`Exhausted drivers at ${currentRadius}km. Expanding to ${currentRadius + 1}km.`);
+                        // No wait here either to minimize delays finding the next driver
+                        currentRadius += 1.0;
+                    } else {
+                        console.log(`Max radius ${maxRadius}km reached. No more expansion.`);
+                        rideFinished = true;
+                    }
                 }
-            }
+            } // end while loop
 
         } catch (e) {
             console.error("Error distributing ride:", e);
@@ -1113,7 +1158,7 @@ export const createCashfreeOrder = onCall(async (request) => {
     try {
         const payload = {
             order_id: orderId,
-            order_amount: amount,
+            order_amount: Number(amount.toFixed(2)),
             order_currency: "INR",
             customer_details: {
                 customer_id: driverId,

@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
@@ -17,7 +16,6 @@ class WalletScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     // Inject controller if not already present
     final WalletController controller = Get.put(WalletController());
-    final TextEditingController amountController = TextEditingController();
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     final currencyFormatter = NumberFormat.currency(
@@ -126,105 +124,20 @@ class WalletScreen extends StatelessWidget {
               ),
               const SizedBox(height: 30),
 
-              // Add Money Section
-              Text(
-                'addMoney'.tr,
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: isDark ? Colors.white : Colors.black87,
-                ),
-              ),
-              const SizedBox(height: 16),
-              // Custom styled text field for amount
-              Container(
-                decoration: BoxDecoration(
-                  color: isDark ? Colors.grey.shade900 : Colors.grey.shade100,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(
-                    color: isDark ? Colors.grey.shade800 : Colors.grey.shade300,
-                  ),
-                ),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 4,
-                ),
-                child: TextField(
-                  controller: amountController,
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
-                  ),
-                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600,
-                    color: isDark ? Colors.white : Colors.black87,
-                  ),
-                  decoration: InputDecoration(
-                    border: InputBorder.none,
-                    icon: Icon(
-                      Icons.currency_rupee,
-                      color: isDark ? Colors.white70 : Colors.black54,
-                    ),
-                    hintText: 'enterAmount'.tr,
-                    hintStyle: TextStyle(
-                      color: isDark
-                          ? Colors.grey.shade600
-                          : Colors.grey.shade500,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 20),
-              Row(
-                children: [
-                  Expanded(
-                    child: Obx(
-                      () => ProButton(
-                        text: controller.isLoading.value
-                            ? "Adding..." // Ideally should be translated too but 'addMoney' is used generally
-                            : 'addMoney'.tr,
-                        isLoading: controller.isLoading.value,
-                        onPressed: () {
-                          final amount = double.tryParse(amountController.text);
-                          if (amount != null && amount > 0) {
-                            controller.addMoney(amount);
-                            amountController.clear();
-                            FocusScope.of(context).unfocus();
-                          } else {
-                            Get.snackbar(
-                              'invalidAmount'.tr,
-                              'enterValidAmount'.tr,
-                              snackPosition: SnackPosition.TOP,
-                              backgroundColor: Colors.red,
-                              colorText: Colors.white,
-                              margin: const EdgeInsets.all(16),
-                              borderRadius: 12,
-                            );
-                          }
-                        },
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Obx(
-                      () => ProButton(
-                        text: 'settle'.tr,
-                        isLoading: controller.isLoading.value,
-                        // textColor: isDark ? Colors.white : Colors.black,
-                        onPressed: () {
-                          if (controller.balance.value <= 0) {
-                            Get.snackbar('error'.tr, 'noBalanceToSettle'.tr);
-                            return;
-                          }
+              Obx(
+                () => ProButton(
+                  text: 'settle'.tr,
+                  isLoading: controller.isLoading.value,
+                  // textColor: isDark ? Colors.white : Colors.black,
+                  onPressed: () {
+                    if (controller.balance.value <= 0) {
+                      Get.snackbar('error'.tr, 'noBalanceToSettle'.tr);
+                      return;
+                    }
 
-                          Get.to(() => SettlementScreen(user: user));
-                        },
-                      ),
-                    ),
-                  ),
-                ],
+                    Get.to(() => SettlementScreen(user: user));
+                  },
+                ),
               ),
               const SizedBox(height: 30),
 

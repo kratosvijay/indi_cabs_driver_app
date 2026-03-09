@@ -429,8 +429,10 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
             debugPrint("Ride $rideId status update: $status");
 
             // Ignore updates if we are in the middle of accepting THIS ride
-            // (We rely on onRideAccepted info, but just in case)
-            if (status == 'accepted' && data?['driverId'] == user.uid) {
+            // Only skip if WE are currently in the acceptance flow
+            if (status == 'accepted' &&
+                data?['driverId'] == user.uid &&
+                _isAcceptingRide) {
               return;
             }
 
@@ -945,8 +947,10 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     rideRequestSubscription?.cancel();
     _revaluationTimer?.cancel();
 
-    // Start periodic re-evaluation for ignored rides (Instant check)
-    _revaluationTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+    // Start periodic re-evaluation for ignored rides (cleanup only, not real-time)
+    // The Firestore snapshots() listener handles real-time updates.
+    // This timer only re-checks for rides whose ignore cooldown has expired.
+    _revaluationTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       if (_lastSnapshot != null) {
         _processSnapshot(_lastSnapshot!);
       }
@@ -1040,7 +1044,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       if (_ignoredRides.containsKey(doc.id)) {
         final ignoredTime = _ignoredRides[doc.id]!;
         // Keep a local cooldown to prevent immediate bounce-back of the same request.
-        if (DateTime.now().difference(ignoredTime).inSeconds < 15) {
+        if (DateTime.now().difference(ignoredTime).inSeconds < 6) {
           continue;
         } else {
           _ignoredRides.remove(doc.id); // Expired, allow processing again
@@ -1528,9 +1532,9 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
           routeName: '/RentalRequestScreen',
         );
       } else {
-        // Only play sound for new searching rides
+        // Play sound for new ride requests
         // GUARD: If we are already accepting, DO NOT play sound again
-        if (activeRideRequest?.status == 'searching' && !_isAcceptingRide) {
+        if (!_isAcceptingRide) {
           playRideRequestSound();
         }
       }
@@ -1706,7 +1710,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       await audioPlayer.setAudioContext(
         AudioContext(
           iOS: AudioContextIOS(
-            category: AVAudioSessionCategory.playback,
+            category: AVAudioSessionCategory.playAndRecord,
             options: {
               AVAudioSessionOptions.defaultToSpeaker,
               AVAudioSessionOptions.mixWithOthers,
@@ -1960,6 +1964,12 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     _isAcceptingRide = true;
     isRideAcceptanceInProgress.value = true;
     stopRideRequestSound();
+
+    // Persist this ride ID to ignored_rides so it doesn't ghost-appear
+    // after Get.offAll recreates the controller
+    _persistIgnoredRide(request.rideId);
+    _ignoredRides[request.rideId] = DateTime.now();
+
     for (var timer in rideTimers.values) {
       timer.cancel();
     }

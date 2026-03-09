@@ -143,7 +143,7 @@ class _OverlayRootState extends State<OverlayRoot> {
   void _startTimer() {
     _timer?.cancel();
 
-    int totalSeconds = 20;
+    int totalSeconds = _ride?['rideType'] == 'rental' ? 10 : 5;
     int remainingMs = totalSeconds * 1000;
 
     final createdAtMs = _ride?['createdAt'] as int?;

@@ -79,10 +79,6 @@ class WalletController extends GetxController {
           _pendingSubscription!,
         );
         _pendingSubscription = null;
-      } else if (_currentAddAmount > 0) {
-        creditWallet(_currentAddAmount, orderId);
-        Get.snackbar("Success", "Money added to wallet successfully");
-        _currentAddAmount = 0;
       }
     } catch (e) {
       Get.snackbar("Error", "Post-payment processing failed: $e");
@@ -104,52 +100,6 @@ class WalletController extends GetxController {
       Get.snackbar("Error", "Payment Failed: ${error.getMessage()}");
     }
     isLoading.value = false;
-  }
-
-  double _currentAddAmount = 0.0;
-
-  // ... (existing code)
-
-  Future<void> addMoney(double amount) async {
-    final user = _auth.currentUser;
-    if (user == null) return;
-
-    try {
-      isLoading.value = true;
-      _currentAddAmount = amount;
-
-      final callable = FirebaseFunctions.instance.httpsCallable(
-        'createCashfreeOrder',
-      );
-      final result = await callable.call({
-        'amount': amount,
-        'phone': user.phoneNumber ?? "9999999999",
-      });
-
-      if (result.data['success'] == true) {
-        final paymentSessionId = result.data['paymentSessionId'];
-        final orderId = result.data['orderId'];
-
-        var session = CFSessionBuilder()
-            .setEnvironment(
-              CFEnvironment.SANDBOX,
-            ) // Or PRODUCTION based on your env
-            .setOrderId(orderId)
-            .setPaymentSessionId(paymentSessionId)
-            .build();
-
-        var cfWebCheckoutPayment = CFWebCheckoutPaymentBuilder()
-            .setSession(session)
-            .build();
-
-        _cashfree.doPayment(cfWebCheckoutPayment);
-      } else {
-        throw Exception("Failed to create Cashfree order");
-      }
-    } catch (e) {
-      Get.snackbar("Error", "Failed to start payment: $e");
-      isLoading.value = false;
-    }
   }
 
   @override

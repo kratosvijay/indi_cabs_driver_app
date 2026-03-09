@@ -505,7 +505,9 @@ class _RideRequestCardState extends State<RideRequestCard> {
   }
 
   void _startTimer() {
-    int totalSeconds = 20; // 20 seconds global TTL
+    int totalSeconds = widget.rideRequest.rideType == 'rental'
+        ? 10
+        : 5; // aligned with backend
     int remainingMs = totalSeconds * 1000;
 
     if (remainingMs <= 0) {

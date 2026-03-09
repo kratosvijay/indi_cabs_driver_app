@@ -15,6 +15,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:project_taxi_driver_app/screens/homepage.dart';
 import 'package:project_taxi_driver_app/widgets/ride_request.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 
 import 'package:wakelock_plus/wakelock_plus.dart';
 
@@ -84,6 +85,9 @@ class _RideAcceptedScreenState extends State<RideAcceptedScreen> {
 
   // Wakelock Timer
   Timer? _wakelockTimer;
+
+  // TTS
+  final FlutterTts flutterTts = FlutterTts();
 
   @override
   void initState() {
@@ -283,6 +287,19 @@ class _RideAcceptedScreenState extends State<RideAcceptedScreen> {
         _selectedLanguageCode = prefs.getString('selectedLanguage') ?? 'en';
       });
       Get.updateLocale(Locale(_selectedLanguageCode));
+      _playAcceptedTts();
+    }
+  }
+
+  Future<void> _playAcceptedTts() async {
+    try {
+      String speechLanguage = _selectedLanguageCode == 'en'
+          ? 'en-IN'
+          : '$_selectedLanguageCode-IN';
+      await flutterTts.setLanguage(speechLanguage);
+      await flutterTts.speak(_getTranslatedString('rideAcceptedTts'));
+    } catch (e) {
+      debugPrint("Error playing TTS: $e");
     }
   }
 
@@ -361,6 +378,7 @@ class _RideAcceptedScreenState extends State<RideAcceptedScreen> {
 
   @override
   void dispose() {
+    flutterTts.stop();
     _positionStream?.cancel();
     _timer?.cancel();
     _messagesSubscription?.cancel();

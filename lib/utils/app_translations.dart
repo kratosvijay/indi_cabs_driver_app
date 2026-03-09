@@ -257,6 +257,8 @@ class AppTranslations extends Translations {
       'kmRide': 'km ride',
       'stopsAdded': 'Stops Added',
       'rideHeader': 'Ride',
+      'rideAcceptedTts':
+          'thank you for taking ride in indicabs please dont ask extra money from the customer',
     },
     'ta': {
       // Home Page
@@ -502,6 +504,8 @@ class AppTranslations extends Translations {
       'kmRide': 'கி.மீ. பயணம்',
       'stopsAdded': 'நிறுத்தங்கள் சேர்க்கப்பட்டது',
       'rideHeader': 'சவாரி',
+      'rideAcceptedTts':
+          'இண்டிகேப்ஸில் சவாரி செய்ததற்கு நன்றி வாடிக்கையாளரிடம் கூடுதல் பணம் கேட்க வேண்டாம்',
     },
     'hi': {
       // Home Page
@@ -746,6 +750,8 @@ class AppTranslations extends Translations {
       'kmRide': 'किमी राइड',
       'stopsAdded': 'स्टॉप जोड़े गए',
       'rideHeader': 'राइड',
+      'rideAcceptedTts':
+          'इंडिकैब्स में सवारी करने के लिए धन्यवाद कृपया ग्राहक से अतिरिक्त पैसे न मांगें',
     },
     'te': {
       // Home Page
@@ -985,6 +991,8 @@ class AppTranslations extends Translations {
       'kmRide': 'కి.మీ. రైడ్',
       'stopsAdded': 'స్టాప్‌లు చేర్చబడ్డాయి',
       'rideHeader': 'రైడ్',
+      'rideAcceptedTts':
+          'ఇండిక్యాబ్స్‌లో రైడ్ చేసినందుకు ధన్యవాదాలు దయచేసి కస్టమర్ నుండి అదనపు డబ్బును అడగకండి',
     },
     'kn': {
       // Home Page
@@ -1227,6 +1235,8 @@ class AppTranslations extends Translations {
       'kmRide': 'ಕಿ.ಮಿ. ರೈಡ್',
       'stopsAdded': 'ನಿಲ್ದಾಣಗಳು ಸೇರಿಸಲಾಗಿದೆ',
       'rideHeader': 'ರೈಡ್',
+      'rideAcceptedTts':
+          'ಇಂಡಿಕ್ಯಾಬ್ಸ್‌ನಲ್ಲಿ ಸವಾರಿ ಮಾಡಿದ್ದಕ್ಕಾಗಿ ಧನ್ಯವಾದಗಳು ದಯವಿಟ್ಟು ಗ್ರಾಹಕರಿಂದ ಹೆಚ್ಚುವರಿ ಹಣವನ್ನು ಕೇಳಬೇಡಿ',
     },
     'ml': {
       // Home Page
@@ -1456,6 +1466,8 @@ class AppTranslations extends Translations {
       'kmRide': 'കി.മീ. റൈഡ്',
       'stopsAdded': 'സ്റ്റോപ്പുകൾ ചേർത്തു',
       'rideHeader': 'റൈഡ്',
+      'rideAcceptedTts':
+          'ഇൻഡികാബ്സിൽ സവാരി ചെയ്തതിന് നന്ദി ദയവായി ഉപഭോക്താവിൽ നിന്ന് അധിക പണം ചോദിക്കരുത്',
     },
     'gu': {
       // Home Page
@@ -1703,6 +1715,8 @@ class AppTranslations extends Translations {
       'kmRide': 'કિ.મી. રાઇડ',
       'stopsAdded': 'સ્ટોપ ઉમેર્યા',
       'rideHeader': 'રાઇડ',
+      'rideAcceptedTts':
+          'ઇન્ડિકેબ્સમાં રાઇડ લેવા બદલ આભાર કૃપા કરીને ગ્રાહક પાસેથી વધારાના પૈસા ન માંગો',
     },
   };
 }
