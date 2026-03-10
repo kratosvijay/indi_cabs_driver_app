@@ -1145,15 +1145,15 @@ export const createCashfreeOrder = onCall(async (request) => {
         throw new HttpsError('invalid-argument', 'Valid amount is required');
     }
 
-    const CASHFREE_PG_CLIENT_ID = process.env.CASHFREE_PG_CLIENT_ID || "TEST110086217765073309e099f3b67b12680011";
-    const CASHFREE_PG_CLIENT_SECRET = process.env.CASHFREE_PG_CLIENT_SECRET || "cfsk_ma_test_8f04dbd179deb4fe8e0bc0d6ee25592e_c16ea857";
-    const CASHFREE_ENV = process.env.CASHFREE_ENV || "SANDBOX";
+    const CASHFREE_PG_CLIENT_ID = process.env.CASHFREE_PG_CLIENT_ID || "122159383830534a2818b3e83373951221";
+    const CASHFREE_PG_CLIENT_SECRET = process.env.CASHFREE_PG_CLIENT_SECRET || "cfsk_ma_prod_dbc842b88cfc4660f817dc4186d5a380_c19d4e45";
+    const CASHFREE_ENV = process.env.CASHFREE_ENV || "PRODUCTION";
 
     const baseUrl = CASHFREE_ENV === "PRODUCTION"
         ? "https://api.cashfree.com/pg/orders"
         : "https://sandbox.cashfree.com/pg/orders";
 
-    const orderId = `order_${driverId}_${Date.now()}`;
+    const orderId = `ord_${Date.now()}`;
 
     try {
         const payload = {
@@ -1198,6 +1198,8 @@ export const processWalletSettlement = onDocumentCreated(
     {
         document: "drivers/{driverId}/wallet_transactions/{transactionId}",
         region: "asia-south1",
+        vpcConnector: "cashfree-vpc",
+        vpcConnectorEgressSettings: "ALL_TRAFFIC",
     },
     async (event) => {
         const snap = event.data;
@@ -1212,16 +1214,17 @@ export const processWalletSettlement = onDocumentCreated(
             return null;
         }
 
-        const CASHFREE_CLIENT_ID = process.env.CASHFREE_CLIENT_ID || "CF11008621D6K4KNB1QR0S73ATNTCG";
-        const CASHFREE_CLIENT_SECRET = process.env.CASHFREE_CLIENT_SECRET || "cfsk_ma_test_885a4a8f62266759fc7fa7cce7f23c8b_fb8599bf";
-        const CASHFREE_ENV = process.env.CASHFREE_ENV || "SANDBOX"; // SANDBOX or PRODUCTION
+
+        const CASHFREE_CLIENT_ID = process.env.CASHFREE_CLIENT_ID || "CF1221593D6O0DRN1JLGC7391N4DG";
+        const CASHFREE_CLIENT_SECRET = process.env.CASHFREE_CLIENT_SECRET || "cfsk_ma_prod_6cd6a70049ee342ff9cf855781ca03ea_39219573";
+        const CASHFREE_ENV = process.env.CASHFREE_ENV || "PRODUCTION"; // SANDBOX or PRODUCTION
 
         if (!CASHFREE_CLIENT_ID) {
             console.error("Cashfree credentials are not configured in .env");
             return null;
         }
 
-        // Load RSA Public Key (Cashfree unconventional 2FA: Encrypt with Cashfree's Public Key)
+        // Load RSA Public Key (Cashfree asymmetric 2FA: Encrypt with Cashfree's given Public Key)
         let cashfreePublicKey = "";
         try {
             cashfreePublicKey = fs.readFileSync(path.join(__dirname, "../cashfree_public_key.pem"), "utf8");
@@ -1237,11 +1240,10 @@ export const processWalletSettlement = onDocumentCreated(
                 : "https://sandbox.cashfree.com/payout/transfers";
 
             const payload = {
-                transfer_id: `settle_${driverId}_${transactionId}_${Date.now()}`,
+                transfer_id: `tx_${transactionId}`,
                 transfer_amount: data.amount,
                 transfer_currency: "INR",
                 transfer_mode: "upi",
-                fund_source: "CASHFREE_1778839", // Sandbox wallet ID provided by user
                 beneficiary_details: {
                     beneficiary_id: `driver_${driverId}`,
                     // Driver name isn't currently tracked in wallet_transactions, but we can pass a default or fetch it.
@@ -1254,6 +1256,7 @@ export const processWalletSettlement = onDocumentCreated(
 
             const headers: Record<string, string> = {
                 'x-client-id': CASHFREE_CLIENT_ID,
+                'x-client-secret': CASHFREE_CLIENT_SECRET,
                 'x-api-version': '2024-01-01',
                 'Content-Type': 'application/json'
             };
@@ -1271,31 +1274,92 @@ export const processWalletSettlement = onDocumentCreated(
                 headers['x-cf-signature'] = signature;
                 headers['x-client-signature'] = signature; // Payouts standard uses x-client-signature sometimes
                 headers['x-request-id'] = `req_${Date.now()}`;
-
-                // Note: when using signature, we don't pass the client secret.
+                
+                // Note: Keep client secret when using RSA encryption signature for Payouts
+                console.log(`[DEBUG] Payload encrypted with Cashfree Public Key. Timestamp: ${timestamp}`);
             } else {
-                headers['x-client-secret'] = CASHFREE_CLIENT_SECRET;
+                console.log(`[DEBUG] No RSA Public key, falling back to client secret.`);
+            }
+            
+            console.log(`[DEBUG] Sending Payout with headers:`, Object.keys(headers));
+
+            // 1. Ensure beneficiary exists
+            const beneficiaryUrl = baseUrl.replace('/transfers', '/beneficiary');
+            const benePayload = {
+                beneficiary_id: `driver_${driverId}`,
+                beneficiary_name: "IndiCabs Driver",
+                beneficiary_instrument_details: {
+                    vpa: data.upiId
+                },
+                beneficiary_contact_details: {
+                    email: "support@indicabs.com",
+                    phone: "9999999999"
+                }
+            };
+            
+            try {
+                await axios.post(beneficiaryUrl, benePayload, { headers });
+                console.log(`[DEBUG] Beneficiary ${benePayload.beneficiary_id} created successfully.`);
+            } catch (err: any) {
+                // If the beneficiary already exists, Cashfree returns an error. We can safely ignore "already exists" errors.
+                const errMsg = err.response?.data?.message || err.message;
+                console.log(`[DEBUG] Beneficiary add warning/error (might already exist): ${errMsg}`);
             }
 
+            // 2. Process Transfer
             const response = await axios.post(baseUrl, payload, { headers });
 
             console.log("Cashfree Payout Success:", response.data);
 
             // Update Transaction to Success
-            await snap.ref.update({
+            await snap!.ref.update({
                 status: "success",
                 payoutId: response.data.cf_transfer_id || payload.transfer_id,
                 processedAt: admin.firestore.FieldValue.serverTimestamp(),
             });
 
+            // Add Success Notification
+            try {
+                await db.collection("drivers").doc(driverId).collection("notifications").add({
+                    title: "Settlement Successful",
+                    body: `Your withdrawal of ₹${data.amount} to your UPI account has been successfully processed.`,
+                    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                    isRead: false,
+                    data: {
+                        type: "settlement_success",
+                        transactionId: transactionId,
+                        amount: data.amount
+                    }
+                });
+            } catch (notifyError) {
+                console.error("Error creating success notification:", notifyError);
+            }
+
         } catch (error: any) {
             console.error("Cashfree Payout Failed:", error.response ? JSON.stringify(error.response.data) : error.message);
 
             // Mark transaction as failed
-            await snap.ref.update({
+            await snap!.ref.update({
                 status: "failed",
                 error: error.response ? JSON.stringify(error.response.data) : error.message,
             });
+            
+            // Add Failure Notification
+            try {
+                await db.collection("drivers").doc(driverId).collection("notifications").add({
+                    title: "Settlement Failed",
+                    body: `Your withdrawal of ₹${data.amount} failed. Please try again or contact support.`,
+                    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                    isRead: false,
+                    data: {
+                        type: "settlement_failed",
+                        transactionId: transactionId,
+                        amount: data.amount
+                    }
+                });
+            } catch (notifyError) {
+                console.error("Error creating failure notification:", notifyError);
+            }
         }
         return null;
     }

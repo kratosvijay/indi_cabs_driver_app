@@ -1,12 +1,12 @@
 const axios = require('axios');
 
 async function testCashfree() {
-    const clientId = "CF11008621D6K4KNB1QR0S73ATNTCG";
-    const clientSecret = "cfsk_ma_test_885a4a8f62266759fc7fa7cce7f23c8b_fb8599bf";
+    const clientId = "CF1221593D6O0DRN1JLGC7391N4DG";
+    const clientSecret = "cfsk_ma_prod_6cd6a70049ee342ff9cf855781ca03ea_39219573";
 
     try {
         const response = await axios.post(
-            'https://sandbox.cashfree.com/payout/transfers',
+            'https://payout-api.cashfree.com/payout/transfers',
             {
                 transfer_id: "test_transfer_" + Date.now(),
                 transfer_amount: 1,

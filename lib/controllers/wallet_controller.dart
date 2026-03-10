@@ -52,6 +52,7 @@ class WalletController extends GetxController {
   RxString autoSettleUpiId = "".obs;
   RxInt settlementsThisWeek = 0.obs;
   Rx<DateTime?> lastSettlementReset = Rx<DateTime?>(null);
+  Rx<DateTime?> lastSettlementDate = Rx<DateTime?>(null);
 
   // Pending Subscription State
   Map<String, dynamic>? _pendingSubscription;
@@ -239,6 +240,10 @@ class WalletController extends GetxController {
             if (resetTimestamp is Timestamp) {
               lastSettlementReset.value = resetTimestamp.toDate();
             }
+            final settlementTimestamp = snapshot.data()?['lastSettlementDate'];
+            if (settlementTimestamp is Timestamp) {
+              lastSettlementDate.value = settlementTimestamp.toDate();
+            }
           }
         });
   }
@@ -371,6 +376,17 @@ class WalletController extends GetxController {
           lastReset = startOfLastSunday; // Mark reset time
         }
 
+        // 1/Day Limit Check
+        final lastDate = metadataDoc.data()?['lastSettlementDate'];
+        if (lastDate is Timestamp) {
+          final lastSettle = lastDate.toDate();
+          if (lastSettle.year == now.year &&
+              lastSettle.month == now.month &&
+              lastSettle.day == now.day) {
+            throw Exception("Only 1 settlement per day is allowed. Next reset: Midnight.");
+          }
+        }
+
         if (currentCount >= 7) {
           throw Exception("Weekly settlement limit (7) reached.");
         }
@@ -379,6 +395,7 @@ class WalletController extends GetxController {
         transaction.set(metadataRef, {
           'settlementsThisWeek': currentCount + 1,
           'lastSettlementReset': Timestamp.fromDate(lastReset),
+          'lastSettlementDate': FieldValue.serverTimestamp(),
         }, SetOptions(merge: true));
 
         // Debit the full amount
@@ -596,8 +613,8 @@ class WalletController extends GetxController {
 
         var session = CFSessionBuilder()
             .setEnvironment(
-              CFEnvironment.SANDBOX,
-            ) // Or PRODUCTION based on your env
+              CFEnvironment.PRODUCTION,
+            ) // Set to PRODUCTION for live subscription keys
             .setOrderId(orderId)
             .setPaymentSessionId(paymentSessionId)
             .build();

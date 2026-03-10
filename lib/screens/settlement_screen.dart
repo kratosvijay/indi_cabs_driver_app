@@ -223,26 +223,46 @@ class SettlementScreen extends StatelessWidget {
             Obx(() {
               final used = controller.settlementsThisWeek.value;
               final remaining = 7 - used;
+              
+              // Daily Limit Check
+              bool alreadySettledToday = false;
+              if (controller.lastSettlementDate.value != null) {
+                final now = DateTime.now();
+                final last = controller.lastSettlementDate.value!;
+                if (last.year == now.year && last.month == now.month && last.day == now.day) {
+                  alreadySettledToday = true;
+                }
+              }
+
+              final canSettle = remaining > 0 && !alreadySettledToday && selectedUpiId.value != null;
+
               return Column(
                 children: [
                   Text(
-                    "${'manualSettlementsRemaining'.tr}: $remaining/7",
+                    "${'manualSettlementsRemaining'.tr}: ${remaining < 0 ? 0 : remaining}/7",
                     style: TextStyle(
-                      color: remaining == 0 ? Colors.red : Colors.grey,
+                      color: remaining <= 0 ? Colors.red : Colors.grey,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
+                  if (alreadySettledToday)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8.0),
+                      child: Text(
+                        "Only 1 settlement per day is allowed.",
+                        style: TextStyle(color: Colors.orange.shade700, fontSize: 12),
+                      ),
+                    ),
                   const SizedBox(height: 10),
                   ProButton(
                     text: "settleFullAmount".tr,
                     isLoading: controller.isLoading.value,
-                    onPressed: selectedUpiId.value == null || remaining <= 0
+                    onPressed: !canSettle
                         ? null
                         : () {
                             controller.settleBalance(selectedUpiId.value!);
                           },
-                    backgroundColor:
-                        selectedUpiId.value == null || remaining <= 0
+                    backgroundColor: !canSettle
                         ? Colors.grey
                         : null,
                   ),
