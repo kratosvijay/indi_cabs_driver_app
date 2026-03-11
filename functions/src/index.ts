@@ -74,6 +74,7 @@ export const generateOtpDriver = onDocumentWritten(
     {
         document: "otp_verifications/{phoneNumber}",
         region: "asia-south1",
+        secrets: [exotelSid, exotelApiKey, exotelApiToken, exotelCallerId, exotelSubdomain],
     },
     async (event) => {
         // If document was deleted, do nothing
@@ -93,12 +94,47 @@ export const generateOtpDriver = onDocumentWritten(
         console.log(`Generating OTP for ${phoneNumber}: ${otp}`);
 
         // Update document with generated OTP
-        return event.data.after.ref.update({
+        await event.data.after.ref.update({
             otp: otp,
             expiresAt: admin.firestore.Timestamp.fromDate(expiresAt),
             status: "sent",
             processedAt: admin.firestore.FieldValue.serverTimestamp(),
         });
+
+        // --------------------------------------------------------------------
+        // SEND SMS via EXOTEL
+        // --------------------------------------------------------------------
+        const EXOTEL_SID = exotelSid.value();
+        const EXOTEL_API_KEY = exotelApiKey.value();
+        const EXOTEL_API_TOKEN = exotelApiToken.value();
+        const EXOTEL_CALLER_ID = exotelCallerId.value();
+        const EXOTEL_SUBDOMAIN = exotelSubdomain.value() || "api.exotel.com";
+
+        if (EXOTEL_SID && EXOTEL_API_KEY && EXOTEL_API_TOKEN && EXOTEL_CALLER_ID) {
+            try {
+                const url = `https://${EXOTEL_SUBDOMAIN}/v1/Accounts/${EXOTEL_SID}/Sms/send.json`;
+                const auth = Buffer.from(`${EXOTEL_API_KEY}:${EXOTEL_API_TOKEN}`).toString('base64');
+
+                const formData = new URLSearchParams();
+                formData.append("From", EXOTEL_CALLER_ID);
+                formData.append("To", phoneNumber);
+                formData.append("Body", `Your IndiCabs verification code is ${otp}. Valid for 5 minutes.`);
+
+                await axios.post(url, formData.toString(), {
+                    headers: {
+                        'Authorization': `Basic ${auth}`,
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    }
+                });
+                console.log(`OTP SMS sent to ${phoneNumber}`);
+            } catch (smsErr: any) {
+                console.error("Failed to send OTP SMS:", smsErr.response ? smsErr.response.data : smsErr.message);
+            }
+        } else {
+            console.log("Exotel secrets missing, skipping actual SMS sending.");
+        }
+
+        return;
     }
 );
 
@@ -1112,29 +1148,13 @@ export const cleanupBlockedDrivers = onSchedule("every 24 hours",
 );
 
 
-// Razorpay Config via firebase functions:config:set razorpay.key_id="" razorpay.key_secret=""
-// These are securely stored in the Google Cloud environment.
 
-
-/**
- * Fetch Razorpay Key ID for the Client App
- * This allows the app to get the key without hardcoding it.
- */
-export const getRazorpayKey = onCall(async (_request) => {
-    // Return only the KEY_ID (public), never the SECRET
-    // Using process.env from .env file (standard for Gen 2)
-    const keyId = process.env.RAZORPAY_KEY_ID || "";
-    if (!keyId) {
-        console.error("Razorpay Key ID not configured in .env");
-    }
-    return { keyId: keyId };
-});
 
 /**
  * Generate Cashfree Payment Session for adding money.
  * Returns the payment_session_id required by the Cashfree Flutter SDK.
  */
-export const createCashfreeOrder = onCall(async (request) => {
+export const createCashfreeOrder = onCall({ region: "asia-south1" }, async (request) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'Must be logged in');
 
     const amount = request.data.amount;
@@ -1441,102 +1461,57 @@ export const autoSettleWallets = onSchedule("every day 00:00", async (event) => 
  * Verify UPI ID using Razorpay Fund Account Validation
  * Performed strictly via Cloud Function to keep secrets safe.
  */
-export const verifyUpiId = onCall({ region: "asia-south1" }, async (request) => {
+/**
+ * Verify UPI ID with OTP
+ */
+export const verifyUpiIdWithOtp = onCall({ region: "asia-south1" }, async (request) => {
     if (!request.auth) {
         throw new HttpsError("unauthenticated", "User must be authenticated");
     }
 
-    const { upiId, name } = request.data;
-    if (!upiId || !name) {
-        throw new HttpsError("invalid-argument", "Missing UPI ID or Name");
-    }
-
-    const RAZORPAY_KEY = process.env.RAZORPAY_KEY_ID || "";
-    const RAZORPAY_SECRET = process.env.RAZORPAY_KEY_SECRET || "";
-
-    if (!RAZORPAY_KEY || !RAZORPAY_SECRET) {
-        throw new HttpsError("failed-precondition", "Razorpay not configured");
+    const { upiId, name, otp, phone } = request.data;
+    if (!upiId || !name || !otp || !phone) {
+        throw new HttpsError("invalid-argument", "Missing required fields");
     }
 
     try {
-        const authHeader = {
-            username: RAZORPAY_KEY,
-            password: RAZORPAY_SECRET,
-        };
-
-        // 1. Create Contact
-        console.log(`Creating contact for ${name}...`);
-        const contactResponse = await axios.post(
-            "https://api.razorpay.com/v1/contacts",
-            {
-                name: name,
-                type: "vendor", // or 'employee', 'self'
-                reference_id: request.auth.uid,
-            },
-            { auth: authHeader }
-        );
-        const contactId = contactResponse.data.id;
-
-        // 2. Create Fund Account (UPI)
-        console.log(`Creating fund account for ${upiId}...`);
-        const fundAccountResponse = await axios.post(
-            "https://api.razorpay.com/v1/fund_accounts",
-            {
-                contact_id: contactId,
-                account_type: "vpa",
-                vpa: { address: upiId },
-            },
-            { auth: authHeader }
-        );
-        const fundAccountId = fundAccountResponse.data.id;
-
-        // 3. Validate Fund Account (Penny Drop rule: ~₹1.18 cost)
-        console.log(`Validating fund account ${fundAccountId}...`);
-        const validationResponse = await axios.post(
-            "https://api.razorpay.com/v1/fund_accounts/validations",
-            {
-                fund_account_id: fundAccountId,
-                amount: 100, // 1.00 INR
-                currency: "INR",
-                notes: {
-                    driver_id: request.auth.uid,
-                    reason: "UPI Verification"
-                }
-            },
-            { auth: authHeader }
-        );
-
-        const status = validationResponse.data.status; // 'created', 'completed', 'failed'
-
-        // Sometimes validation is async, but usually instant for UPI.
-        // If status is 'created', we might assume pending.
-        // For strict check, we want 'active' or 'completed'?
-        // Razorpay docs: status 'completed' means success.
-
-        if (status === "completed" || status === "active") { // 'active' might be for fund_account itself? Validation status is usually different.
-            // Actually validation status: 'created', 'pending', 'completed', 'failed'
-            return {
-                success: true,
-                registeredName: validationResponse.data.results?.registered_name || name,
-                status: status
-            };
-        } else if (status === "failed") {
-            throw new HttpsError("aborted", "UPI Verification Failed: Invalid Account");
-        } else {
-            // Pending?
-            return {
-                success: true, // Optimistic or ask user to wait?
-                message: "Verification Pending",
-                status: status
-            };
+        // 1. Verify OTP
+        const otpDoc = await db.collection("otp_verifications").doc(phone).get();
+        if (!otpDoc.exists) {
+            throw new HttpsError("not-found", "OTP not found");
         }
 
+        const otpData = otpDoc.data()!;
+        if (otpData.otp !== otp) {
+            throw new HttpsError("invalid-argument", "Invalid OTP");
+        }
+
+        const expiresAt = otpData.expiresAt.toDate();
+        if (new Date() > expiresAt) {
+            throw new HttpsError("failed-precondition", "OTP Expired");
+        }
+
+        // 2. Save UPI ID to driver profile
+        // 2. Save UPI ID to driver profile
+        await db
+            .collection("drivers")
+            .doc(request.auth.uid)
+            .collection("saved_upi_ids")
+            .doc(upiId)
+            .set({
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                verifiedName: name,
+                verified: true,
+                verificationMethod: "otp",
+            });
+
+        // 3. Cleanup OTP
+        await otpDoc.ref.delete();
+
+        return { success: true };
     } catch (error: any) {
-        console.error("Error validating UPI:", error.response ? error.response.data : error.message);
-        throw new HttpsError(
-            "internal",
-            error.response?.data?.error?.description || "Verification Failed"
-        );
+        console.error("Error verifying UPI with OTP:", error);
+        throw new HttpsError("internal", error.message || "Failed to verify UPI ID");
     }
 });
 

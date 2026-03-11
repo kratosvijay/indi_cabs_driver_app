@@ -159,9 +159,9 @@ class _BatchUploadScreenState extends State<BatchUploadScreen> {
     setState(() => _isLoading = true);
 
     try {
-      final HttpsCallable callable = FirebaseFunctions.instance.httpsCallable(
-        'batchOnboard',
-      );
+      final HttpsCallable callable = FirebaseFunctions.instanceFor(
+        region: 'asia-south1',
+      ).httpsCallable('batchOnboard');
 
       final result = await callable.call(<String, dynamic>{
         'type': widget.mode == BatchUploadMode.driver ? 'driver' : 'vehicle',

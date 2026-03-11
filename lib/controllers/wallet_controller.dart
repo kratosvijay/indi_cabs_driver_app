@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:pinput/pinput.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart'; // Changed from foundation
@@ -131,29 +132,80 @@ class WalletController extends GetxController {
 
   Future<void> verifyAndAddUpi(String upiId, String name) async {
     final user = _auth.currentUser;
-    if (user == null) return;
+    if (user == null || user.phoneNumber == null) {
+      Get.snackbar("Error", "User phone number not found");
+      return;
+    }
 
     try {
       isLoading.value = true;
-      Get.back(); // Close dialog
+      Get.back(); // Close initial dialog
 
-      // Add directly to Firestore without Razorpay verification
-      await _db
-          .collection('drivers')
-          .doc(user.uid)
-          .collection('saved_upi_ids')
-          .doc(upiId)
-          .set({
-            'createdAt': FieldValue.serverTimestamp(),
-            'verifiedName': name,
-            'verified': true, // Keep true for compatibility with UI
-          });
+      // 1. Trigger OTP
+      await _db.collection('otp_verifications').doc(user.phoneNumber).set({
+        'requestedAt': FieldValue.serverTimestamp(),
+        'status': 'pending',
+      });
 
-      Get.snackbar("Success", "UPI Added: $name");
-    } catch (e) {
-      Get.snackbar("Error", "Failed to add UPI: $e");
-    } finally {
       isLoading.value = false;
+
+      // 2. Show OTP Dialog using Pinput
+      final otpController = TextEditingController();
+      Get.dialog(
+        AlertDialog(
+          title: const Text("Verify UPI Addition"),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text("An OTP has been sent to ${user.phoneNumber}"),
+              const SizedBox(height: 20),
+              Pinput(
+                controller: otpController,
+                length: 6,
+                onCompleted: (pin) async {
+                  Get.back(); // Close OTP dialog
+                  await _finalizeUpiAddition(upiId, name, pin, user.phoneNumber!);
+                },
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Get.back(),
+              child: const Text("Cancel"),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      isLoading.value = false;
+      Get.snackbar("Error", "Failed to initiate verification: $e");
+    }
+  }
+
+  Future<void> _finalizeUpiAddition(String upiId, String name, String otp, String phone) async {
+    try {
+      isLoading.value = true;
+      final callable = FirebaseFunctions.instanceFor(region: 'asia-south1')
+          .httpsCallable('verifyUpiIdWithOtp');
+      
+      final result = await callable.call({
+        'upiId': upiId,
+        'name': name,
+        'otp': otp,
+        'phone': phone,
+      });
+
+      isLoading.value = false;
+      if (result.data['success'] == true) {
+        Get.snackbar("Success", "UPI ID Added Successfully");
+        // refresh savedUpiIds list is handled by snapshot listener
+      } else {
+        Get.snackbar("Error", result.data['message'] ?? "Verification failed");
+      }
+    } catch (e) {
+      isLoading.value = false;
+      Get.snackbar("Error", "Verification failed: $e");
     }
   }
 
@@ -599,9 +651,8 @@ class WalletController extends GetxController {
         'durationDays': durationDays,
       };
 
-      final callable = FirebaseFunctions.instance.httpsCallable(
-        'createCashfreeOrder',
-      );
+      final callable = FirebaseFunctions.instanceFor(region: 'asia-south1')
+          .httpsCallable('createCashfreeOrder');
       final result = await callable.call({
         'amount': totalPrice,
         'phone': user.phoneNumber ?? "9999999999",
