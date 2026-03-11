@@ -1,0 +1,99 @@
+{
+  "project_info": {
+    "project_number": "404641872366",
+    "firebase_url": "https://indicabs-prod-default-rtdb.firebaseio.com",
+    "project_id": "indicabs-prod",
+    "storage_bucket": "indicabs-prod.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:404641872366:android:777d4d6cc2f637fe27f6ff",
+        "android_client_info": {
+          "package_name": "com.indicabs.driverapp"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "404641872366-o264le4ht2ghpo9428ot1oe7p23sdal9.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.indicabs.driverapp",
+            "certificate_hash": "36756ba7482e8cde6d86fdd9c3a5df1a921d1a36"
+          }
+        },
+        {
+          "client_id": "404641872366-iu3c35ku51jp9mt85a1j0ult661tnvot.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD0JaxrPB5xRsk44BkNGk6Z-nZG78h1eHs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "404641872366-iu3c35ku51jp9mt85a1j0ult661tnvot.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "404641872366-o0jvrmhqshmntc2058qo0p4jmlfmcqjf.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.indicabs.userapp"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:404641872366:android:bc62d05f7a6b5fff27f6ff",
+        "android_client_info": {
+          "package_name": "com.indicabs.userapp"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "404641872366-kq31ndr9rfgg4b7vvjq9ll9dt4m5gqvq.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.indicabs.userapp",
+            "certificate_hash": "36756ba7482e8cde6d86fdd9c3a5df1a921d1a36"
+          }
+        },
+        {
+          "client_id": "404641872366-iu3c35ku51jp9mt85a1j0ult661tnvot.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD0JaxrPB5xRsk44BkNGk6Z-nZG78h1eHs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "404641872366-iu3c35ku51jp9mt85a1j0ult661tnvot.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "404641872366-o0jvrmhqshmntc2058qo0p4jmlfmcqjf.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.indicabs.userapp"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

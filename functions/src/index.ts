@@ -24,7 +24,8 @@ import { removeInvalidAirportDrivers, cleanupGhostAirportDrivers, onQueueDriverA
 
 export {
     batchOnboard, aggregateDemandDriver, resetDemandZonesDriver, checkAvailableSoonDrivers, acceptBackToBackRide,
-    removeInvalidAirportDrivers, cleanupGhostAirportDrivers, onQueueDriverAdded, onQueueDriverRemoved, acceptAirportRide
+    removeInvalidAirportDrivers, cleanupGhostAirportDrivers, onQueueDriverAdded, onQueueDriverRemoved, acceptAirportRide,
+    verifyUpiIdWithOtp, generateOtpDriver
 };
 
 /*
@@ -70,7 +71,7 @@ const exotelSubdomain = defineSecret("EXOTEL_SUBDOMAIN");
  * GENERATE OTP (Triggered when client writes to otp_verifications)
  * Changed to onDocumentWritten to handle re-tries (where doc already exists).
  */
-export const generateOtpDriver = onDocumentWritten(
+const generateOtpDriver = onDocumentWritten(
     {
         document: "otp_verifications/{phoneNumber}",
         region: "asia-south1",
@@ -1464,7 +1465,7 @@ export const autoSettleWallets = onSchedule("every day 00:00", async (event) => 
 /**
  * Verify UPI ID with OTP
  */
-export const verifyUpiIdWithOtp = onCall({ region: "asia-south1" }, async (request) => {
+const verifyUpiIdWithOtp = onCall({ region: "asia-south1" }, async (request) => {
     if (!request.auth) {
         throw new HttpsError("unauthenticated", "User must be authenticated");
     }

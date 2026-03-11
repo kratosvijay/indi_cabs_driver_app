@@ -63,8 +63,12 @@ class WalletController extends GetxController {
   @override
   void onInit() {
     super.onInit();
-    fetchWalletData();
-    fetchUpiIds();
+    // Delay heavy data fetching until after the first frame
+    // This allows the screen transition animation to run smoothly
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      fetchWalletData();
+      fetchUpiIds();
+    });
     _initCashfree();
   }
 
