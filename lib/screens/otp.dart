@@ -11,6 +11,7 @@ import 'package:project_taxi_driver_app/screens/sign_up.dart';
 import 'package:project_taxi_driver_app/screens/license_verification.dart';
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:project_taxi_driver_app/utils/upload_progress_dialog.dart';
 
 class OtpScreen extends StatefulWidget {
   final String verificationId;
@@ -95,16 +96,29 @@ class _OtpScreenState extends State<OtpScreen> {
 
   Future<String?> _uploadProfilePicture(String uid, File imageFile) async {
     try {
+      if (!mounted) return null;
+      final progressNotifier = ValueNotifier<double>(0.0);
+      UploadProgressDialog.show(context, progressNotifier);
+
       final storageRef = FirebaseStorage.instance
           .ref()
           .child('driver_profile_pictures')
           .child('$uid.jpg');
       final uploadTask = storageRef.putFile(imageFile);
-      final snapshot = await uploadTask.whenComplete(() => {});
+      
+      uploadTask.snapshotEvents.listen((snapshot) {
+        progressNotifier.value = snapshot.bytesTransferred / snapshot.totalBytes;
+      });
+
+      final snapshot = await uploadTask;
       final downloadUrl = await snapshot.ref.getDownloadURL();
+      
+      if (mounted) Navigator.pop(context); // Close dialog
+
       return downloadUrl;
     } catch (e) {
       if (mounted) {
+        Navigator.pop(context); // Close dialog on error
         Get.snackbar(
           'Error',
           "Failed to upload profile picture.",
@@ -201,6 +215,7 @@ class _OtpScreenState extends State<OtpScreen> {
       'isOnline': false,
       'documentsSubmitted': false,
       'isApproved': false,
+      'isBlocked': false,
     });
   }
 

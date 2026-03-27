@@ -10,6 +10,7 @@ import 'package:project_taxi_driver_app/screens/document_verificaton.dart';
 import 'package:project_taxi_driver_app/screens/qr_settings_screen.dart';
 import 'package:project_taxi_driver_app/screens/language.dart';
 import 'package:project_taxi_driver_app/screens/login.dart';
+import 'package:project_taxi_driver_app/screens/reviews_screen.dart'; // **NEW IMPORT**
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
 import 'package:project_taxi_driver_app/screens/driver_vehicle_selection_screen.dart';
@@ -48,6 +49,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       'no': 'No',
       'yes': 'Yes',
       'dutySettings': 'QR Settings',
+      'myReviews': 'My Reviews', // **NEW**
     },
     'ta': {
       'title': 'சுயவிவரம்',
@@ -598,6 +600,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         isDark: isDark,
                         onTap: () {
                           Get.to(() => QrSettingsScreen(user: widget.user));
+                        },
+                      ),
+
+                      // --- NEW: My Reviews ---
+                      _buildProfileOption(
+                        icon: Icons.star_rate_rounded,
+                        title: _getTranslatedString('myReviews'),
+                        subtitle: "View passenger ratings & comments",
+                        isDark: isDark,
+                        onTap: () {
+                          Get.to(() => ReviewsScreen(user: widget.user));
                         },
                       ),
                     ],

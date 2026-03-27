@@ -25,7 +25,7 @@ import 'package:project_taxi_driver_app/screens/chat_screen.dart';
 import 'package:project_taxi_driver_app/screens/navigation_screen.dart';
 import 'package:google_navigation_flutter/google_navigation_flutter.dart'
     as nav;
-import 'package:cloud_functions/cloud_functions.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:project_taxi_driver_app/screens/ride_start_otp_screen.dart';
 
 class RideAcceptedScreen extends StatefulWidget {
@@ -517,32 +517,17 @@ class _RideAcceptedScreenState extends State<RideAcceptedScreen> {
   }
 
   Future<void> _makePhoneCall() async {
-    setState(() => _isLoading = true);
-    try {
-      final result = await FirebaseFunctions.instanceFor(region: 'asia-south1')
-          .httpsCallable('initiateCall')
-          .call({'rideId': widget.rideRequest.rideId});
-
+    final Uri launchUri = Uri(
+      scheme: 'tel',
+      path: '04446972845',
+    );
+    if (await canLaunchUrl(launchUri)) {
+      await launchUrl(launchUri);
+    } else {
       if (mounted) {
-        setState(() => _isLoading = false);
-        if (result.data['success'] == true) {
-          Get.snackbar(
-            'Call',
-            'Connecting call...',
-            snackPosition: SnackPosition.TOP,
-            backgroundColor: Colors.green,
-            colorText: Colors.white,
-          );
-        } else {
-          throw Exception("Call initiation failed");
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _isLoading = false);
         Get.snackbar(
           'Error',
-          'Call failed: $e',
+          'Could not launch phone dialer',
           snackPosition: SnackPosition.TOP,
           backgroundColor: Colors.red,
           colorText: Colors.white,

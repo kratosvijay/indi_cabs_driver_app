@@ -40,6 +40,18 @@ service cloud.firestore {
         // Nobody can write/delete history from the app (only Cloud Function)
         allow write, delete: if false;
       }
+
+      // **NEW:** Rules for Notifications
+      match /notifications/{notificationId} {
+        allow read, update: if request.auth != null && request.auth.uid == userId;
+        allow create, delete: if false;
+      }
+
+      // **NEW:** Rules for Wallet
+      match /wallet/{walletId} {
+        allow read: if request.auth != null && request.auth.uid == userId;
+        allow write: if false;
+      }
     }
     // --- DRIVERS COLLECTION ---
     // Rules for individual driver profiles.
@@ -48,6 +60,9 @@ service cloud.firestore {
       // READ (GET): Allow any authenticated user (riders, other drivers, admins)
       // to read a specific driver's document by ID.
       allow get: if request.auth != null;
+      
+      // LIST (QUERY): Allow unauthenticated users to query drivers (used in sign_up.dart)
+      allow list: if true;
 
       // CREATE: Allow a user to create their own driver document.
       // Assumes driverId is the same as the user's auth UID during signup.
@@ -62,7 +77,7 @@ service cloud.firestore {
               // Core Ops (homepage, duty_settings)
               'isOnline', 'currentLocation', 'goToDestination', 'dutyPreferences', 'fcmToken',
               // Registration (car_selection, doc_verification)
-              'vehicleType', 'vehicleNumber', 'carName', 'licenseNumber', 'documents', 'documentsSubmitted',
+              'vehicleType', 'vehicleNumber', 'vehicleBrand', 'vehicleModel', 'vehicleClass', 'vehicleDetailsFilled', 'carName', 'licenseNumber', 'licenseFrontUrl', 'licenseBackUrl', 'aadharNumber', 'aadharFrontUrl', 'aadharBackUrl', 'panNumber', 'panCardUrl', 'documents', 'documentsSubmitted',
               // Profile
               'displayName', 'photoUrl',
               // Status (restricted below)
@@ -84,15 +99,37 @@ service cloud.firestore {
       // DELETE: (MODIFIED FOR DRIVER APP)
       // Allow a driver to delete their own document (for account deletion in profile.dart).
       allow delete: if request.auth != null && request.auth.uid == driverId;
-    }
 
-    // NEW RULE for collection queries (LIST)
-    // This is required for the phone_auth.dart and sign_up.dart screens
-    // to check if a phone number exists *before* logging in.
-    // WARNING: This allows anyone to query and list all documents in the 'drivers' collection.
-    // A more secure solution is to use a Cloud Function for this check.
-    match /drivers {
-      allow list: if true;
+      // --- Nested Driver Collections ---
+      match /earnings/{earningId} {
+        allow read, create: if request.auth != null && request.auth.uid == driverId;
+        allow update, delete: if false;
+      }
+
+      match /reviews/{reviewId} {
+        allow read: if true;
+        allow create: if request.auth != null;
+        allow update, delete: if false;
+      }
+
+      match /wallet/{walletId} {
+        allow read: if request.auth != null && request.auth.uid == driverId;
+        allow write: if false;
+      }
+
+      match /wallet_transactions/{txId} {
+        allow read: if request.auth != null && request.auth.uid == driverId;
+        allow write: if false;
+      }
+
+      match /saved_upi_ids/{id} {
+        allow read, write, delete: if request.auth != null && request.auth.uid == driverId;
+      }
+
+      match /notifications/{notificationId} {
+        allow read, update: if request.auth != null && request.auth.uid == driverId;
+        allow create, delete: if false;
+      }
     }
 
     // --- FLEET OPERATORS COLLECTION ---
@@ -101,6 +138,9 @@ service cloud.firestore {
 
       // READ (GET): Allow a fleet operator to read their own profile.
       allow get: if request.auth != null && request.auth.uid == operatorId;
+      
+      // LIST (QUERY): Allow unauthenticated users to query fleet_operators (used in sign_up.dart)
+      allow list: if true;
 
       // CREATE: Allow a user to create their own fleet operator document.
       allow create: if request.auth != null && request.auth.uid == operatorId;
@@ -112,13 +152,26 @@ service cloud.firestore {
       allow delete: if false; // Admin task.
     }
 
-    // NEW RULE for collection queries (LIST)
-    // This is required for the phone_auth.dart and sign_up.dart screens
-    // to check if a phone number exists *before* logging in.
-    // WARNING: This allows anyone to query and list all documents in the 'fleet_operators' collection.
-    // A more secure solution is to use a Cloud Function for this check.
-    match /fleet_operators {
-      allow list: if true;
+    // --- OTP VERIFICATIONS COLLECTION ---
+    match /otp_verifications/{phoneNumber} {
+      allow read, write: if request.auth != null;
+    }
+
+    // --- AIRPORT QUEUES COLLECTION ---
+    match /airport_queues/{queueId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+      
+      match /drivers/{driverId} {
+        allow read: if request.auth != null;
+        allow create, update, delete: if request.auth != null && request.auth.uid == driverId;
+      }
+    }
+
+    // --- DEMAND ZONES COLLECTION ---
+    match /demand_zones/{zoneId} {
+      allow read: if request.auth != null;
+      allow write: if false;
     }
 
     // --- PRICING RULES COLLECTION ---
@@ -221,12 +274,32 @@ service cloud.firestore {
       // DELETE: (MODIFIED FOR DRIVER APP)
       // Allow assigned driver to delete (cancel) the ride.
       allow delete: if request.auth != null && request.auth.uid == resource.data.driverId;
+
+      // --- Nested Ride Request Collections ---
+      match /messages/{messageId} {
+        allow read, create: if request.auth != null;
+        allow update, delete: if false;
+      }
     }
     
     // --- RENTAL REQUESTS COLLECTION ---
     match /rental_requests/{requestId} {
-      // ... (existing content) ...
-       allow delete: if request.auth != null && request.auth.uid == resource.data.driverId;
+      // READ: Allow the user who created the ride OR the assigned driver to read it.
+      allow read: if request.auth != null &&
+                      (request.auth.uid == resource.data.userId || request.auth.uid == resource.data.driverId);
+
+      // CREATE: Allow authenticated users to create a request.
+      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+
+      // UPDATE: Allow driver or user to update based on status.
+      allow update: if request.auth != null && (
+                      request.auth.uid == resource.data.userId || 
+                      request.auth.uid == resource.data.driverId || 
+                      request.resource.data.driverId == request.auth.uid
+                    );
+
+      // DELETE: Allow assigned driver to delete (cancel) the ride.
+      allow delete: if request.auth != null && request.auth.uid == resource.data.driverId;
     }
 
     // --- VEHICLES COLLECTION ---

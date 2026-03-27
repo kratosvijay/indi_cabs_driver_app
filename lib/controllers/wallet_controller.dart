@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:pinput/pinput.dart';
 import 'package:cloud_functions/cloud_functions.dart';
@@ -46,6 +47,8 @@ class WalletController extends GetxController {
   RxDouble balance = 0.0.obs;
   RxList<WalletTransaction> transactions = <WalletTransaction>[].obs;
   RxBool isLoading = false.obs;
+  
+  final List<StreamSubscription> _subscriptions = [];
   RxList<String> savedUpiIds = <String>[].obs;
 
   // Settlement Features
@@ -110,7 +113,10 @@ class WalletController extends GetxController {
 
   @override
   void onClose() {
-    // No explicit clear for CFPaymentGatewayService needed usually
+    for (var sub in _subscriptions) {
+      sub.cancel();
+    }
+    _subscriptions.clear();
     super.onClose();
   }
 
@@ -120,7 +126,7 @@ class WalletController extends GetxController {
 
     try {
       debugPrint("Fetching UPI IDs for ${user.uid}...");
-      _db
+      _subscriptions.add(_db
           .collection('drivers')
           .doc(user.uid)
           .collection('saved_upi_ids')
@@ -128,7 +134,7 @@ class WalletController extends GetxController {
           .listen((snapshot) {
             debugPrint("UPI IDs update: ${snapshot.docs.length} found");
             savedUpiIds.value = snapshot.docs.map((doc) => doc.id).toList();
-          });
+          }, onError: (e) => debugPrint("UPI IDs stream error: $e")));
     } catch (e) {
       debugPrint("Error fetching UPI IDs: $e");
     }
@@ -241,7 +247,7 @@ class WalletController extends GetxController {
 
     try {
       // Listen to wallet document
-      _db
+      _subscriptions.add(_db
           .collection('drivers')
           .doc(user.uid)
           .collection('wallet')
@@ -254,10 +260,10 @@ class WalletController extends GetxController {
             } else {
               balance.value = 0.0;
             }
-          });
+          }, onError: (e) => debugPrint("Wallet balance stream error: \$e")));
 
       // Listen to transactions
-      _db
+      _subscriptions.add(_db
           .collection('drivers')
           .doc(user.uid)
           .collection('wallet_transactions')
@@ -267,22 +273,22 @@ class WalletController extends GetxController {
             transactions.value = snapshot.docs
                 .map((doc) => WalletTransaction.fromFirestore(doc))
                 .toList();
-          });
+          }, onError: (e) => debugPrint("Transactions stream error: \$e")));
     } catch (e) {
       Get.snackbar("Error", "Failed to fetch wallet data: $e");
     }
   }
 
   void _listenToAutoSettleSettings(User user) {
-    _db.collection('drivers').doc(user.uid).snapshots().listen((snapshot) {
+    _subscriptions.add(_db.collection('drivers').doc(user.uid).snapshots().listen((snapshot) {
       if (snapshot.exists) {
         final data = snapshot.data();
         autoSettleEnabled.value = data?['autoSettleEnabled'] ?? false;
         autoSettleUpiId.value = data?['autoSettleUpiId'] ?? "";
       }
-    });
+    }, onError: (e) => debugPrint("Driver autoSettle stream error: \$e")));
 
-    _db
+    _subscriptions.add(_db
         .collection('drivers')
         .doc(user.uid)
         .collection('wallet')
@@ -301,7 +307,7 @@ class WalletController extends GetxController {
               lastSettlementDate.value = settlementTimestamp.toDate();
             }
           }
-        });
+        }, onError: (e) => debugPrint("Wallet metadata stream error: \$e")));
   }
 
   Future<void> updateAutoSettleSettings(bool enabled, String upiId) async {

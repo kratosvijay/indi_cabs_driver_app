@@ -10,6 +10,7 @@ import 'package:project_taxi_driver_app/presentation/screens/fleet/vehicles/flee
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:project_taxi_driver_app/utils/upload_progress_dialog.dart';
 
 // Enum to manage the verification status
 enum VerificationStatus { initial, pending, rejected }
@@ -441,19 +442,37 @@ class _DocumentVerificationScreenState
         storageBase = 'driver_documents/$uid';
       }
 
-      Future<String> uploadFile(File file, String name) async {
+      if (!mounted) return;
+      final progressNotifier = ValueNotifier<double>(0.0);
+      UploadProgressDialog.show(context, progressNotifier);
+
+      Map<int, double> fileProgress = {};
+      int totalFiles = 5;
+
+      Future<String> uploadFile(File file, String name, int index) async {
         final ref = FirebaseStorage.instance.ref().child('$storageBase/$name');
-        await ref.putFile(file);
-        return await ref.getDownloadURL();
+        final uploadTask = ref.putFile(file);
+        
+        uploadTask.snapshotEvents.listen((snapshot) {
+          double p = snapshot.bytesTransferred / snapshot.totalBytes;
+          fileProgress[index] = p;
+          double totalProgress = fileProgress.values.fold(0.0, (a, b) => a + b) / totalFiles;
+          progressNotifier.value = totalProgress;
+        });
+
+        final snapshot = await uploadTask;
+        return await snapshot.ref.getDownloadURL();
       }
 
       final urls = await Future.wait([
-        uploadFile(_rcFront!, 'rc_front.jpg'),
-        uploadFile(_rcBack!, 'rc_back.jpg'),
-        uploadFile(_permit!, 'permit.jpg'),
-        uploadFile(_insurance!, 'insurance.jpg'),
-        uploadFile(_fitness!, 'fitness.jpg'),
+        uploadFile(_rcFront!, 'rc_front.jpg', 0),
+        uploadFile(_rcBack!, 'rc_back.jpg', 1),
+        uploadFile(_permit!, 'permit.jpg', 2),
+        uploadFile(_insurance!, 'insurance.jpg', 3),
+        uploadFile(_fitness!, 'fitness.jpg', 4),
       ]);
+      
+      if (mounted) Navigator.pop(context); // Close dialog
 
       if (widget.isFleet && widget.vehicleId != null) {
         // Fleet Update
@@ -519,27 +538,35 @@ class _DocumentVerificationScreenState
   @override
   Widget build(BuildContext context) {
     if (_status == VerificationStatus.pending) {
-      return _buildStatusScreen(
-        icon: Icons.hourglass_top,
-        title: _getTranslatedString('pendingTitle'),
-        message: _getTranslatedString('pendingMsg'),
+      return PopScope(
+        canPop: false,
+        child: _buildStatusScreen(
+          icon: Icons.hourglass_top,
+          title: _getTranslatedString('pendingTitle'),
+          message: _getTranslatedString('pendingMsg'),
+        ),
       );
     }
     if (_status == VerificationStatus.rejected) {
-      return _buildStatusScreen(
-        icon: Icons.error_outline,
-        title: _getTranslatedString('rejectedTitle'),
-        message:
-            "${_getTranslatedString('reason')} $_rejectionReason${_getTranslatedString('rejectedMsg')}",
-        isRejected: true,
+      return PopScope(
+        canPop: false,
+        child: _buildStatusScreen(
+          icon: Icons.error_outline,
+          title: _getTranslatedString('rejectedTitle'),
+          message:
+              "${_getTranslatedString('reason')} $_rejectionReason${_getTranslatedString('rejectedMsg')}",
+          isRejected: true,
+        ),
       );
     }
 
-    return Scaffold(
-      appBar: ProAppBar(
-        titleText: _getTranslatedString('title'),
-        automaticallyImplyLeading: false,
-      ),
+    return PopScope(
+      canPop: false,
+      child: Scaffold(
+        appBar: ProAppBar(
+          titleText: _getTranslatedString('title'),
+          automaticallyImplyLeading: false,
+        ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20.0),
         child: Column(
@@ -605,7 +632,7 @@ class _DocumentVerificationScreenState
           isLoading: _isLoading,
         ),
       ),
-    );
+    ));
   }
 
   Widget _buildProUploadCard({

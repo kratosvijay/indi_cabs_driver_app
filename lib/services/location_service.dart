@@ -33,8 +33,53 @@ class LocationService {
       if (response.statusCode == 200) {
         final parsed = json.decode(response.body);
         if (parsed['status'] == 'OK' && parsed['results'].isNotEmpty) {
-          // Return the first formatted address
-          return parsed['results'][0]['formatted_address'];
+          final results = parsed['results'] as List;
+          
+          for (var result in results) {
+            final types = List<String>.from(result['types'] ?? []);
+            if (types.contains('airport') ||
+                types.contains('train_station') ||
+                types.contains('transit_station') ||
+                types.contains('bus_station')) {
+              return result['formatted_address'];
+            }
+          }
+          
+          final firstResult = results[0];
+          final components = firstResult['address_components'] as List;
+          String? subpremise, premise, streetNumber, route, sublocality, locality;
+
+          for (var c in components) {
+            final types = List<String>.from(c['types'] ?? []);
+            final longName = c['long_name'] as String;
+            if (types.contains('subpremise')) subpremise = longName;
+            if (types.contains('premise')) premise = longName;
+            if (types.contains('street_number')) streetNumber = longName;
+            if (types.contains('route')) route = longName;
+            if (types.contains('sublocality')) sublocality = longName;
+            if (types.contains('locality')) locality = longName;
+          }
+
+          List<String> parts = [];
+          if (subpremise != null && premise != null) {
+            parts.add("$subpremise, $premise");
+          } else if (premise != null) {
+            parts.add(premise);
+          } else if (subpremise != null) {
+            parts.add("Unit $subpremise");
+          }
+
+          if (streetNumber != null && route != null) {
+            parts.add("$streetNumber, $route");
+          } else if (route != null) {
+            parts.add(route);
+          }
+
+          if (sublocality != null) parts.add(sublocality);
+          if (locality != null && locality != sublocality) parts.add(locality);
+
+          if (parts.isNotEmpty) return parts.join(", ");
+          return firstResult['formatted_address'];
         }
       }
     } catch (e) {

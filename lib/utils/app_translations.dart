@@ -157,12 +157,21 @@ class AppTranslations extends Translations {
 
       // Help
       'helpSupport': 'Help & Support',
+      'support': 'Support',
+      'policies': 'Policies',
       'emailSupport': 'Email Support',
       'emailSupportSubtitle': 'Send us a detailed query',
       'chatSupport': 'Chat Support',
       'chatSupportSubtitle': 'Talk to our virtual assistant',
       'callSupport': 'Call Support',
       'callSupportSubtitle': 'Speak to an agent immediately',
+      'contactUs': 'Contact Us',
+      'termsAndConditions': 'Terms & Conditions',
+      'refundsAndCancellations': 'Refunds & Cancellations',
+      'productsServices': 'Products & Services',
+      'pricingINR': 'Pricing (INR)',
+      'ourFleet': 'Our Fleet',
+      'perKm': 'Per Km',
 
       // Earnings & History
       'weekEarnings': "Week's Earnings",
@@ -407,12 +416,21 @@ class AppTranslations extends Translations {
 
       // Help
       'helpSupport': 'உதவி & ஆதரவு',
+      'support': 'ஆதரவு',
+      'policies': 'கொள்கைகள்',
       'emailSupport': 'மின்னஞ்சல் ஆதரவு',
       'emailSupportSubtitle': 'விரிவான கேள்வியை எங்களுக்கு அனுப்பவும்',
       'chatSupport': 'அரட்டை ஆதரவு',
       'chatSupportSubtitle': 'எங்கள் மெய்நிகர் உதவியாளருடன் பேசுங்கள்',
       'callSupport': 'அழைப்பு ஆதரவு',
       'callSupportSubtitle': 'உடனடியாக ஒரு முகவருடன் பேசுங்கள்',
+      'contactUs': 'எங்களைத் தொடர்பு கொள்ளவும்',
+      'termsAndConditions': 'விதிமுறைகள் மற்றும் நிபந்தனைகள்',
+      'refundsAndCancellations': 'பணம் திரும்பப் பெறுதல் மற்றும் ரத்து செய்தல்',
+      'productsServices': 'தயாரிப்புகள் மற்றும் சேவைகள்',
+      'pricingINR': 'விலை (INR)',
+      'ourFleet': 'எங்கள் வாகனங்கள்',
+      'perKm': 'கி.மீ.க்கு',
 
       // Earnings & History
       'weekEarnings': "வார வருவாய்",
@@ -648,13 +666,22 @@ class AppTranslations extends Translations {
           'No demand data yet. Areas will light up as ride requests come in.',
 
       // Help
-      'helpSupport': 'Help & Support',
-      'emailSupport': 'Email Support',
+      'helpSupport': 'सहायता और समर्थन',
+      'support': 'सहायता',
+      'policies': 'नीतियां',
+      'emailSupport': 'ईमेल समर्थन',
       'emailSupportSubtitle': 'Send us a detailed query',
       'chatSupport': 'Chat Support',
       'chatSupportSubtitle': 'Talk to our virtual assistant',
       'callSupport': 'Call Support',
       'callSupportSubtitle': 'Speak to an agent immediately',
+      'contactUs': 'संपर्क करें',
+      'termsAndConditions': 'नियम और शर्तें',
+      'refundsAndCancellations': 'धनवापसी और रद्दीकरण',
+      'productsServices': 'उत्पाद और सेवाएं',
+      'pricingINR': 'मूल्य निर्धारण (INR)',
+      'ourFleet': 'हमारा बेड़ा',
+      'perKm': 'प्रति किमी',
 
       // Payment Methods
       'cashPayment': 'नकद भुगतान',

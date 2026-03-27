@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class ChatScreen extends StatefulWidget {
   final String rideId;
@@ -32,6 +33,19 @@ class _ChatScreenState extends State<ChatScreen> {
     "You are not reachable by call",
   ];
 
+  Future<void> _markBatchAsRead(List<DocumentSnapshot> unreadDocs) async {
+    if (unreadDocs.isEmpty) return;
+    try {
+      WriteBatch batch = _firestore.batch();
+      for (var doc in unreadDocs) {
+        batch.update(doc.reference, {'isRead': true});
+      }
+      await batch.commit();
+    } catch (e) {
+      debugPrint("Error marking messages as read: $e");
+    }
+  }
+
   void _sendMessage() {
     if (_messageController.text.trim().isEmpty) return;
 
@@ -43,6 +57,7 @@ class _ChatScreenState extends State<ChatScreen> {
           'text': _messageController.text.trim(),
           'senderId': widget.currentUserId,
           'timestamp': FieldValue.serverTimestamp(),
+          'isRead': false,
         });
 
     _messageController.clear();
@@ -57,6 +72,7 @@ class _ChatScreenState extends State<ChatScreen> {
           'text': message,
           'senderId': widget.currentUserId,
           'timestamp': FieldValue.serverTimestamp(),
+          'isRead': false,
         });
   }
 
@@ -84,6 +100,16 @@ class _ChatScreenState extends State<ChatScreen> {
 
                 final messages = snapshot.data!.docs;
 
+                // Identify unread messages from the customer
+                final unreadDocs = messages.where((doc) {
+                  final data = doc.data() as Map<String, dynamic>? ?? {};
+                  return data['senderId'] != widget.currentUserId && data['isRead'] != true;
+                }).toList();
+
+                if (unreadDocs.isNotEmpty) {
+                  Future.microtask(() => _markBatchAsRead(unreadDocs));
+                }
+
                 if (messages.isEmpty) {
                   return Center(
                     child: Text(
@@ -102,39 +128,71 @@ class _ChatScreenState extends State<ChatScreen> {
                   itemBuilder: (context, index) {
                     final msg = messages[index].data() as Map<String, dynamic>;
                     final isMe = msg['senderId'] == widget.currentUserId;
+                    final isRead = msg['isRead'] == true;
 
                     return Align(
-                      alignment: isMe
-                          ? Alignment.centerRight
-                          : Alignment.centerLeft,
-                      child: Container(
-                        constraints: BoxConstraints(
-                          maxWidth: MediaQuery.of(context).size.width * 0.75,
-                        ),
-                        margin: const EdgeInsets.symmetric(
-                          vertical: 4,
-                          horizontal: 8,
-                        ),
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: isMe
-                              ? primaryColor
-                              : (isDark ? Colors.grey[800] : Colors.grey[200]),
-                          borderRadius: BorderRadius.only(
-                            topLeft: const Radius.circular(16),
-                            topRight: const Radius.circular(16),
-                            bottomLeft: Radius.circular(isMe ? 16 : 4),
-                            bottomRight: Radius.circular(isMe ? 4 : 16),
+                      alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                      child: Column(
+                        crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                        children: [
+                          InkWell(
+                            onTap: () async {
+                              final text = msg['text'] as String? ?? '';
+                              final urlMatch = RegExp(r"(https?://[^\s]+)").firstMatch(text);
+                              if (urlMatch != null) {
+                                final uri = Uri.parse(urlMatch.group(0)!);
+                                if (await canLaunchUrl(uri)) {
+                                  await launchUrl(uri, mode: LaunchMode.externalApplication);
+                                }
+                              }
+                            },
+                            borderRadius: BorderRadius.only(
+                              topLeft: const Radius.circular(16),
+                              topRight: const Radius.circular(16),
+                              bottomLeft: Radius.circular(isMe ? 16 : 4),
+                              bottomRight: Radius.circular(isMe ? 4 : 16),
+                            ),
+                            child: Container(
+                              constraints: BoxConstraints(
+                                maxWidth: MediaQuery.of(context).size.width * 0.75,
+                              ),
+                              margin: const EdgeInsets.symmetric(
+                                vertical: 4,
+                                horizontal: 8,
+                              ),
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: isMe
+                                    ? primaryColor
+                                    : (isDark ? Colors.grey[800] : Colors.grey[200]),
+                                borderRadius: BorderRadius.only(
+                                  topLeft: const Radius.circular(16),
+                                  topRight: const Radius.circular(16),
+                                  bottomLeft: Radius.circular(isMe ? 16 : 4),
+                                  bottomRight: Radius.circular(isMe ? 4 : 16),
+                                ),
+                              ),
+                              child: Text(
+                                msg['text'] ?? '',
+                                style: TextStyle(
+                                  color: isMe
+                                      ? Colors.white
+                                      : (isDark ? Colors.white : Colors.black87),
+                                  decoration: (msg['text'] ?? '').contains("http") ? TextDecoration.underline : null,
+                                ),
+                              ),
+                            ),
                           ),
-                        ),
-                        child: Text(
-                          msg['text'] ?? '',
-                          style: TextStyle(
-                            color: isMe
-                                ? Colors.white
-                                : (isDark ? Colors.white : Colors.black87),
-                          ),
-                        ),
+                          if (isMe)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 12.0, bottom: 4.0),
+                              child: Icon(
+                                Icons.done_all,
+                                size: 16,
+                                color: isRead ? Colors.blue : Colors.grey,
+                              ),
+                            ),
+                        ],
                       ),
                     );
                   },

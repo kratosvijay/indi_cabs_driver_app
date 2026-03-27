@@ -32,6 +32,7 @@ import 'package:project_taxi_driver_app/screens/rental_request_screen.dart';
 import 'package:project_taxi_driver_app/services/overlay_service.dart';
 import 'package:project_taxi_driver_app/services/queue_service.dart';
 import 'package:project_taxi_driver_app/services/demand_service.dart';
+import 'package:project_taxi_driver_app/utils/app_colors.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 
 class HomePageController extends GetxController with WidgetsBindingObserver {
@@ -63,8 +64,6 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   final RxString currentSortOption = 'Smart'.obs; // Default sort
   final RxBool isRideAcceptanceInProgress = false.obs;
 
-  // Back-to-Back Ride State
-  final RxList<RideRequest> queuedRides = <RideRequest>[].obs;
 
   // Helper for backward compatibility or easy access to "top" request
   RideRequest? get activeRideRequest =>
@@ -221,7 +220,6 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       }
     });
 
-    listenForB2BOffers();
   }
 
   String get currentUserId => user.uid; // Added for easy access
@@ -625,8 +623,42 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   Future<void> handleStatusChange(DriverStatus status) async {
     debugPrint("handleStatusChange called with status: $status");
 
-    // Off-road Check (Local Enforcement)
+    // Blocked and Off-road Checks
     if (status == DriverStatus.online) {
+      // 1. Blocked Status Check
+      try {
+        final doc = await FirebaseFirestore.instance
+            .collection('drivers')
+            .doc(user.uid)
+            .get();
+        if (doc.exists) {
+          final data = doc.data();
+          final isBlocked = data?['isBlocked'] ?? false;
+          if (isBlocked) {
+            Get.defaultDialog(
+              title: "Account Blocked",
+              middleText:
+                  "Your account has been blocked. Please contact customer care for more info.",
+              textConfirm: "OK",
+              confirmTextColor: Colors.white,
+              buttonColor: AppColors.primary,
+              onConfirm: () {
+                Get.back();
+              },
+            );
+            
+            // Revert visual state
+            Future.delayed(const Duration(milliseconds: 100), () {
+              driverStatus.value = DriverStatus.offline;
+            });
+            return;
+          }
+        }
+      } catch (e) {
+        debugPrint("Error checking blocked status: $e");
+      }
+
+      // 2. Off-road Check (Local Enforcement)
       final prefs = await SharedPreferences.getInstance();
       bool isOffroaded = prefs.getBool('isWalletOffroaded') ?? false;
 
@@ -667,6 +699,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     // 2. Handle specific logic based on status
     if (status == DriverStatus.online || status == DriverStatus.goTo) {
       WakelockPlus.enable();
+      OverlayService.instance.startDriverForeground();
       // Don't await here if we want immediate UI feedback, or accept that map might move later
       // We will fire and forget log/toast if location fails, but we are "Online" now.
       goToCurrentUserLocation();
@@ -711,6 +744,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       QueueService().stopMonitoring();
       _stopDemandMonitoring();
       WakelockPlus.disable();
+      OverlayService.instance.stopDriverForeground();
     }
 
     if (status == DriverStatus.goTo) {
@@ -886,9 +920,9 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
           _lastSentPosition = position;
         }, onError: (e) => debugPrint("Location stream error: $e"));
 
-    // Throttle RTDB Sync to Every 8 Seconds to prevent quota exhaustion but keep heartbeat fresh
+    // Throttle RTDB Sync to Every 1 Second to maintain fresh heartbeat for dispatch
     locationUpdateTimer?.cancel();
-    locationUpdateTimer = Timer.periodic(const Duration(seconds: 8), (timer) {
+    locationUpdateTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (_lastSentPosition != null) {
         _updateDriverLocationInRTDB(_lastSentPosition!, locRef);
         // Also update Firestore roughly mostly for backwards compatibility Profile views
@@ -1483,20 +1517,6 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         tollPrice: tollPrice,
       );
 
-      // Back-to-Back Logic: If we are already ON TRIP, queue this ride
-      if (driverStatus.value == DriverStatus.goTo) {
-        debugPrint("Back-to-Back Ride Received: ${newRequest.rideId}");
-        if (!queuedRides.any((r) => r.rideId == newRequest.rideId)) {
-          queuedRides.add(newRequest);
-        }
-
-        // Play notification (maybe less intrusive?)
-        playRideRequestSound();
-
-        // Setup timeout for this queued ride too
-        startRideTimeout(newRequest.rideId);
-        return;
-      }
 
       if (activeRequests.any((r) => r.rideId == newRequest.rideId)) {
         debugPrint("Process Ride: ${newRequest.rideId} duplicate add skipped.");
@@ -1884,80 +1904,6 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   }
 
   bool _isAcceptingRide = false;
-  Future<void> acceptBackToBackRide(RideRequest request) async {
-    try {
-      final rideId = request.rideId;
-      final driverId = user.uid;
-      final rideType = request.rideType;
-      final collectionPath = (rideType == 'rental')
-          ? 'rental_requests'
-          : 'ride_requests';
-
-      debugPrint("Accepting Back-to-Back Ride $rideId");
-
-      // Fetch Driver Details
-      final driverDocSnapshot = await FirebaseFirestore.instance
-          .collection('drivers')
-          .doc(user.uid)
-          .get();
-      final dData = driverDocSnapshot.data();
-      final dName = dData?['displayName'] ?? user.displayName ?? 'Driver';
-      final dPhone = dData?['phoneNumber'] ?? user.phoneNumber ?? '';
-      final dPhoto = dData?['photoUrl'] ?? user.photoURL ?? '';
-      final dCarModel = dData?['carName'] ?? dData?['vehicleType'] ?? '';
-      final dCarNumber = dData?['vehicleNumber'] ?? '';
-
-      // Transaction to claim the ride
-      await FirebaseFirestore.instance.runTransaction((transaction) async {
-        final rideRef = FirebaseFirestore.instance
-            .collection(collectionPath)
-            .doc(rideId);
-        final rideDoc = await transaction.get(rideRef);
-
-        if (!rideDoc.exists) throw "Ride document does not exist";
-        final status = rideDoc.data()?['status'];
-        if (status != 'searching') {
-          throw "Ride is no longer available (Status: $status)";
-        }
-
-        transaction.update(rideRef, {
-          'status': 'accepted',
-          'driverId': driverId,
-          'driverName': dName,
-          'driverPhone': dPhone,
-          'driverPhoto': dPhoto,
-          'vehicleNumber': dCarNumber,
-          'vehicleModel': dCarModel,
-          'otp': '1234',
-          'acceptedAt': FieldValue.serverTimestamp(),
-        });
-      });
-
-      // Update queuedRides status locally
-      final index = queuedRides.indexWhere((r) => r.rideId == request.rideId);
-      if (index != -1) {
-        queuedRides[index] = request.copyWith(status: 'accepted');
-      }
-
-      Get.snackbar(
-        "Ride Queued",
-        "Next ride accepted! It will start after you finish the current one.",
-        backgroundColor: Colors.green,
-        colorText: Colors.white,
-      );
-    } catch (e) {
-      debugPrint("Error accepting back-to-back ride: $e");
-      Get.snackbar(
-        "Error",
-        "Could not accept ride: $e",
-        backgroundColor: Colors.red,
-        colorText: Colors.white,
-      );
-      queuedRides.removeWhere(
-        (r) => r.rideId == request.rideId,
-      ); // Clear if failed
-    }
-  }
 
   Future<void> onRideAccepted(RideRequest request) async {
     if (_isAcceptingRide) return;
@@ -2065,7 +2011,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       // 2. Set Driver Status to Busy/Offline locally
       driverStatus.value = DriverStatus.goTo;
 
-      // Preserve ONLY the accepted ride so we don't re-process it as a B2B ride
+      // Preserve ONLY the accepted ride so we don't re-process it
       activeRequests.removeWhere((r) => r.rideId != rideId);
       if (!activeRequests.any((r) => r.rideId == rideId)) {
         activeRequests.add(request);
@@ -2417,185 +2363,4 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   }
 
   // ------------------------------------------------------------------
-  // B2B (Back-to-Back) Logic
-  // ------------------------------------------------------------------
-
-  StreamSubscription? _b2bSubscription;
-
-  void listenForB2BOffers() {
-    final uid = user.uid;
-    _b2bSubscription?.cancel();
-
-    debugPrint("Starting B2B Listener for driver: $uid");
-
-    _b2bSubscription = FirebaseFirestore.instance
-        .collection('drivers')
-        .doc(uid)
-        .snapshots()
-        .listen((snapshot) async {
-          if (!snapshot.exists) return;
-
-          final data = snapshot.data();
-          final nextRideId = data?['nextRideId'];
-
-          if (nextRideId != null &&
-              nextRideId is String &&
-              nextRideId.isNotEmpty) {
-            // Avoid re-triggering if we are already processing this ID
-            if (_processingRideIds.contains(nextRideId)) return;
-
-            debugPrint("B2B: Found next ride offer: $nextRideId");
-            _processingRideIds.add(nextRideId);
-
-            // Fetch Ride Details
-            try {
-              final rideSnap = await FirebaseFirestore.instance
-                  .collection('ride_requests')
-                  .doc(nextRideId)
-                  .get();
-
-              if (rideSnap.exists) {
-                final rideData = rideSnap.data()!;
-                rideData['rideId'] = nextRideId; // Ensure ID is set
-                final ride = RideRequest.fromJson(rideData);
-
-                // Show Dialog
-                _showB2BOfferDialog(ride);
-              }
-            } catch (e) {
-              debugPrint("Error fetching B2B ride details: $e");
-              _processingRideIds.remove(nextRideId);
-            }
-          }
-        });
-  }
-
-  void _showB2BOfferDialog(RideRequest ride) {
-    Get.dialog(
-      PopScope(
-        canPop: false,
-        child: AlertDialog(
-          title: const Text("Next Ride Offer!"),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                "A new ride is available nearby your dropoff location.",
-              ),
-              const Divider(),
-              Text(
-                "Pickup: ${ride.pickupTitle}",
-                style: const TextStyle(fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 8),
-              Text("Dropoff: ${ride.dropoffTitle}"),
-              const SizedBox(height: 8),
-              Text(
-                "Fare: ₹${ride.rideFare.toStringAsFixed(0)}",
-                style: const TextStyle(
-                  color: Colors.green,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                "Distance: ${ride.rideDistance}",
-                style: const TextStyle(fontSize: 12),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                declineNextRide(ride.rideId);
-                Get.back();
-              },
-              child: const Text("Decline", style: TextStyle(color: Colors.red)),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                acceptNextRide(ride.rideId);
-                Get.back();
-              },
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
-              child: const Text(
-                "Accept Next Ride",
-                style: TextStyle(color: Colors.white),
-              ),
-            ),
-          ],
-        ),
-      ),
-      barrierDismissible: false,
-    );
-  }
-
-  Future<void> acceptNextRide(String rideId) async {
-    try {
-      final uid = user.uid;
-      await FirebaseFirestore.instance.runTransaction((t) async {
-        final rideRef = FirebaseFirestore.instance
-            .collection('ride_requests')
-            .doc(rideId);
-        final driverRef = FirebaseFirestore.instance
-            .collection('drivers')
-            .doc(uid);
-
-        t.update(rideRef, {
-          'status': 'accepted',
-          'driverId': uid,
-          'acceptedAt': FieldValue.serverTimestamp(),
-          'isBackToBack': true,
-        });
-
-        // Clear nextRideId so we don't get prompted again
-        t.update(driverRef, {'nextRideId': FieldValue.delete()});
-      });
-
-      Get.snackbar(
-        "Success",
-        "Next ride accepted! It will start after you finish current ride.",
-        backgroundColor: Colors.green,
-        colorText: Colors.white,
-      );
-
-      // Add to active requests or handle queue?
-      // For now, it's just 'accepted'. The app will see it in 'activeRidesSnapshot' on refresh
-      // but we might need to handle the UI transition when current ride ends.
-    } catch (e) {
-      debugPrint("Error accepting B2B ride: $e");
-      Get.snackbar("Error", "Could not accept ride.");
-    } finally {
-      _processingRideIds.remove(rideId);
-    }
-  }
-
-  Future<void> declineNextRide(String rideId) async {
-    try {
-      final uid = user.uid;
-      await FirebaseFirestore.instance.runTransaction((t) async {
-        final rideRef = FirebaseFirestore.instance
-            .collection('ride_requests')
-            .doc(rideId);
-        final driverRef = FirebaseFirestore.instance
-            .collection('drivers')
-            .doc(uid);
-
-        t.update(rideRef, {
-          'status': 'searching',
-          'driverId': null, // Unassign
-          'rejectedBy': FieldValue.arrayUnion([uid]),
-        });
-
-        t.update(driverRef, {'nextRideId': FieldValue.delete()});
-      });
-
-      Get.snackbar("Declined", "You passed on the next ride.");
-    } catch (e) {
-      debugPrint("Error declining B2B ride: $e");
-    } finally {
-      _processingRideIds.remove(rideId);
-    }
-  }
 }

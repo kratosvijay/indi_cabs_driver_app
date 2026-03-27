@@ -15,6 +15,22 @@
       },
       "oauth_client": [
         {
+          "client_id": "404641872366-5ddrufah7n0bc3m0emqafhroaurit5jg.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.indicabs.driverapp",
+            "certificate_hash": "096baf259687750f5348e4880e44de0d9e1384e2"
+          }
+        },
+        {
+          "client_id": "404641872366-k2qddb5s2tv1k95a2ormg4dier15ecne.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.indicabs.driverapp",
+            "certificate_hash": "4ac1a17f5e7e235f76083a9b432ecc03afa05ced"
+          }
+        },
+        {
           "client_id": "404641872366-o264le4ht2ghpo9428ot1oe7p23sdal9.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {
@@ -29,7 +45,7 @@
       ],
       "api_key": [
         {
-          "current_key": "AIzaSyD0JaxrPB5xRsk44BkNGk6Z-nZG78h1eHs"
+          "current_key": "AIzaSyBnMfTqInBrDqPnq06CbMkIyGomOwboFto"
         }
       ],
       "services": {
@@ -52,12 +68,28 @@
     },
     {
       "client_info": {
-        "mobilesdk_app_id": "1:404641872366:android:bc62d05f7a6b5fff27f6ff",
+        "mobilesdk_app_id": "1:404641872366:android:cc07b5cdbfcdf3f827f6ff",
         "android_client_info": {
           "package_name": "com.indicabs.userapp"
         }
       },
       "oauth_client": [
+        {
+          "client_id": "404641872366-145l4a9um63iicd0348je3a2nu0van2p.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.indicabs.userapp",
+            "certificate_hash": "4ac1a17f5e7e235f76083a9b432ecc03afa05ced"
+          }
+        },
+        {
+          "client_id": "404641872366-1mocvsao7v4iuk0eqq8ltmv958upirr0.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.indicabs.userapp",
+            "certificate_hash": "678f4828898ec6dab2d64e80fd644aedf5fa59b0"
+          }
+        },
         {
           "client_id": "404641872366-kq31ndr9rfgg4b7vvjq9ll9dt4m5gqvq.apps.googleusercontent.com",
           "client_type": 1,
@@ -73,7 +105,7 @@
       ],
       "api_key": [
         {
-          "current_key": "AIzaSyD0JaxrPB5xRsk44BkNGk6Z-nZG78h1eHs"
+          "current_key": "AIzaSyBnMfTqInBrDqPnq06CbMkIyGomOwboFto"
         }
       ],
       "services": {

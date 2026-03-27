@@ -218,7 +218,7 @@ packages:
     source: hosted
     version: "0.7.11"
   device_info_plus:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: device_info_plus
       sha256: "4df8babf73058181227e18b08e6ea3520cf5fc5d796888d33b7cb0f33f984b7c"
@@ -502,6 +502,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.2.10+48"
+  flutter_displaymode:
+    dependency: "direct main"
+    description:
+      name: flutter_displaymode
+      sha256: ecd44b1e902b0073b42ff5b55bf283f38e088270724cdbb7f7065ccf54aa60a8
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.7.0"
   flutter_dotenv:
     dependency: "direct main"
     description:
@@ -550,14 +558,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.1.0"
-  flutter_refresh_rate_control:
-    dependency: "direct main"
-    description:
-      name: flutter_refresh_rate_control
-      sha256: "8cf45655323adf10ccc07effbb29aaf52264016733caacaf7dddd4b2638b8e69"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.0.4+1"
   flutter_test:
     dependency: "direct dev"
     description: flutter

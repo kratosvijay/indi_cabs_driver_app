@@ -29,7 +29,6 @@ class OverlayService {
 
   final Queue<Map<String, dynamic>> _rideQueue = Queue();
   ReceivePort? _overlayActionPort;
-  bool _overlayVisible = false;
   bool _requestShowing = false;
   Timer? _stopServiceTimer;
 
@@ -131,7 +130,7 @@ class OverlayService {
       // 2. Resize
       await _resizeOverlay(80, 80, enableDrag: true);
 
-      _overlayVisible = true;
+
       _requestShowing = false;
       return;
     }
@@ -143,12 +142,7 @@ class OverlayService {
     // Permission check
     if (!await ensurePermission()) return;
 
-    // Ensure service is running (or restart it)
-    await _initForegroundTask();
-    await _ensureForegroundService(
-      title: "Driver Online",
-      text: "Waiting for rides",
-    );
+    // Foreground Service has already been started by the driver going online.
 
     try {
       await FlutterOverlayWindow.showOverlay(
@@ -161,7 +155,6 @@ class OverlayService {
       );
 
       log("OverlayService: Bubble overlay created (Cold Start).");
-      _overlayVisible = true;
       _requestShowing = false;
 
       await Future.delayed(const Duration(milliseconds: 100));
@@ -172,7 +165,7 @@ class OverlayService {
       });
     } catch (e) {
       debugPrint("CRITICAL: Failed to show bubble overlay: $e");
-      _overlayVisible = false;
+
     }
   }
 
@@ -236,7 +229,7 @@ class OverlayService {
         enableDrag: false,
       );
 
-      _overlayVisible = true;
+
       return;
     }
 
@@ -256,13 +249,13 @@ class OverlayService {
         flag: OverlayFlag.defaultFlag,
       );
       log("OverlayService: Request overlay created (Cold Start).");
-      _overlayVisible = true;
+
       await Future.delayed(const Duration(milliseconds: 120));
 
       await _pushCurrentRequest();
     } catch (e) {
       debugPrint("CRITICAL: Failed to show request overlay: $e");
-      _overlayVisible = false;
+
     }
   }
 
@@ -336,6 +329,23 @@ class OverlayService {
     FlutterForegroundTask.launchApp();
   }
 
+  /* ---------------- Foreground Service ---------------- */
+
+  Future<void> startDriverForeground() async {
+    if (!await ensurePermission()) return;
+    await _initForegroundTask();
+    await _ensureForegroundService(
+      title: "Indi Cabs Online",
+      text: "Ready for rides",
+    );
+  }
+
+  Future<void> stopDriverForeground() async {
+    _cancelStopService();
+    await FlutterForegroundTask.stopService();
+    await hideFloatingBubble();
+  }
+
   /* ---------------- Cleanup ---------------- */
 
   Future<void> _cleanupIfIdle() async {
@@ -343,16 +353,12 @@ class OverlayService {
       await FlutterOverlayWindow.closeOverlay();
     } catch (_) {}
 
-    _overlayVisible = false;
-    _requestShowing = false;
 
-    _stopServiceTimer?.cancel();
-    _stopServiceTimer = Timer(const Duration(seconds: 2), () async {
-      if (!_overlayVisible) {
-        debugPrint("Stopping Foreground Service (Debounced)...");
-        await FlutterForegroundTask.stopService();
-      }
-    });
+    _requestShowing = false;
+    
+    // We NO LONGER auto-stop the foreground service here. 
+    // It is exclusively managed by DriverStatus (online/offline)
+    // to ensure background location tracking remains active.
   }
 
   void _cancelStopService() {
@@ -387,7 +393,7 @@ class OverlayService {
         priority: NotificationPriority.LOW,
       ),
       iosNotificationOptions: const IOSNotificationOptions(
-        showNotification: true,
+        showNotification: false,
         playSound: false,
       ),
       foregroundTaskOptions: ForegroundTaskOptions(

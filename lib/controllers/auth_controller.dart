@@ -14,6 +14,7 @@ import 'package:project_taxi_driver_app/screens/ride_acepted.dart';
 import 'package:project_taxi_driver_app/screens/ride_started.dart';
 import 'package:project_taxi_driver_app/screens/ride_payment.dart';
 import 'package:project_taxi_driver_app/controllers/home_page_controller.dart';
+import 'package:project_taxi_driver_app/controllers/wallet_controller.dart';
 
 class AuthController extends GetxController {
   static AuthController get instance => Get.find();
@@ -302,6 +303,13 @@ class AuthController extends GetxController {
   }
 
   Future<void> logout() async {
+    // Force delete controllers to ensure their onClose() cancels Firestore streams,
+    // thereby preventing permission-denied crashes upon sign out.
+    Get.delete<HomePageController>(force: true);
+    try {
+      Get.delete<WalletController>(force: true);
+    } catch (_) {}
+    
     await _auth.signOut();
     Get.offAll(() => const LoginScreen());
   }

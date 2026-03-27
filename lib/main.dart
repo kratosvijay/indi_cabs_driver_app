@@ -3,9 +3,11 @@ import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'package:flutter_refresh_rate_control/flutter_refresh_rate_control.dart';
+import 'dart:io';
+import 'package:flutter_displaymode/flutter_displaymode.dart';
 
 import 'package:get/get.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -43,10 +45,21 @@ Future<void> main() async {
 
   // Set high refresh rate
   try {
-    await FlutterRefreshRateControl().requestHighRefreshRate();
+    if (Platform.isAndroid) {
+      await FlutterDisplayMode.setHighRefreshRate();
+    }
   } catch (e) {
     debugPrint("Error setting high refresh rate: $e");
   }
+
+  // Enable edge-to-edge support for Android 15 and above
+  SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(
+      systemNavigationBarColor: Colors.transparent,
+      statusBarColor: Colors.transparent,
+    ),
+  );
 
   // Initialize AuthController globally
   Get.put(AuthController());

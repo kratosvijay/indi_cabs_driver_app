@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
@@ -40,13 +42,41 @@ android {
         multiDexEnabled = true
     }
 
+    val keystorePropertiesFile = rootProject.file("key.properties")
+    val keystoreProperties = Properties()
+    if (keystorePropertiesFile.exists()) {
+        keystorePropertiesFile.inputStream().use { input ->
+            keystoreProperties.load(input)
+        }
+    }
+
+    signingConfigs {
+        create("release") {
+            val alias = keystoreProperties["keyAlias"] as String?
+            val keyPass = keystoreProperties["keyPassword"] as String?
+            val storePass = keystoreProperties["storePassword"] as String?
+            val storeFileProp = keystoreProperties["storeFile"] as String?
+
+            keyAlias = alias
+            keyPassword = keyPass
+            storePassword = storePass
+            if (storeFileProp != null) {
+                storeFile = file(storeFileProp)
+            }
+        }
+    }
+
     buildTypes {
 
 
         release {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (keystorePropertiesFile.exists()) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             
             // Apply proguard rules for things like flutter_overlay_window
             isMinifyEnabled = true
@@ -77,6 +107,8 @@ flutter {
 }
 
 dependencies {
+    implementation("androidx.activity:activity:1.8.2")
+    implementation("androidx.core:core-ktx:1.13.1")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
     
     // Import the Firebase BoM

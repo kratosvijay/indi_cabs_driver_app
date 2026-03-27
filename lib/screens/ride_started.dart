@@ -2,7 +2,6 @@
 
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:geolocator/geolocator.dart';
@@ -10,7 +9,6 @@ import 'package:get/get.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart' as maps;
 import 'package:project_taxi_driver_app/widgets/ride_request.dart';
 import 'package:project_taxi_driver_app/widgets/ride_status_slider.dart';
-import 'package:project_taxi_driver_app/widgets/back_to_back_overlay.dart';
 import 'package:project_taxi_driver_app/screens/ride_payment.dart';
 import 'package:project_taxi_driver_app/screens/navigation_screen.dart'; // Import NavigationScreen
 import 'package:project_taxi_driver_app/screens/ride_end_otp_screen.dart';
@@ -19,6 +17,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:google_navigation_flutter/google_navigation_flutter.dart'
     as nav; // Keep for data types if needed, or remove if unused in this file.
 import 'package:flutter_polyline_points/flutter_polyline_points.dart';
@@ -515,8 +514,6 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
 
           _lastRecordedLocation = newLoc;
 
-          // --- ROBUST B2B: Check for Availability (AvailableSoon) ---
-          _checkDriverAvailability(newLoc);
 
           setState(() {
             _driverLocation = newLoc;
@@ -532,67 +529,8 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
   }
 
   // Track previous status to avoid redundant writes
-  String _lastSetStatus = '';
+  final String _lastSetStatus = '';
 
-  Future<void> _checkDriverAvailability(maps.LatLng currentLocation) async {
-    // Only applies if we have a valid dropoff and NO pending intermediate stops
-    if (_dropLocation == null) return;
-
-    // If there are pending stops, we are NOT finishing the ride yet.
-    final hasPendingStops = _rideRequest.stops.any((s) => s.isPending);
-    if (hasPendingStops) {
-      if (_lastSetStatus == 'availableSoon') {
-        _updateDriverStatus('on_trip'); // Revert if we added a stop
-      }
-      return;
-    }
-
-    final distToDropoff = Geolocator.distanceBetween(
-      currentLocation.latitude,
-      currentLocation.longitude,
-      _dropLocation!.latitude,
-      _dropLocation!.longitude,
-    );
-
-    // Threshold: 3km (3000 meters)
-    // You could also add ETA logic here if you had routing duration.
-    if (distToDropoff <= 3000) {
-      if (_lastSetStatus != 'availableSoon') {
-        debugPrint(
-          "B2B: Driver is within 3km ($distToDropoff m). Setting AvailableSoon.",
-        );
-        await _updateDriverStatus('availableSoon');
-      }
-    } else {
-      // Revert if we moved away (e.g. detour)
-      if (_lastSetStatus == 'availableSoon') {
-        debugPrint(
-          "B2B: Driver moved away ($distToDropoff m). Reverting to OnTrip.",
-        );
-        await _updateDriverStatus('on_trip');
-      }
-    }
-  }
-
-  Future<void> _updateDriverStatus(String status) async {
-    try {
-      final driverId = FirebaseAuth.instance.currentUser?.uid;
-
-      if (driverId == null) return;
-
-      await _firestore.collection('drivers').doc(driverId).update({
-        'status': status,
-        'lastLocation': GeoPoint(
-          _driverLocation!.latitude,
-          _driverLocation!.longitude,
-        ),
-        // We might want to store 'heading' for better matching later
-      });
-      _lastSetStatus = status;
-    } catch (e) {
-      debugPrint("Error updating driver status to $status: $e");
-    }
-  }
 
   void _updateMarkers() {
     _markers.clear();
@@ -825,37 +763,17 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
   }
 
   Future<void> _makePhoneCall() async {
-    Get.snackbar(
-      'Call',
-      'Requesting call...',
-      snackPosition: SnackPosition.TOP,
-      backgroundColor: Colors.blue,
-      colorText: Colors.white,
+    final Uri launchUri = Uri(
+      scheme: 'tel',
+      path: '04446972845',
     );
-
-    try {
-      final result = await FirebaseFunctions.instanceFor(
-        region: 'asia-south1',
-      ).httpsCallable('initiateCall').call({'rideId': _rideRequest.rideId});
-
-      if (mounted) {
-        if (result.data['success'] == true) {
-          Get.snackbar(
-            'Success',
-            'Exotel Call Initiated. You will receive a call shortly.',
-            snackPosition: SnackPosition.TOP,
-            backgroundColor: Colors.green,
-            colorText: Colors.white,
-          );
-        } else {
-          throw Exception("Call initiation failed");
-        }
-      }
-    } catch (e) {
+    if (await canLaunchUrl(launchUri)) {
+      await launchUrl(launchUri);
+    } else {
       if (mounted) {
         Get.snackbar(
           'Error',
-          'Call failed: $e',
+          'Could not launch phone dialer',
           snackPosition: SnackPosition.TOP,
           backgroundColor: Colors.red,
           colorText: Colors.white,
@@ -1326,8 +1244,6 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
                 myLocationButtonEnabled: true,
               ),
 
-              // Back-to-Back Ride Offer
-              const BackToBackOverlayWidget(),
 
               Positioned(
                 bottom: 0,

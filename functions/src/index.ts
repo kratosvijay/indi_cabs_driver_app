@@ -325,7 +325,7 @@ export const distributeRideToDrivers = onDocumentWritten(
                         const driverDoc = await db.collection('drivers').doc(driverId).get();
                         if (driverDoc.exists) {
                             const dData = driverDoc.data();
-                            if (dData && dData.isOnline && (dData.status === "active" || dData.status === "availableSoon")) {
+                            if (dData && dData.isOnline && (!dData.status || dData.status === "active" || dData.status === "availableSoon")) {
                                 candidates.push({
                                     id: driverId,
                                     distance: dist,
@@ -1155,7 +1155,11 @@ export const cleanupBlockedDrivers = onSchedule("every 24 hours",
  * Generate Cashfree Payment Session for adding money.
  * Returns the payment_session_id required by the Cashfree Flutter SDK.
  */
-export const createCashfreeOrder = onCall({ region: "asia-south1" }, async (request) => {
+export const createCashfreeOrder = onCall({
+    region: "asia-south1",
+    vpcConnector: "cashfree-vpc",
+    vpcConnectorEgressSettings: "ALL_TRAFFIC",
+}, async (request) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'Must be logged in');
 
     const amount = request.data.amount;

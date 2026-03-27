@@ -11,6 +11,7 @@ import 'package:project_taxi_driver_app/screens/aadhar_verification.dart';
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:project_taxi_driver_app/utils/upload_progress_dialog.dart';
 
 class LicenseVerificationScreen extends StatefulWidget {
   final User? user; // Made nullable for fleet use
@@ -218,19 +219,37 @@ class _LicenseVerificationScreenState extends State<LicenseVerificationScreen> {
 
       final uid = widget.targetUid ?? widget.user!.uid;
 
-      // Upload Front Photo
-      final frontRef = FirebaseStorage.instance.ref().child(
-        'driver_documents/$uid/license_front.jpg',
-      );
-      await frontRef.putFile(_frontImage!);
-      final frontUrl = await frontRef.getDownloadURL();
+      if (!mounted) return;
+      final progressNotifier = ValueNotifier<double>(0.0);
+      UploadProgressDialog.show(context, progressNotifier);
 
-      // Upload Back Photo
-      final backRef = FirebaseStorage.instance.ref().child(
-        'driver_documents/$uid/license_back.jpg',
-      );
-      await backRef.putFile(_backImage!);
-      final backUrl = await backRef.getDownloadURL();
+      Map<int, double> fileProgress = {};
+      int totalFiles = 2;
+
+      Future<String> uploadFile(File file, String path, int index) async {
+        final ref = FirebaseStorage.instance.ref().child('driver_documents/$uid/$path');
+        final uploadTask = ref.putFile(file);
+        
+        uploadTask.snapshotEvents.listen((snapshot) {
+          double p = snapshot.bytesTransferred / snapshot.totalBytes;
+          fileProgress[index] = p;
+          double totalProgress = fileProgress.values.fold(0.0, (a, b) => a + b) / totalFiles;
+          progressNotifier.value = totalProgress;
+        });
+
+        final snapshot = await uploadTask;
+        return await snapshot.ref.getDownloadURL();
+      }
+
+      final urls = await Future.wait([
+        uploadFile(_frontImage!, 'license_front.jpg', 0),
+        uploadFile(_backImage!, 'license_back.jpg', 1),
+      ]);
+
+      if (mounted) Navigator.pop(context); // Close dialog
+
+      final frontUrl = urls[0];
+      final backUrl = urls[1];
 
       await _firestore.collection('drivers').doc(uid).update({
         'licenseNumber': licenseNo,

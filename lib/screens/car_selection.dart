@@ -11,6 +11,7 @@ import 'package:project_taxi_driver_app/screens/document_verificaton.dart';
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:project_taxi_driver_app/utils/upload_progress_dialog.dart';
 
 class CarSelectionScreen extends StatefulWidget {
   final User user;
@@ -48,20 +49,20 @@ class _CarSelectionScreenState extends State<CarSelectionScreen> {
       'Atul': ['Gem', 'Gem Paxx'],
     },
     'Car': {
-      'Maruti Suzuki': [
-        'Swift',
-        'WagonR',
-        'Dzire',
-        'Baleno',
-        'Ertiga',
-        'Alto',
-        'Celerio',
-      ],
-      'Hyundai': ['i10', 'i20', 'Aura', 'Xcent', 'Santro', 'Creta', 'Venue'],
-      'Tata': ['Tiago', 'Tigor', 'Nexon', 'Altroz', 'Punch', 'Indigo'],
-      'Mahindra': ['Bolero', 'XUV300', 'Verito'],
-      'Honda': ['Amaze', 'City', 'Jazz'],
-      'Toyota': ['Etios', 'Innova', 'Glanza'],
+      'Maruti': ['Swift', 'WagonR', 'Dzire', 'Baleno', 'Ertiga', 'Alto', 'Celerio', 'Ritz', 'Omni', 'Eecco'],
+      'Hyundai': ['i10', 'i20', 'Aura', 'Xcent', 'Santro', 'Creta', 'Venue', 'Verna', 'Eon'],
+      'Tata': ['Tiago', 'Tigor', 'Nexon', 'Altroz', 'Punch', 'Indigo', 'Indica', 'Sumo', 'Safari'],
+      'Mahindra': ['Bolero', 'XUV300', 'XUV500', 'Verito', 'Scorpio', 'Thar', 'Marazzo', 'Xylo'],
+      'Honda': ['Amaze', 'City', 'Jazz', 'Civic', 'Brio', 'WR-V'],
+      'Toyota': ['Etios', 'Liva', 'Innova', 'Innova Crysta', 'Glanza', 'Corolla', 'Corolla Altis', 'Fortuner', 'Yaris', 'Qualis'],
+      'Chevrolet': ['Beat', 'Spark', 'Sail', 'Cruze', 'Tavera', 'Enjoy', 'Optra', 'Aveo'],
+      'Citroen': ['C3', 'eC3', 'C5 Aircross'],
+      'Ford': ['Figo', 'Aspire', 'EcoSport', 'Endeavour', 'Ikon', 'Fiesta'],
+      'Renault': ['Kwid', 'Triber', 'Duster', 'Kiger', 'Capture', 'Lodgy'],
+      'Volkswagen': ['Polo', 'Vento', 'Ameo', 'Taigun', 'Virtus'],
+      'Nissan': ['Micra', 'Sunny', 'Magnite', 'Terrano'],
+      'Skoda': ['Rapid', 'Slavia', 'Kushaq', 'Octavia', 'Superb', 'Fabia'],
+      'Kia': ['Sonet', 'Seltos', 'Carens'],
     },
   };
 
@@ -394,18 +395,36 @@ class _CarSelectionScreenState extends State<CarSelectionScreen> {
           ? 'fleet_documents/vehicles/${DateTime.now().millisecondsSinceEpoch}_$vehicleNumber'
           : 'driver_documents/${widget.user.uid}';
 
-      Future<String> uploadFile(File file, String path) async {
+      if (!mounted) return;
+      final progressNotifier = ValueNotifier<double>(0.0);
+      UploadProgressDialog.show(context, progressNotifier);
+
+      Map<int, double> fileProgress = {};
+      int totalFiles = 4;
+
+      Future<String> uploadFile(File file, String path, int index) async {
         final ref = FirebaseStorage.instance.ref().child('$storageBase/$path');
-        await ref.putFile(file);
-        return await ref.getDownloadURL();
+        final uploadTask = ref.putFile(file);
+        
+        uploadTask.snapshotEvents.listen((snapshot) {
+          double p = snapshot.bytesTransferred / snapshot.totalBytes;
+          fileProgress[index] = p;
+          double totalProgress = fileProgress.values.fold(0.0, (a, b) => a + b) / totalFiles;
+          progressNotifier.value = totalProgress;
+        });
+
+        final snapshot = await uploadTask;
+        return await snapshot.ref.getDownloadURL();
       }
 
       final urls = await Future.wait([
-        uploadFile(_vehicleFront!, 'car_front.jpg'),
-        uploadFile(_vehicleLeft!, 'car_left.jpg'),
-        uploadFile(_vehicleRight!, 'car_right.jpg'),
-        uploadFile(_vehicleBack!, 'car_back.jpg'),
+        uploadFile(_vehicleFront!, 'car_front.jpg', 0),
+        uploadFile(_vehicleLeft!, 'car_left.jpg', 1),
+        uploadFile(_vehicleRight!, 'car_right.jpg', 2),
+        uploadFile(_vehicleBack!, 'car_back.jpg', 3),
       ]);
+      
+      if (mounted) Navigator.pop(context); // Close dialog
 
       String? newVehicleId;
 
@@ -523,19 +542,35 @@ class _CarSelectionScreenState extends State<CarSelectionScreen> {
     'Baleno': 'Hatchback',
     'Ertiga': 'SUV',
     'Alto': 'Hatchback',
-    'Celerio': 'Hatchback',
+    'Celerio': 'Hatchback', 'Ritz': 'Hatchback', 'Omni': 'SUV', 'Eecco': 'SUV',
     // Hyundai
     'i10': 'Hatchback', 'i20': 'Hatchback', 'Aura': 'Sedan',
-    'Xcent': 'Sedan', 'Santro': 'Hatchback', 'Creta': 'SUV', 'Venue': 'SUV',
+    'Xcent': 'Sedan', 'Santro': 'Hatchback', 'Creta': 'SUV', 'Venue': 'SUV', 'Verna': 'Sedan', 'Eon': 'Hatchback',
     // Tata
     'Tiago': 'Hatchback', 'Tigor': 'Sedan', 'Nexon': 'SUV',
-    'Altroz': 'Hatchback', 'Punch': 'SUV', 'Indigo': 'Sedan',
+    'Altroz': 'Hatchback', 'Punch': 'SUV', 'Indigo': 'Sedan', 'Indica': 'Hatchback', 'Sumo': 'SUV', 'Safari': 'SUV',
     // Mahindra
-    'Bolero': 'SUV', 'XUV300': 'SUV', 'Verito': 'Sedan',
+    'Bolero': 'SUV', 'XUV300': 'SUV', 'XUV500': 'SUV', 'Verito': 'Sedan', 'Scorpio': 'SUV', 'Thar': 'SUV', 'Marazzo': 'SUV', 'Xylo': 'SUV',
     // Honda
-    'Amaze': 'Sedan', 'City': 'Sedan', 'Jazz': 'Hatchback',
+    'Amaze': 'Sedan', 'City': 'Sedan', 'Jazz': 'Hatchback', 'Civic': 'Sedan', 'Brio': 'Hatchback', 'WR-V': 'SUV',
     // Toyota
-    'Etios': 'Sedan', 'Innova': 'SUV', 'Glanza': 'Hatchback',
+    'Etios': 'Sedan', 'Liva': 'Hatchback', 'Innova': 'SUV', 'Innova Crysta': 'SUV', 'Glanza': 'Hatchback', 'Corolla': 'Sedan', 'Corolla Altis': 'Sedan', 'Fortuner': 'SUV', 'Yaris': 'Sedan', 'Qualis': 'SUV',
+    // Chevrolet
+    'Beat': 'Hatchback', 'Spark': 'Hatchback', 'Sail': 'Sedan', 'Cruze': 'Sedan', 'Tavera': 'SUV', 'Enjoy': 'SUV', 'Optra': 'Sedan', 'Aveo': 'Sedan',
+    // Citroen
+    'C3': 'Hatchback', 'eC3': 'Hatchback', 'C5 Aircross': 'SUV',
+    // Ford
+    'Figo': 'Hatchback', 'Aspire': 'Sedan', 'EcoSport': 'SUV', 'Endeavour': 'SUV', 'Ikon': 'Sedan', 'Fiesta': 'Sedan',
+    // Renault
+    'Kwid': 'Hatchback', 'Triber': 'SUV', 'Duster': 'SUV', 'Kiger': 'SUV', 'Capture': 'SUV', 'Lodgy': 'SUV',
+    // Volkswagen
+    'Polo': 'Hatchback', 'Vento': 'Sedan', 'Ameo': 'Sedan', 'Taigun': 'SUV', 'Virtus': 'Sedan',
+    // Nissan
+    'Micra': 'Hatchback', 'Sunny': 'Sedan', 'Magnite': 'SUV', 'Terrano': 'SUV',
+    // Skoda
+    'Rapid': 'Sedan', 'Slavia': 'Sedan', 'Kushaq': 'SUV', 'Octavia': 'Sedan', 'Superb': 'Sedan', 'Fabia': 'Hatchback',
+    // Kia
+    'Sonet': 'SUV', 'Seltos': 'SUV', 'Carens': 'SUV',
   };
 
   @override
