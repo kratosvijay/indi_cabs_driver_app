@@ -10,6 +10,7 @@ import 'package:project_taxi_driver_app/presentation/screens/fleet/vehicles/flee
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:project_taxi_driver_app/screens/login.dart';
 import 'package:project_taxi_driver_app/utils/upload_progress_dialog.dart';
 
 // Enum to manage the verification status
@@ -538,35 +539,37 @@ class _DocumentVerificationScreenState
   @override
   Widget build(BuildContext context) {
     if (_status == VerificationStatus.pending) {
-      return PopScope(
-        canPop: false,
-        child: _buildStatusScreen(
-          icon: Icons.hourglass_top,
-          title: _getTranslatedString('pendingTitle'),
-          message: _getTranslatedString('pendingMsg'),
-        ),
+      return _buildStatusScreen(
+        icon: Icons.hourglass_top,
+        title: _getTranslatedString('pendingTitle'),
+        message: _getTranslatedString('pendingMsg'),
       );
     }
     if (_status == VerificationStatus.rejected) {
-      return PopScope(
-        canPop: false,
-        child: _buildStatusScreen(
-          icon: Icons.error_outline,
-          title: _getTranslatedString('rejectedTitle'),
-          message:
-              "${_getTranslatedString('reason')} $_rejectionReason${_getTranslatedString('rejectedMsg')}",
-          isRejected: true,
-        ),
+      return _buildStatusScreen(
+        icon: Icons.error_outline,
+        title: _getTranslatedString('rejectedTitle'),
+        message:
+            "${_getTranslatedString('reason')} $_rejectionReason${_getTranslatedString('rejectedMsg')}",
+        isRejected: true,
       );
     }
 
-    return PopScope(
-      canPop: false,
-      child: Scaffold(
-        appBar: ProAppBar(
-          titleText: _getTranslatedString('title'),
-          automaticallyImplyLeading: false,
+    return Scaffold(
+      appBar: ProAppBar(
+        titleText: _getTranslatedString('title'),
+        automaticallyImplyLeading: true,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            if (Navigator.canPop(context)) {
+              Get.back();
+            } else {
+              Get.offAll(() => const LoginScreen());
+            }
+          },
         ),
+      ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20.0),
         child: Column(
@@ -632,7 +635,7 @@ class _DocumentVerificationScreenState
           isLoading: _isLoading,
         ),
       ),
-    ));
+    );
   }
 
   Widget _buildProUploadCard({
@@ -730,7 +733,17 @@ class _DocumentVerificationScreenState
     return Scaffold(
       appBar: ProAppBar(
         titleText: _getTranslatedString('title'),
-        automaticallyImplyLeading: false,
+        automaticallyImplyLeading: true,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            if (Navigator.canPop(context)) {
+              Get.back();
+            } else {
+              Get.offAll(() => const LoginScreen());
+            }
+          },
+        ),
       ),
       body: Center(
         child: Padding(

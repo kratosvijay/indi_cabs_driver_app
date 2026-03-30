@@ -323,17 +323,35 @@ export const distributeRideToDrivers = onDocumentWritten(
                     if (dist <= currentRadius) {
                         previouslyCheckedDrivers.add(driverId);
                         const driverDoc = await db.collection('drivers').doc(driverId).get();
-                        if (driverDoc.exists) {
-                            const dData = driverDoc.data();
-                            if (dData && dData.isOnline && (!dData.status || dData.status === "active" || dData.status === "availableSoon")) {
-                                candidates.push({
-                                    id: driverId,
-                                    distance: dist,
-                                    data: dData,
-                                    isB2B: dData.status === 'availableSoon'
-                                });
-                                newCandidatesFound = true;
-                            }
+                        
+                        if (!driverDoc.exists) {
+                            console.log(`[Dispatch Flow] Driver ${driverId} document missing in Firestore. Skipping.`);
+                            continue;
+                        }
+
+                        const dData = driverDoc.data();
+                        if (!dData) continue;
+
+                        // Unified filtering logic
+                        const isApproved = dData.isApproved === true;
+                        const isOnline = dData.isOnline === true;
+                        const isValidStatus = !dData.status || dData.status === "active" || dData.status === "availableSoon";
+
+                        if (isApproved && isOnline && isValidStatus) {
+                            candidates.push({
+                                id: driverId,
+                                distance: dist,
+                                data: dData,
+                                isB2B: dData.status === 'availableSoon'
+                            });
+                            newCandidatesFound = true;
+                        } else {
+                            // Detailed logging for why a nearby driver was skipped
+                            const reasons = [];
+                            if (!isApproved) reasons.push("not approved");
+                            if (!isOnline) reasons.push("offline");
+                            if (!isValidStatus) reasons.push(`status: ${dData.status}`);
+                            console.log(`[Dispatch Flow] Driver ${driverId} at ${dist.toFixed(2)}km skipped. Reason: ${reasons.join(", ")}`);
                         }
                     }
                 }
@@ -1902,6 +1920,7 @@ export const distributeRentalToDrivers = onDocumentWritten(
     {
         document: "rental_requests/{rideId}",
         timeoutSeconds: 300,
+        region: "asia-south1",
     },
     async (event) => {
         const change = event.data;
@@ -1924,63 +1943,121 @@ export const distributeRentalToDrivers = onDocumentWritten(
             return null;
         }
 
-        console.log(`Searching drivers for rental ${rideId}...`);
+        console.log(`[Rental Dispatch] Searching drivers for rental ${rideId}...`);
 
         try {
             const pickupGeo = afterData.pickupLocation;
-            // Handle both GeoPoint and Map (User Request schema variation)
             let lat = 0, lng = 0;
             if (pickupGeo.latitude) { lat = pickupGeo.latitude; lng = pickupGeo.longitude; }
             else if (pickupGeo.lat) { lat = pickupGeo.lat; lng = pickupGeo.lng; }
 
             if (!lat || !lng) {
-                console.error("No valid pickup location found");
+                console.error("[Rental Dispatch] No valid pickup location found");
                 return null;
             }
 
-            const driversSnap = await db.collection("drivers")
-                .where("isOnline", "==", true)
-                .where("status", "==", "active")
-                .get();
+            const driversRef = rtdb.ref('driver_locations');
+            const activeDriversSnap = await driversRef.once('value');
+            const allDrivers = activeDriversSnap.val() || {};
+            const nowMs = Date.now();
 
-            const drivers: any[] = [];
+            // Refactored to matching Daily Ride sequential logic
+            let currentRadius = 2.0;
+            const maxRadius = 15.0; // Rentals can expand further
+            let candidates: any[] = [];
+            const previouslyCheckedDrivers = new Set<string>();
+            const rideRef = change.after.ref;
+            const waitTimeMs = 10000; // 10 seconds for rentals
 
-            driversSnap.forEach(doc => {
-                const dData = doc.data();
-                if (dData.currentLocation) {
-                    const dist = calculateDistance(
-                        lat, lng,
-                        dData.currentLocation.latitude,
-                        dData.currentLocation.longitude
-                    );
-                    if (dist <= 50) {
-                        drivers.push({ id: doc.id, distance: dist, data: dData });
+            let rideFinished = false;
+
+            while (currentRadius <= maxRadius && !rideFinished) {
+                console.log(`[Rental Dispatch] Expanding radius to ${currentRadius}km...`);
+                let newCandidatesFound = false;
+
+                for (const [driverId, locData] of Object.entries<any>(allDrivers)) {
+                    if (previouslyCheckedDrivers.has(driverId)) continue;
+                    
+                    // Heartbeat check (20s)
+                    if ((nowMs - locData.updatedAt) > 20000) {
+                        continue;
+                    }
+
+                    const dist = calculateDistance(lat, lng, locData.lat, locData.lng);
+
+                    if (dist <= currentRadius) {
+                        previouslyCheckedDrivers.add(driverId);
+                        const driverDoc = await db.collection("drivers").doc(driverId).get();
+                        
+                        if (!driverDoc.exists) continue;
+                        const dData = driverDoc.data();
+                        if (!dData) continue;
+
+                        const isApproved = dData.isApproved === true;
+                        const isOnline = dData.isOnline === true;
+                        const isValidStatus = dData.status === "active";
+
+                        if (isApproved && isOnline && isValidStatus) {
+                            candidates.push({ id: driverId, distance: dist, data: dData });
+                            newCandidatesFound = true;
+                        } else {
+                            console.log(`[Rental Dispatch] Driver ${driverId} skipped. Approved: ${isApproved}, Online: ${isOnline}, Status: ${dData.status}`);
+                        }
                     }
                 }
-            });
 
-            if (drivers.length === 0) {
-                console.log("No drivers found nearby for rental.");
-                return null;
+                if (!newCandidatesFound && candidates.length === 0) {
+                    currentRadius += 2.0;
+                    continue;
+                }
+
+                candidates.sort((a, b) => a.distance - b.distance);
+
+                for (let i = 0; i < candidates.length; i++) {
+                    const driverId = candidates[i].id;
+                    
+                    // Check state
+                    const stateDoc = await rideRef.get();
+                    if (stateDoc.data()?.status !== "searching") {
+                        rideFinished = true;
+                        break;
+                    }
+
+                    const rejectedBy = stateDoc.data()?.rejectedBy || [];
+                    if (rejectedBy.includes(driverId)) continue;
+
+                    console.log(`[Rental Dispatch] Notifying driver ${driverId} for rental ${rideId}`);
+
+                    await rideRef.update({
+                        driverId: driverId,
+                        currentDriverIndex: i,
+                        potentialDrivers: candidates.map(d => d.id),
+                        notifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+                    });
+
+                    // Wait for acceptance
+                    await new Promise((resolve) => setTimeout(resolve, waitTimeMs));
+
+                    const finalCheck = await rideRef.get();
+                    if (finalCheck.data()?.status === "accepted") {
+                        rideFinished = true;
+                        break;
+                    } else {
+                        await rideRef.update({
+                            rejectedBy: admin.firestore.FieldValue.arrayUnion(driverId),
+                            driverId: admin.firestore.FieldValue.delete(),
+                        });
+                    }
+                }
+
+                if (!rideFinished) {
+                    candidates = [];
+                    currentRadius += 2.0;
+                }
             }
 
-            drivers.sort((a, b) => a.distance - b.distance);
-            console.log(`Found ${drivers.length} drivers for rental. Nearest: ${drivers[0].id}`);
-
-            const firstDriver = drivers[0];
-            const potentialDriverIds = drivers.map(d => d.id);
-
-            await change.after.ref.update({
-                driverId: firstDriver.id,
-                currentDriverIndex: 0,
-                potentialDrivers: potentialDriverIds,
-                notifiedAt: admin.firestore.FieldValue.serverTimestamp(),
-            });
-
-            console.log(`Assigned rental ${rideId} to ${firstDriver.id}`);
-
         } catch (e) {
-            console.error("Error distributing rental:", e);
+            console.error("[Rental Dispatch] Error:", e);
         }
         return null;
     }

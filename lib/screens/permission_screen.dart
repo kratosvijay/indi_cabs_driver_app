@@ -66,6 +66,10 @@ class _PermissionScreenState extends State<PermissionScreen>
   Future<void> _requestLocation() async {
     if (_locationGranted) return;
 
+    // Show prominent disclosure before requesting permission
+    final bool? accepted = await _showLocationDisclosure();
+    if (accepted != true) return;
+
     try {
       LocationPermission permission = await Geolocator.requestPermission();
       if (permission == LocationPermission.always ||
@@ -77,6 +81,52 @@ class _PermissionScreenState extends State<PermissionScreen>
     } catch (e) {
       debugPrint('Error requesting location permission: $e');
     }
+  }
+
+  Future<bool?> _showLocationDisclosure() async {
+    return await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        final bool isDark = Theme.of(context).brightness == Brightness.dark;
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          backgroundColor: isDark ? const Color(0xFF2C2C2C) : Colors.white,
+          title: Row(
+            children: [
+              Icon(Icons.location_on, color: AppColors.primary),
+              const SizedBox(width: 10),
+              const Text("Location Usage"),
+            ],
+          ),
+          content: const Text(
+            "Indicabs Partner collects location data to enable nearby ride matching and trip tracking features even when the app is closed or not in use.\n\n"
+            "This data is also used for calculating trip distances and ensuring driver/passenger safety.",
+            style: TextStyle(fontSize: 15, height: 1.5),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: Text(
+                "Deny",
+                style: TextStyle(color: isDark ? Colors.white60 : Colors.black54),
+              ),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              child: const Text("Accept"),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   Future<void> _requestNotification() async {
@@ -214,7 +264,7 @@ class _PermissionScreenState extends State<PermissionScreen>
                 icon: Icons.location_on,
                 title: "Location Services",
                 description:
-                    "Required to find passengers near you and track rides.",
+                    "Required for ride matching and tracking, even when the app is closed or not in use.",
                 isGranted: _locationGranted,
                 onTap: _requestLocation,
               ),

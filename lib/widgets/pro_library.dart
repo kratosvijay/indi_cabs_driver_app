@@ -213,6 +213,7 @@ class ProAppBar extends StatelessWidget implements PreferredSizeWidget {
   final bool automaticallyImplyLeading;
   final double toolbarHeight;
   final PreferredSizeWidget? bottom;
+  final Color? backgroundColor;
 
   const ProAppBar({
     super.key,
@@ -223,6 +224,7 @@ class ProAppBar extends StatelessWidget implements PreferredSizeWidget {
     this.automaticallyImplyLeading = true,
     this.toolbarHeight = kToolbarHeight,
     this.bottom,
+    this.backgroundColor,
   }) : assert(
          title != null || titleText != null,
          'Either title or titleText must be provided',
@@ -241,14 +243,16 @@ class ProAppBar extends StatelessWidget implements PreferredSizeWidget {
             ),
           ),
       centerTitle: true,
-      backgroundColor: Colors.transparent,
+      backgroundColor: backgroundColor ?? Colors.transparent,
       elevation: 0,
       toolbarHeight: toolbarHeight,
-      flexibleSpace: Container(
-        decoration: BoxDecoration(
-          gradient: AppColors.getAppBarGradient(context),
-        ),
-      ),
+      flexibleSpace: backgroundColor == Colors.transparent
+          ? null
+          : Container(
+              decoration: BoxDecoration(
+                gradient: AppColors.getAppBarGradient(context),
+              ),
+            ),
       leading: leading,
       automaticallyImplyLeading: automaticallyImplyLeading,
       actions: actions,

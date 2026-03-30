@@ -1,10 +1,10 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import 'package:project_taxi_driver_app/controllers/auth_controller.dart';
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
+import 'package:project_taxi_driver_app/screens/sign_up.dart';
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
+import 'package:project_taxi_driver_app/screens/otp.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class PhoneAuthScreen extends StatefulWidget {
@@ -18,12 +18,7 @@ class PhoneAuthScreen extends StatefulWidget {
 
 class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
   final TextEditingController _phoneController = TextEditingController();
-  final TextEditingController _otpController = TextEditingController();
-  final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-
-  String? _verificationId;
-  bool _isOtpSent = false;
   bool _isLoading = false;
   String _selectedLanguageCode = 'en';
 
@@ -91,18 +86,17 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
   @override
   void dispose() {
     _phoneController.dispose();
-    _otpController.dispose();
     super.dispose();
   }
 
-  Future<void> _sendOtp() async {
+  void _navigateToOtp() async {
     final String phoneNumber = "+91${_phoneController.text.trim()}";
     if (phoneNumber.length != 13) {
       Get.snackbar(
         'Error',
         "Please enter a valid 10-digit mobile number.",
-        backgroundColor: Colors.red,
-        colorText: Colors.white,
+        backgroundColor: Colors.red.withValues(alpha: 0.1),
+        colorText: Colors.red,
       );
       return;
     }
@@ -112,8 +106,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
     try {
       final String rawNumber = _phoneController.text.trim();
 
-      // Check both collections to see if the user exists
-      // Check for both formatted and raw number to handle data inconsistencies
+      // Preliminary check for registered user
       final driverCheck = await _firestore
           .collection('drivers')
           .where('phoneNumber', whereIn: [phoneNumber, rawNumber])
@@ -130,142 +123,26 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
           Get.snackbar(
             'Error',
             _getTranslatedString('notRegistered'),
-            backgroundColor: Colors.red,
-            colorText: Colors.white,
+            backgroundColor: Colors.red.withValues(alpha: 0.1),
+            colorText: Colors.red,
           );
           setState(() => _isLoading = false);
         }
         return;
       }
 
-      await _auth.verifyPhoneNumber(
+      setState(() => _isLoading = false);
+      
+      // Instant Navigation to revamped OtpScreen
+      Get.to(() => OtpScreen(
         phoneNumber: phoneNumber,
-        verificationCompleted: (PhoneAuthCredential credential) async {
-          await _signInWithCredential(credential);
-        },
-        verificationFailed: (FirebaseAuthException e) {
-          if (mounted) {
-            setState(() => _isLoading = false);
-            Get.snackbar(
-              'Error',
-              "Verification failed: ${e.message}",
-              backgroundColor: Colors.red,
-              colorText: Colors.white,
-            );
-          }
-        },
-        codeSent: (String verificationId, int? resendToken) {
-          if (mounted) {
-            setState(() {
-              _verificationId = verificationId;
-              _isOtpSent = true;
-              _isLoading = false;
-            });
-            Get.snackbar(
-              'Success',
-              "OTP Sent Successfully",
-              backgroundColor: Colors.green,
-              colorText: Colors.white,
-            );
-          }
-        },
-        codeAutoRetrievalTimeout: (String verificationId) {
-          if (mounted) {
-            setState(() {
-              _verificationId = verificationId;
-            });
-          }
-        },
-      );
-    } catch (e) {
-      if (mounted) {
-        Get.snackbar(
-          'Error',
-          "An error occurred: ${e.toString()}",
-          backgroundColor: Colors.red,
-          colorText: Colors.white,
-        );
-        setState(() => _isLoading = false);
-      }
-    }
-  }
-
-  Future<void> _verifyOtp() async {
-    if (_verificationId == null || _otpController.text.trim().length != 6) {
-      Get.snackbar(
-        'Error',
-        "Please enter a valid 6-digit OTP.",
-        backgroundColor: Colors.red,
-        colorText: Colors.white,
-      );
-      return;
-    }
-
-    setState(() => _isLoading = true);
-
-    try {
-      final credential = PhoneAuthProvider.credential(
-        verificationId: _verificationId!,
-        smsCode: _otpController.text.trim(),
-      );
-      await _signInWithCredential(credential);
-    } on FirebaseAuthException catch (e) {
-      if (mounted) {
-        setState(() => _isLoading = false);
-        Get.snackbar(
-          'Error',
-          e.code == 'invalid-verification-code'
-              ? _getTranslatedString('failedOtp')
-              : "Authentication failed: ${e.message}",
-          backgroundColor: Colors.red,
-          colorText: Colors.white,
-        );
-      }
+        role: UserRole.individual, // Default or derived role
+        userData: const {}, // Login context
+      ));
     } catch (e) {
       if (mounted) {
         setState(() => _isLoading = false);
-        Get.snackbar(
-          'Error',
-          _getTranslatedString('unexpectedError'),
-          backgroundColor: Colors.red,
-          colorText: Colors.white,
-        );
-      }
-    }
-  }
-
-  Future<void> _signInWithCredential(PhoneAuthCredential credential) async {
-    try {
-      final UserCredential result = await _auth.signInWithCredential(
-        credential,
-      );
-      final User? user = result.user;
-
-      if (user != null && mounted) {
-        setState(() => _isLoading = false);
-
-        // Use AuthController to decide route
-        await AuthController.instance.decideRoute();
-      } else {
-        if (mounted) {
-          Get.snackbar(
-            'Error',
-            "Authentication failed.",
-            backgroundColor: Colors.red,
-            colorText: Colors.white,
-          );
-          setState(() => _isLoading = false);
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        Get.snackbar(
-          'Error',
-          "Error during sign in.",
-          backgroundColor: Colors.red,
-          colorText: Colors.white,
-        );
-        setState(() => _isLoading = false);
+        Get.snackbar('Error', e.toString());
       }
     }
   }
@@ -292,81 +169,36 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                if (!_isOtpSent) ...[
-                  FadeInSlide(
-                    delay: 0.2,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Text(
-                          _getTranslatedString('enterMobile'),
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                          ),
+                FadeInSlide(
+                  delay: 0.2,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        _getTranslatedString('enterMobile'),
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
                         ),
-                        const SizedBox(height: 30),
-                        ProTextField(
-                          controller: _phoneController,
-                          hintText: _getTranslatedString('mobileLabel'),
-                          icon: Icons.phone,
-                          keyboardType: TextInputType.phone,
-                        ),
-                        const SizedBox(height: 30),
-                        ProButton(
-                          text: _getTranslatedString('sendOtp'),
-                          onPressed: _sendOtp,
-                          isLoading: _isLoading,
-                          // backgroundColor: Colors.white,
-                          // textColor: AppColors.primary,
-                        ),
-                      ],
-                    ),
+                      ),
+                      const SizedBox(height: 30),
+                      ProTextField(
+                        controller: _phoneController,
+                        hintText: _getTranslatedString('mobileLabel'),
+                        icon: Icons.phone,
+                        keyboardType: TextInputType.phone,
+                      ),
+                      const SizedBox(height: 30),
+                      ProButton(
+                        text: _getTranslatedString('sendOtp'),
+                        onPressed: _isLoading ? null : _navigateToOtp,
+                        isLoading: _isLoading,
+                      ),
+                    ],
                   ),
-                ] else ...[
-                  FadeInSlide(
-                    delay: 0.2,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Text(
-                          _getTranslatedString('enterOtp'),
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                          ),
-                        ),
-                        const SizedBox(height: 30),
-                        ProTextField(
-                          controller: _otpController,
-                          hintText: '------',
-                          icon: Icons.lock_outline,
-                          keyboardType: TextInputType.number,
-                        ),
-                        const SizedBox(height: 30),
-                        ProButton(
-                          text: _getTranslatedString('verifyOtp'),
-                          onPressed: _verifyOtp,
-                          isLoading: _isLoading,
-                          // backgroundColor: Colors.white,
-                          // textColor: AppColors.primary,
-                        ),
-                        const SizedBox(height: 30),
-                        TextButton(
-                          onPressed: _isLoading ? null : _sendOtp,
-                          style: TextButton.styleFrom(
-                            foregroundColor: Colors.white70,
-                          ),
-                          child: Text(_getTranslatedString('resend')),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
+                ),
               ],
             ),
           ),

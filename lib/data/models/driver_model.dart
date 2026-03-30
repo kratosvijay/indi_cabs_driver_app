@@ -4,6 +4,7 @@ import 'package:project_taxi_driver_app/domain/entities/driver.dart';
 class DriverModel extends Driver {
   DriverModel({
     required super.id,
+    super.displayId,
     required super.name,
     required super.email,
     required super.phoneNumber,
@@ -21,6 +22,7 @@ class DriverModel extends Driver {
     final data = doc.data() as Map<String, dynamic>;
     return DriverModel(
       id: doc.id,
+      displayId: data['displayId'],
       name: data['name'] ?? '',
       email: data['email'] ?? '',
       phoneNumber: data['phoneNumber'] ?? '',
@@ -38,6 +40,7 @@ class DriverModel extends Driver {
 
   Map<String, dynamic> toJson() {
     return {
+      'displayId': displayId,
       'name': name,
       'email': email,
       'phoneNumber': phoneNumber,

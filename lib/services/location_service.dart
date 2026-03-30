@@ -87,4 +87,55 @@ class LocationService {
     }
     return null;
   }
+
+  /// Returns structured location data (name and address)
+  Future<Map<String, String>?> getLocalizedLocationData(
+    LatLng location,
+    String languageCode,
+  ) async {
+    try {
+      final apiKey = dotenv.env['GOOGLE_MAPS_API_KEY'];
+      if (apiKey == null) return null;
+
+      final url = Uri.parse(
+        'https://maps.googleapis.com/maps/api/geocode/json?latlng=${location.latitude},${location.longitude}&key=$apiKey&language=$languageCode',
+      );
+
+      final response = await http.get(url);
+      if (response.statusCode != 200) return null;
+
+      final parsed = json.decode(response.body);
+      if (parsed['status'] != 'OK' || parsed['results'].isEmpty) return null;
+
+      final results = parsed['results'] as List;
+      final firstResult = results[0];
+      final components = firstResult['address_components'] as List;
+
+      String? name;
+      String? sublocality, neighborhood, premise, pointOfInterest, airport, park;
+
+      for (var c in components) {
+        final types = List<String>.from(c['types'] ?? []);
+        final longName = c['long_name'] as String;
+
+        if (types.contains('point_of_interest') || types.contains('establishment')) pointOfInterest = longName;
+        if (types.contains('airport')) airport = longName;
+        if (types.contains('park')) park = longName;
+        if (types.contains('premise')) premise = longName;
+        if (types.contains('sublocality')) sublocality = longName;
+        if (types.contains('neighborhood')) neighborhood = longName;
+      }
+
+      // Priority for the "Name" field (the bold first line)
+      name = airport ?? pointOfInterest ?? park ?? premise ?? sublocality ?? neighborhood;
+
+      return {
+        'name': name ?? firstResult['formatted_address'].split(',')[0],
+        'address': firstResult['formatted_address'],
+      };
+    } catch (e) {
+      debugPrint("LocationService: Error resolving structured data: $e");
+    }
+    return null;
+  }
 }

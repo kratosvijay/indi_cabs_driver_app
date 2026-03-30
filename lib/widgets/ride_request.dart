@@ -66,11 +66,15 @@ class RideRequest {
   final double? tollPrice; // Added toll price
 
   final String? userName;
+  final String? pickupPlaceName; // **NEW**
+  final String? dropoffPlaceName; // **NEW**
 
   RideRequest({
     required this.rideId,
     required this.userId,
     this.userName,
+    this.pickupPlaceName, // **NEW**
+    this.dropoffPlaceName, // **NEW**
     required this.pickupTitle,
     required this.dropoffTitle,
     required this.pickupFullAddress,
@@ -300,6 +304,8 @@ class RideRequest {
           json['destinationAddress'] ??
           json['dropoffAddress'] ??
           '',
+      pickupPlaceName: json['pickupPlaceName'], // **NEW**
+      dropoffPlaceName: json['destinationPlaceName'] ?? json['dropoffPlaceName'], // **NEW**
       driverDistance: (json['driverDistance'] as num?)?.toDouble() ?? 0.0,
       rideDistance: (json['rideDistance'] as num?)?.toDouble() ?? 0.0,
       rideFare:
@@ -473,11 +479,11 @@ class _RideRequestCardState extends State<RideRequestCard> {
 
     // Parallel fetch
     final results = await Future.wait([
-      LocationService().getLocalizedAddress(
+      LocationService().getLocalizedLocationData(
         widget.rideRequest.pickupLocation,
         langCode,
       ),
-      LocationService().getLocalizedAddress(
+      LocationService().getLocalizedLocationData(
         widget.rideRequest.dropoffLocation,
         langCode,
       ),
@@ -486,12 +492,12 @@ class _RideRequestCardState extends State<RideRequestCard> {
     if (mounted) {
       setState(() {
         if (results[0] != null) {
-          _translatedPickupAddress = results[0];
-          _translatedPickupTitle = RideRequest.extractTitle(results[0]!);
+          _translatedPickupAddress = results[0]!['address'];
+          _translatedPickupTitle = results[0]!['name'];
         }
         if (results[1] != null) {
-          _translatedDropoffAddress = results[1];
-          _translatedDropoffTitle = RideRequest.extractTitle(results[1]!);
+          _translatedDropoffAddress = results[1]!['address'];
+          _translatedDropoffTitle = results[1]!['name'];
         }
         _isTranslating = false;
       });
@@ -594,6 +600,7 @@ class _RideRequestCardState extends State<RideRequestCard> {
                     : _buildDetailRow(
                         Icons.location_on,
                         _translatedPickupTitle ??
+                            widget.rideRequest.pickupPlaceName ?? // **NEW**
                             widget.rideRequest.pickupTitle,
                         _translatedPickupAddress ??
                             widget.rideRequest.pickupFullAddress,
@@ -611,6 +618,7 @@ class _RideRequestCardState extends State<RideRequestCard> {
                     : _buildDetailRow(
                         Icons.flag,
                         _translatedDropoffTitle ??
+                            widget.rideRequest.dropoffPlaceName ?? // **NEW**
                             widget.rideRequest.dropoffTitle,
                         _translatedDropoffAddress ??
                             widget.rideRequest.dropoffFullAddress,
@@ -800,6 +808,9 @@ class _RideRequestCardState extends State<RideRequestCard> {
     String fullAddress,
     String distanceInfo,
   ) {
+    // If title and address are identical, don't show the redundant title
+    final bool isTitleRedundant = title.trim() == fullAddress.trim();
+
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -809,24 +820,36 @@ class _RideRequestCardState extends State<RideRequestCard> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                  fontSize: 18,
+              if (!isTitleRedundant) ...[
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                    fontSize: 18,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                fullAddress,
-                style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.9),
-                  fontSize: 14,
+                const SizedBox(height: 2),
+                Text(
+                  fullAddress,
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.9),
+                    fontSize: 14,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                 ),
-                maxLines: 4,
-                overflow: TextOverflow.ellipsis,
-              ),
+              ] else
+                Text(
+                  fullAddress,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                    fontSize: 16,
+                  ),
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                ),
               const SizedBox(height: 8),
               Text(
                 distanceInfo,

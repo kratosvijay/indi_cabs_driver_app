@@ -4,6 +4,7 @@ import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:sms_autofill/sms_autofill.dart';
 
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'dart:io';
@@ -63,6 +64,13 @@ Future<void> main() async {
 
   // Initialize AuthController globally
   Get.put(AuthController());
+
+  // Print App Signature for SMS Autofill
+  SmsAutoFill().getAppSignature.then((signature) {
+    debugPrint("--------------------------------------------------");
+    debugPrint("DRIVER APP SIGNATURE HASH: $signature");
+    debugPrint("--------------------------------------------------");
+  });
 
   runApp(const MyApp());
 }

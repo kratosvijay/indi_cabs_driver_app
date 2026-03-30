@@ -1,5 +1,8 @@
 import 'dart:io';
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
+import 'package:sms_autofill/sms_autofill.dart';
+import 'package:pinput/pinput.dart';
+import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -10,18 +13,22 @@ import 'package:project_taxi_driver_app/screens/fleet_dashboard.dart';
 import 'package:project_taxi_driver_app/screens/sign_up.dart';
 import 'package:project_taxi_driver_app/screens/license_verification.dart';
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
+import 'package:project_taxi_driver_app/controllers/auth_controller.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:project_taxi_driver_app/utils/upload_progress_dialog.dart';
+import 'package:project_taxi_driver_app/services/id_service.dart';
 
 class OtpScreen extends StatefulWidget {
-  final String verificationId;
+  final String? verificationId;
+  final String? phoneNumber;
   final UserRole role;
   final Map<String, dynamic> userData;
   final File? imageFile;
 
   const OtpScreen({
     super.key,
-    required this.verificationId,
+    this.verificationId,
+    this.phoneNumber,
     required this.role,
     required this.userData,
     this.imageFile,
@@ -31,13 +38,23 @@ class OtpScreen extends StatefulWidget {
   State<OtpScreen> createState() => _OtpScreenState();
 }
 
-class _OtpScreenState extends State<OtpScreen> {
+class _OtpScreenState extends State<OtpScreen> with CodeAutoFill {
   final TextEditingController _otpController = TextEditingController();
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  
   bool _isLoading = false;
+  bool _isSendingOtp = false;
+  String? _verificationId;
+  int? _resendToken;
+  
   String _selectedLanguageCode = 'en';
   bool _isLanguageLoading = true;
+
+  // Timer logic
+  int _secondsRemaining = 60;
+  Timer? _timer;
+  bool _canResend = false;
 
   // --- Translations ---
   final Map<String, Map<String, String>> _translations = {
@@ -71,6 +88,104 @@ class _OtpScreenState extends State<OtpScreen> {
   void initState() {
     super.initState();
     _loadLanguage();
+    _verificationId = widget.verificationId;
+    if (_verificationId == null && widget.phoneNumber != null) {
+      _sendOtp();
+    }
+    _startTimer();
+    listenForCode();
+  }
+
+  @override
+  void codeUpdated() {
+    setState(() {
+      _otpController.text = code ?? "";
+    });
+    if (code != null && code!.length == 6) {
+      _verifyOtp();
+    }
+  }
+
+  void _startTimer() {
+    setState(() {
+      _canResend = false;
+      _secondsRemaining = 60;
+    });
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_secondsRemaining == 0) {
+        setState(() {
+          _canResend = true;
+          timer.cancel();
+        });
+      } else {
+        setState(() {
+          _secondsRemaining--;
+        });
+      }
+    });
+  }
+
+  Future<void> _sendOtp() async {
+    if (widget.phoneNumber == null) return;
+
+    setState(() {
+      _isSendingOtp = true;
+      _isLoading = false;
+    });
+
+    try {
+      await _auth.verifyPhoneNumber(
+        phoneNumber: widget.phoneNumber!,
+        forceResendingToken: _resendToken,
+        verificationCompleted: (PhoneAuthCredential credential) async {
+          _otpController.text = credential.smsCode ?? "";
+          await _verifyOtp(credential);
+        },
+        verificationFailed: (FirebaseAuthException e) {
+          if (mounted) {
+            Get.snackbar(
+              'Error',
+              "Verification failed: ${e.message}",
+              backgroundColor: Colors.red.withValues(alpha: 0.1),
+              colorText: Colors.red,
+            );
+            setState(() {
+              _isSendingOtp = false;
+              _isLoading = false;
+            });
+          }
+        },
+        codeSent: (String verificationId, int? resendToken) {
+          if (mounted) {
+            setState(() {
+              _verificationId = verificationId;
+              _resendToken = resendToken;
+              _isSendingOtp = false;
+            });
+            Get.snackbar(
+              'Success',
+              "OTP Sent Successfully",
+              backgroundColor: Colors.green.withValues(alpha: 0.1),
+              colorText: Colors.green,
+            );
+          }
+        },
+        codeAutoRetrievalTimeout: (String verificationId) {
+          if (mounted) {
+            setState(() {
+              _verificationId = verificationId;
+              _isSendingOtp = false;
+            });
+          }
+        },
+      );
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isSendingOtp = false);
+        Get.snackbar('Error', e.toString());
+      }
+    }
   }
 
   Future<void> _loadLanguage() async {
@@ -90,7 +205,9 @@ class _OtpScreenState extends State<OtpScreen> {
 
   @override
   void dispose() {
+    _timer?.cancel();
     _otpController.dispose();
+    unregisterListener();
     super.dispose();
   }
 
@@ -130,30 +247,38 @@ class _OtpScreenState extends State<OtpScreen> {
     }
   }
 
-  Future<void> _verifyOtp() async {
-    if (_otpController.text.trim().length != 6) {
+  Future<void> _verifyOtp([PhoneAuthCredential? credential]) async {
+    if (_otpController.text.trim().length != 6 && credential == null) {
       Get.snackbar(
         'Error',
         _getTranslatedString('invalidOtp'),
-        backgroundColor: Colors.red,
-        colorText: Colors.white,
+        backgroundColor: Colors.red.withValues(alpha: 0.1),
+        colorText: Colors.red,
       );
       return;
     }
     setState(() => _isLoading = true);
 
     try {
-      final credential = PhoneAuthProvider.credential(
-        verificationId: widget.verificationId,
-        smsCode: _otpController.text.trim(),
-      );
+      final authCredential = credential ??
+          PhoneAuthProvider.credential(
+            verificationId: _verificationId!,
+            smsCode: _otpController.text.trim(),
+          );
 
       final UserCredential userCredential = await _auth.signInWithCredential(
-        credential,
+        authCredential,
       );
       final User? user = userCredential.user;
 
       if (user != null) {
+        // If userData is empty, it means we are in Login flow (from PhoneAuthScreen)
+        if (widget.userData.isEmpty) {
+          await AuthController.instance.decideRoute();
+          return;
+        }
+
+        // Registration flow
         if (widget.role == UserRole.individual ||
             widget.role == UserRole.actingDriver) {
           await _createIndividualDriver(user);
@@ -205,9 +330,14 @@ class _OtpScreenState extends State<OtpScreen> {
       photoURL: photoUrl,
     );
 
+    // Generate sequential Driver ID
+    final nextId = await IdService.getNextDriverId();
+    final displayId = 'indi-drv-$nextId';
+
     await _firestore.collection('drivers').doc(user.uid).set({
       ...widget.userData,
       'uid': user.uid,
+      'displayId': displayId,
       'displayName':
           '${widget.userData['firstName']} ${widget.userData['lastName']}',
       'photoUrl': photoUrl,
@@ -216,6 +346,27 @@ class _OtpScreenState extends State<OtpScreen> {
       'documentsSubmitted': false,
       'isApproved': false,
       'isBlocked': false,
+    });
+
+    // Initialize Wallet
+    await _firestore
+        .collection('drivers')
+        .doc(user.uid)
+        .collection('wallet')
+        .doc('balance')
+        .set({
+      'currentBalance': 0.0,
+      'lastUpdated': FieldValue.serverTimestamp(),
+    });
+
+    await _firestore
+        .collection('drivers')
+        .doc(user.uid)
+        .collection('wallet')
+        .doc('metadata')
+        .set({
+      'settlementsThisWeek': 0,
+      'lastSettlementDate': null,
     });
   }
 
@@ -238,53 +389,139 @@ class _OtpScreenState extends State<OtpScreen> {
       );
     }
 
-    return Scaffold(
-      extendBodyBehindAppBar: true,
-      appBar: ProAppBar(
-        titleText: _getTranslatedString('title'),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios, color: Colors.white),
-          onPressed: () => Get.back(),
-        ),
+    return Container(
+      width: double.infinity,
+      height: double.infinity,
+      decoration: BoxDecoration(
+        gradient: AppColors.getAppBarGradient(context),
       ),
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: AppColors.getAppBarGradient(context),
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        extendBodyBehindAppBar: true,
+        appBar: ProAppBar(
+          titleText: _getTranslatedString('title'),
+          backgroundColor: Colors.transparent, // Ensure AppBar is also transparent
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back_ios, color: Colors.white),
+            onPressed: () => Get.back(),
+          ),
         ),
-        child: SafeArea(
+        body: SafeArea(
           child: Padding(
             padding: const EdgeInsets.all(24.0),
             child: FadeInSlide(
               delay: 0.2,
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(
-                    _getTranslatedString('instruction'),
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      fontSize: 18,
-                      color: Colors.white,
-                      fontWeight: FontWeight.w500,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const SizedBox(height: 40),
+                    Text(
+                      _getTranslatedString('instruction'),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        color: Colors.white,
+                        fontWeight: FontWeight.w500,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 30),
-                  ProTextField(
-                    controller: _otpController,
-                    hintText: '------',
-                    icon: Icons.lock_outline,
-                    keyboardType: TextInputType.number,
-                  ),
-                  const SizedBox(height: 30),
-                  ProButton(
-                    text: _getTranslatedString('verify'),
-                    onPressed: _isLoading ? null : _verifyOtp,
-                    isLoading: _isLoading,
-                    // backgroundColor: Colors.white,
-                    // textColor: AppColors.primary,
-                  ),
-                ],
+                    if (widget.phoneNumber != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        widget.phoneNumber!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          color: Colors.white70,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 40),
+                    Pinput(
+                      length: 6,
+                      controller: _otpController,
+                      keyboardType: TextInputType.number,
+                      defaultPinTheme: PinTheme(
+                        width: 50,
+                        height: 55,
+                        textStyle: const TextStyle(
+                          fontSize: 22,
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: Colors.white54),
+                          color: Colors.white.withValues(alpha: 0.1),
+                        ),
+                      ),
+                      focusedPinTheme: PinTheme(
+                        width: 55,
+                        height: 60,
+                        textStyle: const TextStyle(
+                          fontSize: 24,
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: Colors.white),
+                          color: Colors.white.withValues(alpha: 0.2),
+                        ),
+                      ),
+                      onCompleted: (pin) => _verifyOtp(),
+                    ),
+                    const SizedBox(height: 40),
+                    if (_isSendingOtp)
+                      const Column(
+                        children: [
+                          CircularProgressIndicator(color: Colors.white),
+                          SizedBox(height: 16),
+                          Text(
+                            "Sending OTP...",
+                            style: TextStyle(color: Colors.white),
+                          ),
+                        ],
+                      )
+                    else ...[
+                      ProButton(
+                        text: _getTranslatedString('verify'),
+                        onPressed: _isLoading ? null : _verifyOtp,
+                        isLoading: _isLoading,
+                        // backgroundColor: Colors.white,
+                        // textColor: AppColors.primary,
+                      ),
+                      const SizedBox(height: 30),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            _canResend
+                                ? "Didn't receive code?"
+                                : "Resend in ${_secondsRemaining}s",
+                            style: const TextStyle(color: Colors.white70),
+                          ),
+                          if (_canResend)
+                            TextButton(
+                              onPressed: () {
+                                _startTimer();
+                                _sendOtp();
+                              },
+                              child: const Text(
+                                "Resend OTP",
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
               ),
             ),
           ),

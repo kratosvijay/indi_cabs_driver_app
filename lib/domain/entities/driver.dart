@@ -12,8 +12,11 @@ class Driver {
   final List<String> upiIds;
   final String? activeUpiId;
 
+  final String? displayId;
+
   Driver({
     required this.id,
+    this.displayId,
     required this.name,
     required this.email,
     required this.phoneNumber,

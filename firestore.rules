@@ -75,11 +75,13 @@ service cloud.firestore {
           request.resource.data.diff(resource.data).affectedKeys()
             .hasOnly([
               // Core Ops (homepage, duty_settings)
-              'isOnline', 'currentLocation', 'goToDestination', 'dutyPreferences', 'fcmToken',
+              'isOnline', 'currentLocation', 'goToDestination', 'dutyPreferences', 'fcmToken', 'lastTokenUpdate',
               // Registration (car_selection, doc_verification)
               'vehicleType', 'vehicleNumber', 'vehicleBrand', 'vehicleModel', 'vehicleClass', 'vehicleDetailsFilled', 'carName', 'licenseNumber', 'licenseFrontUrl', 'licenseBackUrl', 'aadharNumber', 'aadharFrontUrl', 'aadharBackUrl', 'panNumber', 'panCardUrl', 'documents', 'documentsSubmitted',
-              // Profile
-              'displayName', 'photoUrl',
+              // Profile & Identification
+              'displayName', 'photoUrl', 'displayId',
+              // UPI & Settlement
+              'upiIds', 'activeUpiId', 'autoSettleEnabled', 'autoSettleUpiId',
               // Status (restricted below)
               'isApproved', 'rejectionReason'
             ]) &&
@@ -106,20 +108,15 @@ service cloud.firestore {
         allow update, delete: if false;
       }
 
-      match /reviews/{reviewId} {
-        allow read: if true;
-        allow create: if request.auth != null;
-        allow update, delete: if false;
-      }
-
       match /wallet/{walletId} {
         allow read: if request.auth != null && request.auth.uid == driverId;
-        allow write: if false;
+        allow create, update: if request.auth != null && request.auth.uid == driverId;
       }
 
       match /wallet_transactions/{txId} {
         allow read: if request.auth != null && request.auth.uid == driverId;
-        allow write: if false;
+        allow create: if request.auth != null && request.auth.uid == driverId;
+        allow update, delete: if false;
       }
 
       match /saved_upi_ids/{id} {
@@ -318,6 +315,16 @@ service cloud.firestore {
       
       // CREATE/DELETE: Only Fleet Managers/Admin (blocked here, assumed backend/web console)
       allow create, delete: if false; 
+    }
+
+    // --- REVIEWS COLLECTION (TOP-LEVEL) ---
+    match /reviews/{reviewId} {
+      // READ: Allow any authenticated user to view reviews
+      allow read: if request.auth != null;
+      // CREATE: Allow any authenticated user to submit a review
+      allow create: if request.auth != null;
+      // UPDATE/DELETE: Prevent modification of submitted reviews
+      allow update, delete: if false;
     }
 
   }
