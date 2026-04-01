@@ -6,6 +6,7 @@ import 'package:project_taxi_driver_app/utils/app_colors.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:get/get.dart';
 import 'package:project_taxi_driver_app/widgets/faq_sheet.dart';
+import 'package:project_taxi_driver_app/services/id_service.dart';
 import 'package:project_taxi_driver_app/utils/faq_data.dart';
 
 class DutySettingsScreen extends StatefulWidget {
@@ -19,6 +20,7 @@ class DutySettingsScreen extends StatefulWidget {
 class _DutySettingsScreenState extends State<DutySettingsScreen> {
   String _selectedLanguageCode = 'en';
   bool _isLoading = true;
+  String? _driverDocId;
 
   // --- Translations ---
   final Map<String, Map<String, String>> _translations = {
@@ -62,9 +64,11 @@ class _DutySettingsScreenState extends State<DutySettingsScreen> {
 
   Future<void> _loadLanguage() async {
     final prefs = await SharedPreferences.getInstance();
+    final docId = await IdService.getDriverDocId(widget.user.uid);
     if (mounted) {
       setState(() {
         _selectedLanguageCode = prefs.getString('selectedLanguage') ?? 'en';
+        _driverDocId = docId;
         _isLoading = false;
       });
     }
@@ -81,9 +85,10 @@ class _DutySettingsScreenState extends State<DutySettingsScreen> {
     bool accepts,
   ) async {
     // FIX: Use dot notation to update specific key in map without overwriting others
+    final docId = _driverDocId ?? widget.user.uid;
     await FirebaseFirestore.instance
         .collection('drivers')
-        .doc(widget.user.uid)
+        .doc(docId)
         .update({'dutyPreferences.${category}_$vehicleType': accepts});
   }
 
@@ -115,7 +120,7 @@ class _DutySettingsScreenState extends State<DutySettingsScreen> {
       body: StreamBuilder<DocumentSnapshot>(
         stream: FirebaseFirestore.instance
             .collection('drivers')
-            .doc(widget.user.uid)
+            .doc(_driverDocId ?? widget.user.uid)
             .snapshots(),
         builder: (context, snapshot) {
           if (!snapshot.hasData) {

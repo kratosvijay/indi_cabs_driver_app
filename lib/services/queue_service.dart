@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:get/get.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:project_taxi_driver_app/services/id_service.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:project_taxi_driver_app/widgets/status_slider.dart'; // Contains DriverStatus enum
 import 'package:project_taxi_driver_app/controllers/home_page_controller.dart';
@@ -31,12 +32,23 @@ class QueueService {
 
   StreamSubscription<Position>? _positionStream;
   bool _isInQueue = false;
+  String? _driverDocId;
+
+  Future<void> _loadDocId() async {
+    if (_driverDocId != null) return;
+    final user = _auth.currentUser;
+    if (user != null) {
+      _driverDocId = await IdService.getDriverDocId(user.uid);
+      debugPrint("QueueService: Final driverDocId: $_driverDocId");
+    }
+  }
 
   /// Starts monitoring the driver's airport status
   Future<void> startMonitoring() async {
     if (_auth.currentUser == null) return;
 
-    debugPrint("QueueService: Monitoring started for $_airportId");
+    await _loadDocId();
+    debugPrint("QueueService: Monitoring started for $_airportId for $_driverDocId");
 
     // Fetch polygon if needed
     if (airportPolygon.isEmpty) {
@@ -74,9 +86,19 @@ class QueueService {
         final List<dynamic> points = doc.data()!['boundary'] ?? [];
         if (points.isNotEmpty) {
           airportPolygon.value = points.map((p) {
-            final GeoPoint gp = p as GeoPoint;
-            return LatLng(gp.latitude, gp.longitude);
-          }).toList();
+            double? lat, lng;
+            if (p is GeoPoint) {
+              lat = p.latitude;
+              lng = p.longitude;
+            } else if (p is Map) {
+              lat = (p['latitude'] as num?)?.toDouble();
+              lng = (p['longitude'] as num?)?.toDouble();
+            }
+            if (lat != null && lng != null) {
+              return LatLng(lat, lng);
+            }
+            return const LatLng(0, 0); // Should not happen
+          }).where((l) => l.latitude != 0).toList();
           _isLoadingBoundary = false;
           debugPrint(
             "QueueService: Loaded ${airportPolygon.length} polygon points from Firestore.",
@@ -129,7 +151,7 @@ class QueueService {
               // Now we only care about OUR document to read the backend-calculated position
               bool foundMe = false;
               for (final doc in snapshot.docs) {
-                if (doc.id == user.uid) {
+                if (doc.id == _driverDocId) {
                   final data = doc.data();
                   queuePosition.value = data['position']; // Server-calculated
                   queueStatus.value = data['status'] ?? 'queued';
@@ -254,13 +276,15 @@ class QueueService {
           .collection('airport_queues')
           .doc(_airportId)
           .collection('drivers')
-          .doc(user.uid);
+          .doc(user.uid); // MUST be Auth UID for Firestore Rules at line 178
 
       final doc = await docRef.get();
 
       if (!doc.exists) {
         await docRef.set({
-          'driverId': user.uid,
+          'driverId': user.uid, 
+          'driverUid': user.uid, // Bridge for security rules
+          'driverDocId': _driverDocId, // Professional ID (e.g. indi-drv-4)
           'entryTimestamp': FieldValue.serverTimestamp(),
           'lastHeartbeat': FieldValue.serverTimestamp(),
           'status': 'queued',
@@ -302,7 +326,7 @@ class QueueService {
             .collection('airport_queues')
             .doc(_airportId)
             .collection('drivers')
-            .doc(user.uid)
+            .doc(_driverDocId)
             .update({'lastHeartbeat': FieldValue.serverTimestamp()})
             .catchError((e) => debugPrint("Heartbeat update failed: $e"));
       } else {
@@ -322,7 +346,7 @@ class QueueService {
           .collection('airport_queues')
           .doc(_airportId)
           .collection('drivers')
-          .doc(user.uid)
+          .doc(_driverDocId)
           .delete();
 
       _isInQueue = false;

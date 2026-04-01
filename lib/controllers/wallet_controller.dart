@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:project_taxi_driver_app/services/id_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:pinput/pinput.dart';
 import 'package:cloud_functions/cloud_functions.dart';
@@ -62,13 +63,24 @@ class WalletController extends GetxController {
   Map<String, dynamic>? _pendingSubscription;
 
   final CFPaymentGatewayService _cashfree = CFPaymentGatewayService();
+  String? _driverDocId;
+
+  Future<void> _loadDocId() async {
+    if (_driverDocId != null) return;
+    final user = _auth.currentUser;
+    if (user != null) {
+      _driverDocId = await IdService.getDriverDocId(user.uid);
+      debugPrint("WalletController: Final driverDocId: $_driverDocId");
+    }
+  }
 
   @override
   void onInit() {
     super.onInit();
     // Delay heavy data fetching until after the first frame
     // This allows the screen transition animation to run smoothly
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _loadDocId();
       fetchWalletData();
       fetchUpiIds();
     });
@@ -125,10 +137,10 @@ class WalletController extends GetxController {
     if (user == null) return;
 
     try {
-      debugPrint("Fetching UPI IDs for ${user.uid}...");
+      debugPrint("Fetching UPI IDs for ${user.uid} (Doc: $_driverDocId)...");
       _subscriptions.add(_db
           .collection('drivers')
-          .doc(user.uid)
+          .doc(_driverDocId ?? user.uid)
           .collection('saved_upi_ids')
           .snapshots()
           .listen((snapshot) {
@@ -229,7 +241,7 @@ class WalletController extends GetxController {
     try {
       await _db
           .collection('drivers')
-          .doc(user.uid)
+          .doc(_driverDocId ?? user.uid)
           .collection('saved_upi_ids')
           .doc(upiId)
           .delete();
@@ -249,7 +261,7 @@ class WalletController extends GetxController {
       // Listen to wallet document
       _subscriptions.add(_db
           .collection('drivers')
-          .doc(user.uid)
+          .doc(_driverDocId ?? user.uid)
           .collection('wallet')
           .doc('balance')
           .snapshots()
@@ -265,7 +277,7 @@ class WalletController extends GetxController {
       // Listen to transactions
       _subscriptions.add(_db
           .collection('drivers')
-          .doc(user.uid)
+          .doc(_driverDocId ?? user.uid)
           .collection('wallet_transactions')
           .orderBy('createdAt', descending: true)
           .snapshots()
@@ -280,7 +292,7 @@ class WalletController extends GetxController {
   }
 
   void _listenToAutoSettleSettings(User user) {
-    _subscriptions.add(_db.collection('drivers').doc(user.uid).snapshots().listen((snapshot) {
+    _subscriptions.add(_db.collection('drivers').doc(_driverDocId ?? user.uid).snapshots().listen((snapshot) {
       if (snapshot.exists) {
         final data = snapshot.data();
         autoSettleEnabled.value = data?['autoSettleEnabled'] ?? false;
@@ -290,7 +302,7 @@ class WalletController extends GetxController {
 
     _subscriptions.add(_db
         .collection('drivers')
-        .doc(user.uid)
+        .doc(_driverDocId ?? user.uid)
         .collection('wallet')
         .doc('metadata')
         .snapshots()
@@ -315,7 +327,7 @@ class WalletController extends GetxController {
     if (user == null) return;
 
     try {
-      await _db.collection('drivers').doc(user.uid).set({
+      await _db.collection('drivers').doc(_driverDocId ?? user.uid).set({
         'autoSettleEnabled': enabled,
         'autoSettleUpiId': upiId,
       }, SetOptions(merge: true));
@@ -336,7 +348,7 @@ class WalletController extends GetxController {
       await _db.runTransaction((transaction) async {
         final balanceRef = _db
             .collection('drivers')
-            .doc(user.uid)
+            .doc(_driverDocId ?? user.uid)
             .collection('wallet')
             .doc('balance');
         final balanceDoc = await transaction.get(balanceRef);
@@ -355,7 +367,7 @@ class WalletController extends GetxController {
         // Add Transaction Record
         final transactionRef = _db
             .collection('drivers')
-            .doc(user.uid)
+            .doc(_driverDocId ?? user.uid)
             .collection('wallet_transactions')
             .doc();
         transaction.set(transactionRef, {
@@ -392,7 +404,7 @@ class WalletController extends GetxController {
       await _db.runTransaction((transaction) async {
         final balanceRef = _db
             .collection('drivers')
-            .doc(user.uid)
+            .doc(_driverDocId ?? user.uid)
             .collection('wallet')
             .doc('balance');
         final balanceDoc = await transaction.get(balanceRef);
@@ -408,7 +420,7 @@ class WalletController extends GetxController {
         // Check and update settlement limits
         final metadataRef = _db
             .collection('drivers')
-            .doc(user.uid)
+            .doc(_driverDocId ?? user.uid)
             .collection('wallet')
             .doc('metadata');
         final metadataDoc = await transaction.get(metadataRef);
@@ -468,7 +480,7 @@ class WalletController extends GetxController {
         // Add Transaction Record
         final transactionRef = _db
             .collection('drivers')
-            .doc(user.uid)
+            .doc(_driverDocId ?? user.uid)
             .collection('wallet_transactions')
             .doc();
         transaction.set(transactionRef, {
@@ -498,7 +510,7 @@ class WalletController extends GetxController {
 
     try {
       await _db.runTransaction((transaction) async {
-        final driverRef = _db.collection('drivers').doc(user.uid);
+        final driverRef = _db.collection('drivers').doc(_driverDocId ?? user.uid);
 
         // Fetch current expiry
         final driverDoc = await transaction.get(driverRef);
@@ -564,7 +576,7 @@ class WalletController extends GetxController {
       // and let the daily check handle off-roading, or warn them.
 
       await _db.runTransaction((transaction) async {
-        final driverRef = _db.collection('drivers').doc(user.uid);
+        final driverRef = _db.collection('drivers').doc(_driverDocId ?? user.uid);
         final walletRef = driverRef.collection('wallet').doc('balance');
 
         final walletDoc = await transaction.get(walletRef);
@@ -708,7 +720,7 @@ class WalletController extends GetxController {
 
     try {
       await _db.runTransaction((transaction) async {
-        final driverRef = _db.collection('drivers').doc(user.uid);
+        final driverRef = _db.collection('drivers').doc(_driverDocId ?? user.uid);
 
         // 1. Update Subscription Expiry
         final driverDoc = await transaction.get(driverRef);

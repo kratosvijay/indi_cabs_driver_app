@@ -12,6 +12,8 @@ import 'package:project_taxi_driver_app/widgets/pro_library.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:project_taxi_driver_app/screens/login.dart';
 import 'package:project_taxi_driver_app/utils/upload_progress_dialog.dart';
+import 'package:project_taxi_driver_app/screens/sign_up.dart'; // For UserRole
+import 'package:project_taxi_driver_app/screens/car_selection.dart';
 
 // Enum to manage the verification status
 enum VerificationStatus { initial, pending, rejected }
@@ -20,12 +22,16 @@ class DocumentVerificationScreen extends StatefulWidget {
   final User user;
   final bool isFleet;
   final String? vehicleId;
+  final UserRole role;
+  final String? driverDocId; // New parameter
 
   const DocumentVerificationScreen({
     super.key,
     required this.user,
     this.isFleet = false,
     this.vehicleId,
+    this.role = UserRole.individual,
+    this.driverDocId,
   });
 
   @override
@@ -139,7 +145,7 @@ class _DocumentVerificationScreenState
   Future<void> _checkDriverStatus() async {
     final driverDoc = await FirebaseFirestore.instance
         .collection('drivers')
-        .doc(widget.user.uid)
+        .doc(widget.driverDocId ?? widget.user.uid)
         .get();
     if (driverDoc.exists && mounted) {
       final data = driverDoc.data()!;
@@ -503,7 +509,9 @@ class _DocumentVerificationScreenState
         }
       } else {
         // Driver Update (Existing)
-        await FirebaseFirestore.instance.collection('drivers').doc(uid).set({
+        final docId = widget.driverDocId ?? uid;
+
+        await FirebaseFirestore.instance.collection('drivers').doc(docId).set({
           'documents': {
             'rcFront': urls[0],
             'rcBack': urls[1],
@@ -565,7 +573,14 @@ class _DocumentVerificationScreenState
             if (Navigator.canPop(context)) {
               Get.back();
             } else {
-              Get.offAll(() => const LoginScreen());
+              Get.offAll(
+                () => CarSelectionScreen(
+                  user: widget.user,
+                  isFleet: widget.isFleet,
+                  role: widget.role,
+                  driverDocId: widget.driverDocId, // Pass it back
+                ),
+              );
             }
           },
         ),

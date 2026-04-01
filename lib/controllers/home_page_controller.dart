@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart' hide Query;
 import 'package:flutter/material.dart' hide Route;
@@ -13,6 +14,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:get/get.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
+import 'package:project_taxi_driver_app/services/id_service.dart';
 
 import 'package:project_taxi_driver_app/screens/earnings.dart';
 import 'package:project_taxi_driver_app/screens/wallet_screen.dart';
@@ -80,6 +82,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   // Snooze Logic / Ignored Rides
   final Map<String, DateTime> _ignoredRides = {};
   final Set<String> _processingRideIds = <String>{};
+  final Set<String> _recentlyClearedRideIds = <String>{}; // Fixed: One-last-time bug
 
   // Subscriptions and Timers
   StreamSubscription? rideRequestSubscription;
@@ -113,6 +116,12 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   //  Timer? locationUpdateTimer;
   Timer? _revaluationTimer; // Added for re-checking ignored rides
   QuerySnapshot? _lastSnapshot; // Cache for re-evaluation
+  String? _driverDocId;
+
+  Future<void> _loadDocId() async {
+    _driverDocId = await IdService.getDriverDocId(user.uid);
+    debugPrint("HomePageController: Final driverDocId: $_driverDocId");
+  }
 
   @override
   void onInit() {
@@ -121,16 +130,84 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       () => WalletController(),
       fenix: true,
     ); // Ensure WalletController is available
+    
+    // Diagnostic Check: Verify real Firestore data
+    _runDiagnostics();
+
+    _loadDocId().then((_) {
+      listenForWallet();
+      listenForNotifications();
+    });
+
+    // Request initial position immediately
+    goToCurrentUserLocation();
+    
     final apiKeyValue = dotenv.env['GOOGLE_MAPS_API_KEY'];
     if (apiKeyValue == null) throw Exception("API Key not found");
     apiKey = apiKeyValue;
 
     loadLanguage();
-    _init(); // Call async initialization
+    _loadAndInitialize();
 
-    WidgetsBinding.instance.addObserver(this);
-    // TTS is now initialized in Splash, but we keep the instance here.
-    // _initTts();
+    // Safe API Key Initialization
+    try {
+      // Check API Key
+    } catch (e) {
+      // ignore
+    }
+
+    // Configure Audio Context for Background Playback
+    _configureAudioSession();
+
+    // Safe permission request
+    Future.delayed(const Duration(seconds: 3), () {
+      try {
+        OverlayService.instance.ensurePermission();
+      } catch (e) {
+        debugPrint("Error requesting overlay permission in Home: $e");
+      }
+    });
+  }
+
+  Future<void> _runDiagnostics() async {
+    try {
+      debugPrint("Starting Diagnostics...");
+      final callable = FirebaseFunctions.instanceFor(region: 'asia-south1')
+          .httpsCallable('debugDriver');
+      final result = await callable.call();
+      debugPrint("DIAGNOSTICS - Driver Doc ID: ${result.data['docId']}");
+      debugPrint("DIAGNOSTICS - Exists: ${result.data['exists']}");
+      debugPrint("DIAGNOSTICS - Raw Data: ${result.data['data']}");
+    } catch (e) {
+      debugPrint("DIAGNOSTICS FAILED: $e");
+    }
+  }
+
+  String get currentUserId => user.uid; // Added for easy access
+
+  Future<void> _loadAndInitialize() async {
+    await _loadDocId();
+    _init(); // Existing map init
+
+    // Listen for Polygon Updates from QueueService
+    ever(QueueService().airportPolygon, (List<LatLng> points) {
+      if (points.isNotEmpty) {
+        polygons.assignAll({
+          Polygon(
+            polygonId: const PolygonId('airport_zone'),
+            points: points,
+            fillColor: Colors.blue.withValues(alpha: 0.15),
+            strokeColor: Colors.blue,
+            strokeWidth: 2,
+          ),
+        });
+      } else {
+        polygons.clear();
+      }
+    });
+
+    listenForWallet();
+    listenForNotifications();
 
     // Set Initial Status if provided
     if (initialStatus != null) {
@@ -173,56 +250,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         _startDemandMonitoring();
       }
     }
-
-    // Safe API Key Initialization
-    try {
-      // Check API Key
-    } catch (e) {
-      // ignore
-    }
-
-    // Configure Audio Context for Background Playback
-    _configureAudioSession();
-
-    // Listen for Polygon Updates from QueueService
-    ever(QueueService().airportPolygon, (List<LatLng> points) {
-      if (points.isNotEmpty) {
-        polygons.assignAll({
-          Polygon(
-            polygonId: const PolygonId('airport_zone'),
-            points: points,
-            fillColor: Colors.blue.withValues(alpha: 0.15),
-            strokeColor: Colors.blue,
-            strokeWidth: 2,
-          ),
-        });
-      } else {
-        polygons.clear();
-      }
-    });
-
-    // We don't need _syncDriverStatus anymore as Splash handles it,
-    // but if you want valid data on refresh, you might keep a lighter version.
-    // For now, relying on Splash->Auth->Home chain.
-
-    listenForWallet();
-    listenForNotifications();
-
-    // Configure Port Listener
-    // _configureIsolatePort(); // Removed Port Logic
-
-    // Safe permission request (Moved from Splash to avoid startup ANR)
-    Future.delayed(const Duration(seconds: 3), () {
-      try {
-        OverlayService.instance.ensurePermission();
-      } catch (e) {
-        debugPrint("Error requesting overlay permission in Home: $e");
-      }
-    });
-
   }
-
-  String get currentUserId => user.uid; // Added for easy access
 
   Future<void> _init() async {
     try {
@@ -473,6 +501,13 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
   void _clearLocalRide(String rideId) {
     debugPrint("Clearing local ride: $rideId");
+    
+    // Add to temporary blacklist to prevent "one last time" reappear bug
+    _recentlyClearedRideIds.add(rideId);
+    Future.delayed(const Duration(seconds: 10), () {
+      _recentlyClearedRideIds.remove(rideId);
+      debugPrint("Removed $rideId from recently cleared blacklist");
+    });
 
     // 1. Cancel Subscription
     _activeRideSubscriptions[rideId]?.cancel();
@@ -629,7 +664,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       try {
         final doc = await FirebaseFirestore.instance
             .collection('drivers')
-            .doc(user.uid)
+            .doc(_driverDocId ?? user.uid)
             .get();
         if (doc.exists) {
           final data = doc.data();
@@ -765,7 +800,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
           // Firestore Update to remove GoTo
           await FirebaseFirestore.instance
               .collection('drivers')
-              .doc(user.uid)
+              .doc(_driverDocId ?? user.uid)
               .set({
                 'isOnline': true,
                 'goToDestination': FieldValue.delete(),
@@ -776,7 +811,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
           // Firestore Update for GoTo
           await FirebaseFirestore.instance
               .collection('drivers')
-              .doc(user.uid)
+              .doc(_driverDocId ?? user.uid)
               .set({
                 'isOnline': true,
                 'goToDestination': {
@@ -793,71 +828,80 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         // User canceled - revert to online status
         driverStatus.value = DriverStatus.online;
         goToDestination.value = null;
-        await FirebaseFirestore.instance
-            .collection('drivers')
-            .doc(user.uid)
-            .set({
-              'isOnline': true,
-              'goToDestination': null,
-            }, SetOptions(merge: true));
+        try {
+          await FirebaseFirestore.instance
+              .collection('drivers')
+              .doc(_driverDocId ?? user.uid)
+              .set({
+                'isOnline': true,
+                'goToDestination': null,
+              }, SetOptions(merge: true));
+          debugPrint("Firestore updated for GoTo cancellation");
+        } catch (e) {
+          debugPrint("Error updating Firestore for GoTo cancellation: $e");
+          // Continue anyway, we already set the local status
+        }
       }
     } else {
       // Standard Online/Offline Update
       debugPrint("Processing standard status update to: $status");
       goToDestination.value = null;
 
-      final Map<String, dynamic> updateData = {
-        'isOnline': status == DriverStatus.online,
-        'goToDestination': null,
-      };
-
-      // CRITICAL FIX: Set status to 'active' when going online
+      // Use Cloud Function to update status (bypasses Firestore security rules)
+      // This fixes PERMISSION_DENIED for professional ID docs (indi-drv-X)
+      String? correctedVehicleType;
       if (status == DriverStatus.online) {
-        updateData['status'] = 'active';
-
-        // SELF-CORRECTION: Fix "Car" vehicleType if possible
+        // Check if vehicleType needs correction
         try {
           final doc = await FirebaseFirestore.instance
               .collection('drivers')
-              .doc(user.uid)
+              .doc(_driverDocId ?? user.uid)
               .get();
           if (doc.exists) {
             final data = doc.data();
             final vType = data?['vehicleType'];
             final vClass = data?['vehicleClass'];
-
-            if (vType == 'Car' &&
-                vClass != null &&
-                vClass.toString().isNotEmpty) {
+            if (vType == 'Car' && vClass != null && vClass.toString().isNotEmpty) {
               debugPrint("Auto-Correcting VehicleType from Car to $vClass");
-              updateData['vehicleType'] = vClass;
+              correctedVehicleType = vClass.toString();
             }
           }
         } catch (e) {
-          debugPrint("Error auto-correcting vehicle type: $e");
+          debugPrint("Error reading vehicle type: $e");
         }
       }
 
-      await FirebaseFirestore.instance
-          .collection('drivers')
-          .doc(user.uid)
-          .set(updateData, SetOptions(merge: true));
-      debugPrint("Firestore updated for status: $status");
-
-      // DEBUG: Print current driver data to verify vehicleType
       try {
-        final dDoc = await FirebaseFirestore.instance
-            .collection('drivers')
-            .doc(user.uid)
-            .get();
-        debugPrint(
-          "DEBUG: Driver Data -> Type: ${dDoc.data()?['vehicleType']}, Class: ${dDoc.data()?['vehicleClass']}, Status: ${dDoc.data()?['status']}",
-        );
-        debugPrint(
-          "DEBUG: Duty Preferences -> ${dDoc.data()?['dutyPreferences']}",
-        );
+        final callable = FirebaseFunctions.instanceFor(region: 'asia-south1')
+            .httpsCallable('setDriverStatus');
+        final result = await callable.call({
+          'isOnline': status == DriverStatus.online,
+          if (correctedVehicleType != null) 'vehicleType': correctedVehicleType,
+        });
+        debugPrint("Cloud Function setDriverStatus success: ${result.data}");
       } catch (e) {
-        debugPrint("DEBUG: Error fetching driver data: $e");
+        debugPrint("Warning: Cloud Function setDriverStatus failed: $e. Trying direct write...");
+        // Fallback to direct Firestore write
+        try {
+          final Map<String, dynamic> updateData = {
+            'isOnline': status == DriverStatus.online,
+            'goToDestination': null,
+          };
+          if (status == DriverStatus.online) {
+            updateData['status'] = 'active';
+            if (correctedVehicleType != null) {
+              updateData['vehicleType'] = correctedVehicleType;
+            }
+          }
+          await FirebaseFirestore.instance
+              .collection('drivers')
+              .doc(_driverDocId ?? user.uid)
+              .set(updateData, SetOptions(merge: true));
+          debugPrint("Firestore direct write succeeded as fallback.");
+        } catch (e2) {
+          debugPrint("WARNING: Both Cloud Function AND direct Firestore write FAILED: $e2");
+          debugPrint("Driver may not appear online to the dispatch system!");
+        }
       }
     }
 
@@ -884,8 +928,9 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     final hasPermission = await _handleLocationPermission();
     if (!hasPermission) return;
 
-    final driverId = user.uid;
-    final locRef = FirebaseDatabase.instance.ref('driver_locations/$driverId');
+    final driverIdForRTDB = _driverDocId ?? user.uid;
+    debugPrint("QueueService: Starting Location Updates for RTDB with ID: $driverIdForRTDB");
+    final locRef = FirebaseDatabase.instance.ref('driver_locations/$driverIdForRTDB');
 
     // Auto-set offline if connection drops
     locRef.onDisconnect().remove();
@@ -955,9 +1000,18 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   }
 
   Future<void> _updateDriverLocationInFirestore(Position position) async {
-    await FirebaseFirestore.instance.collection('drivers').doc(user.uid).set({
-      'currentLocation': GeoPoint(position.latitude, position.longitude),
-    }, SetOptions(merge: true));
+    try {
+      await FirebaseFirestore.instance
+          .collection('drivers')
+          .doc(_driverDocId ?? user.uid)
+          .set({
+            'currentLocation': GeoPoint(position.latitude, position.longitude),
+          }, SetOptions(merge: true));
+    } catch (e) {
+      // Non-critical: RTDB is the primary location source for dispatch.
+      // This is only for backwards-compatible profile views.
+      debugPrint("Firestore location update failed (non-critical): $e");
+    }
   }
 
   void stopLocationUpdates() {
@@ -968,8 +1022,9 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
     // Remove from RTDB immediately on stop
     try {
-      if (user.uid.isNotEmpty) {
-        FirebaseDatabase.instance.ref('driver_locations/${user.uid}').remove();
+      final rtdbId = _driverDocId ?? user.uid;
+      if (rtdbId.isNotEmpty) {
+        FirebaseDatabase.instance.ref('driver_locations/$rtdbId').remove();
       }
     } catch (e) {
       debugPrint("Error removing driver location from RTDB: $e");
@@ -993,7 +1048,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     debugPrint("DEBUG: listenForRideRequests called. Checking driver doc...");
     final driverDoc = await FirebaseFirestore.instance
         .collection('drivers')
-        .doc(user.uid)
+        .doc(_driverDocId ?? user.uid)
         .get();
     if (!driverDoc.exists) {
       debugPrint(
@@ -1006,7 +1061,8 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     // 2. Listener for Assigned Rides (Direct Assignments)
     Query query = FirebaseFirestore.instance
         .collection('ride_requests')
-        .where('driverId', isEqualTo: user.uid)
+        .where('driverId', isEqualTo: _driverDocId ?? user.uid)
+        .where('driverUid', isEqualTo: user.uid) // Required for security rules
         .where('status', isEqualTo: 'searching') // Only listen for searching
         .orderBy('createdAt', descending: true);
 
@@ -1048,7 +1104,12 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     final ignoredSet = ignoredList.toSet();
 
     for (var doc in snapshot.docs) {
-      // 1. Instant check against persisted ignored rides (survives Get.offAll)
+      // 1. Instant check against recently cleared rides
+      if (_recentlyClearedRideIds.contains(doc.id)) {
+        continue;
+      }
+
+      // 2. Instant check against persisted ignored rides (survives Get.offAll)
       if (ignoredSet.contains(doc.id)) {
         continue;
       }
@@ -1114,7 +1175,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     notificationSubscription?.cancel();
     notificationSubscription = FirebaseFirestore.instance
         .collection('drivers')
-        .doc(user.uid)
+        .doc(_driverDocId ?? user.uid)
         .collection('notifications')
         .where('isRead', isEqualTo: false)
         .limit(1)
@@ -1144,7 +1205,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     // Listen to wallet balance from subcollection
     FirebaseFirestore.instance
         .collection('drivers')
-        .doc(user.uid)
+        .doc(_driverDocId ?? user.uid)
         .collection('wallet')
         .doc('balance')
         .snapshots()
@@ -1189,7 +1250,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     // Listen to driver document for subscription data
     walletSubscription = FirebaseFirestore.instance
         .collection('drivers')
-        .doc(user.uid)
+        .doc(_driverDocId ?? user.uid)
         .snapshots()
         .listen(
           (snapshot) {
@@ -1957,7 +2018,8 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
     try {
       final rideId = request.rideId;
-      final driverId = user.uid;
+      final driverId = _driverDocId ?? user.uid; // Professional ID
+      final driverUid = user.uid; // Auth UID
       final rideType = request.rideType;
 
       final collectionPath = (rideType == 'rental')
@@ -1969,7 +2031,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       // 0. Fetch Driver Details First
       final driverDocSnapshot = await FirebaseFirestore.instance
           .collection('drivers')
-          .doc(user.uid)
+          .doc(driverId) // Correct Professional ID
           .get();
       final dData = driverDocSnapshot.data();
 
@@ -1998,6 +2060,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         transaction.update(rideRef, {
           'status': 'accepted',
           'driverId': driverId,
+          'driverUid': driverUid, // For security rules and future status updates
           'driverName': dName,
           'driverPhone': dPhone,
           'driverPhoto': dPhoto,

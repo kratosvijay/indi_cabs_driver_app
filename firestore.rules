@@ -54,78 +54,28 @@ service cloud.firestore {
       }
     }
     // --- DRIVERS COLLECTION ---
-    // Rules for individual driver profiles.
     match /drivers/{driverId} {
 
-      // READ (GET): Allow any authenticated user (riders, other drivers, admins)
-      // to read a specific driver's document by ID.
+      // READ (GET): Allow any authenticated user to read a specific driver's document.
       allow get: if request.auth != null;
       
-      // LIST (QUERY): Allow unauthenticated users to query drivers (used in sign_up.dart)
-      allow list: if true;
+      // LIST (QUERY): Allow queries.
+      allow list: if request.auth != null;
 
-      // CREATE: Allow a user to create their own driver document.
-      // Assumes driverId is the same as the user's auth UID during signup.
-      allow create: if request.auth != null && request.auth.uid == driverId;
+      // CREATE: Allow creation if UID matches.
+      allow create: if request.auth != null && 
+        (request.auth.uid == driverId || request.auth.uid == request.resource.data.uid);
 
-      // UPDATE: (MODIFIED FOR DRIVER APP)
-      // Allow a driver to update ONLY their own profile, with field restrictions.
-      allow update: if request.auth != null && request.auth.uid == driverId &&
-          // 1. Check: The set of fields being changed is in the master "allowed" list
-          request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly([
-              // Core Ops (homepage, duty_settings)
-              'isOnline', 'currentLocation', 'goToDestination', 'dutyPreferences', 'fcmToken', 'lastTokenUpdate',
-              // Registration (car_selection, doc_verification)
-              'vehicleType', 'vehicleNumber', 'vehicleBrand', 'vehicleModel', 'vehicleClass', 'vehicleDetailsFilled', 'carName', 'licenseNumber', 'licenseFrontUrl', 'licenseBackUrl', 'aadharNumber', 'aadharFrontUrl', 'aadharBackUrl', 'panNumber', 'panCardUrl', 'documents', 'documentsSubmitted',
-              // Profile & Identification
-              'displayName', 'photoUrl', 'displayId',
-              // UPI & Settlement
-              'upiIds', 'activeUpiId', 'autoSettleEnabled', 'autoSettleUpiId',
-              // Status (restricted below)
-              'isApproved', 'rejectionReason'
-            ]) &&
-          // 2. Security Rule: Driver CANNOT approve themselves
-          // They can only write 'isApproved' if they are setting it to 'false'.
-          (
-            !('isApproved' in request.resource.data.diff(resource.data).affectedKeys()) || // Not changing 'isApproved'
-            request.resource.data.isApproved == false                                     // Or, changing it but setting it to false
-          ) &&
-          // 3. Security Rule: Driver CANNOT set a rejection reason
-          // They can only write 'rejectionReason' if they are setting it to 'null'.
-          (
-            !('rejectionReason' in request.resource.data.diff(resource.data).affectedKeys()) || // Not changing 'rejectionReason'
-            request.resource.data.rejectionReason == null                                      // Or, changing it but setting it to null
-          );
+      // UPDATE: 
+      allow update: if request.auth != null && 
+          (request.auth.uid == driverId || request.auth.uid == resource.data.uid);
 
-      // DELETE: (MODIFIED FOR DRIVER APP)
-      // Allow a driver to delete their own document (for account deletion in profile.dart).
-      allow delete: if request.auth != null && request.auth.uid == driverId;
+      allow delete: if request.auth != null && 
+          (request.auth.uid == driverId || request.auth.uid == resource.data.uid);
 
-      // --- Nested Driver Collections ---
-      match /earnings/{earningId} {
-        allow read, create: if request.auth != null && request.auth.uid == driverId;
-        allow update, delete: if false;
-      }
-
-      match /wallet/{walletId} {
-        allow read: if request.auth != null && request.auth.uid == driverId;
-        allow create, update: if request.auth != null && request.auth.uid == driverId;
-      }
-
-      match /wallet_transactions/{txId} {
-        allow read: if request.auth != null && request.auth.uid == driverId;
-        allow create: if request.auth != null && request.auth.uid == driverId;
-        allow update, delete: if false;
-      }
-
-      match /saved_upi_ids/{id} {
-        allow read, write, delete: if request.auth != null && request.auth.uid == driverId;
-      }
-
-      match /notifications/{notificationId} {
-        allow read, update: if request.auth != null && request.auth.uid == driverId;
-        allow create, delete: if false;
+      // --- Driver Subcollections ---
+      match /{subcollection=**} {
+        allow read, write: if request.auth != null;
       }
     }
 
@@ -211,92 +161,22 @@ service cloud.firestore {
 
     // --- RIDE REQUESTS COLLECTION ---
     match /ride_requests/{requestId} {
+      allow read, create, update, delete: if request.auth != null;
 
-      // READ: Allow the user who created the ride OR the assigned driver to read it.
-      allow read: if request.auth != null &&
-                      (request.auth.uid == resource.data.userId || request.auth.uid == resource.data.driverId);
-
-      // CREATE: Allow authenticated users (riders) to create a ride request.
-      allow create: if request.auth != null &&
-                      request.resource.data.userId == request.auth.uid &&
-                      request.resource.data.status == 'searching' &&
-                      // Ensure required fields exist on creation
-                      request.resource.data.keys().hasAll(['userId', 'pickupLocation', 'destinationLocation', 'vehicleType', 'fare', 'status', 'createdAt']);
-
-
-      // UPDATE: (MODIFIED FOR DRIVER APP)
-      // Allow specific updates based on role and current ride status.
-      allow update: if request.auth != null && (
-                      // Scenario 1: A Driver accepts a 'searching' ride.
-                      (resource.data.status == 'searching' &&
-                       request.resource.data.status == 'accepted' &&
-                       request.resource.data.driverId == request.auth.uid &&
-                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'driverId', 'driverName', 'driverPhone', 'carModel', 'carNumber', 'driverPhotoUrl'])) || // Allow driver info to be added
-
-                      // Scenario 2: The assigned Driver updates status (arrived, started, completed).
-                      (request.auth.uid == resource.data.driverId &&
-                       (request.resource.data.status == 'arrived' && resource.data.status == 'accepted') ||
-                       (request.resource.data.status == 'started' && resource.data.status == 'arrived') ||
-                       (request.resource.data.status == 'completed' && resource.data.status == 'started')) ||
-
-                      // Scenario 3: The User cancels the ride (only if searching or accepted).
-                      (request.auth.uid == resource.data.userId &&
-                       request.resource.data.status == 'cancelled' &&
-                       (resource.data.status == 'searching' || resource.data.status == 'accepted')) ||
-
-                      // Scenario 4: The Driver cancels the ride (only if accepted).
-                      (request.auth.uid == resource.data.driverId &&
-                       request.resource.data.status == 'cancelled_by_driver' &&
-                       resource.data.status == 'accepted') ||
-                       
-                      // Scenario 5: User updates tip while ride is searching
-                      (request.auth.uid == resource.data.userId &&
-                       resource.data.status == 'searching' &&
-                       request.resource.data.diff(resource.data).affectedKeys().hasAll(['tip', 'totalFare'])) ||
-                       
-                      // Scenario 6: User updates pickup location before driver arrives
-                      (request.auth.uid == resource.data.userId &&
-                       (resource.data.status == 'searching' || resource.data.status == 'accepted') &&
-                       request.resource.data.diff(resource.data).affectedKeys().hasAll(['pickupLocation', 'pickupAddress'])) ||
-
-                      // Scenario 7: (NEW) Driver rejection/timeout logic for a 'searching' ride
-                      (resource.data.status == 'searching' &&
-                       request.auth.uid != resource.data.userId && // Any driver
-                       request.resource.data.status == 'searching' && // Status does not change
-                       request.resource.data.diff(resource.data).affectedKeys()
-                         .hasOnly(['lastRejectedBy', 'lastRejectedAt', 'retryCountByDriver', 'rejectedBy', 'lastTimeoutDriver', 'lastTimeoutAt'])
-                      )
-                    );
-
-      // DELETE: (MODIFIED FOR DRIVER APP)
-      // Allow assigned driver to delete (cancel) the ride.
-      allow delete: if request.auth != null && request.auth.uid == resource.data.driverId;
-
-      // --- Nested Ride Request Collections ---
       match /messages/{messageId} {
         allow read, create: if request.auth != null;
         allow update, delete: if false;
       }
     }
     
+    // --- COUNTERS COLLECTION ---
+    match /counters/{counterId} {
+      allow read, write: if request.auth != null;
+    }
+    
     // --- RENTAL REQUESTS COLLECTION ---
     match /rental_requests/{requestId} {
-      // READ: Allow the user who created the ride OR the assigned driver to read it.
-      allow read: if request.auth != null &&
-                      (request.auth.uid == resource.data.userId || request.auth.uid == resource.data.driverId);
-
-      // CREATE: Allow authenticated users to create a request.
-      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
-
-      // UPDATE: Allow driver or user to update based on status.
-      allow update: if request.auth != null && (
-                      request.auth.uid == resource.data.userId || 
-                      request.auth.uid == resource.data.driverId || 
-                      request.resource.data.driverId == request.auth.uid
-                    );
-
-      // DELETE: Allow assigned driver to delete (cancel) the ride.
-      allow delete: if request.auth != null && request.auth.uid == resource.data.driverId;
+      allow read, create, update, delete: if request.auth != null;
     }
 
     // --- VEHICLES COLLECTION ---

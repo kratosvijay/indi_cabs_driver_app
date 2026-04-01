@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
@@ -44,21 +45,31 @@ class AuthController extends GetxController {
     }
 
     try {
-      // Check Driver Collection
-      DocumentSnapshot driverDoc = await _db
+      // Check Driver Collection by Querying UID field
+      // This is necessary because document IDs will now be human-readable (indi-drv-X)
+      // but Auth provides the randomized Firebase UID.
+      QuerySnapshot driverQuery = await _db
           .collection('drivers')
-          .doc(user.uid)
+          .where('uid', isEqualTo: user.uid)
+          .limit(1)
           .get(const GetOptions(source: Source.server))
           .timeout(const Duration(seconds: 10));
 
-      if (driverDoc.exists) {
+      if (driverQuery.docs.isNotEmpty) {
+        final driverDoc = driverQuery.docs.first;
+        final driverDocId = driverDoc.id; // Correct Document ID (e.g. indi-drv-1)
         final data = driverDoc.data() as Map<String, dynamic>;
+
+        // Persist the Document ID for use in other screens
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('driverDocId', driverDocId);
 
         // --- NEW: Check for Active Rides to Restore State ---
         try {
           var activeRidesSnapshot = await _db
               .collection('ride_requests')
-              .where('driverId', isEqualTo: user.uid)
+              .where('driverId', isEqualTo: driverDocId) // Use professional ID
+              .where('driverUid', isEqualTo: user.uid) // Required for security rules
               .where(
                 'status',
                 whereIn: ['accepted', 'arrived', 'started', 'completed'],
@@ -71,7 +82,8 @@ class AuthController extends GetxController {
           if (activeRidesSnapshot.docs.isEmpty) {
             activeRidesSnapshot = await _db
                 .collection('rental_requests')
-                .where('driverId', isEqualTo: user.uid)
+                .where('driverId', isEqualTo: driverDocId) // Use professional ID
+                .where('driverUid', isEqualTo: user.uid) // Required for security rules
                 .where(
                   'status',
                   whereIn: ['accepted', 'arrived', 'started', 'completed'],

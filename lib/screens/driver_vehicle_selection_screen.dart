@@ -6,6 +6,7 @@ import 'package:project_taxi_driver_app/widgets/pro_library.dart';
 import 'package:project_taxi_driver_app/screens/driver_binding_otp_screen.dart';
 import 'package:project_taxi_driver_app/controllers/auth_controller.dart';
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
+import 'package:project_taxi_driver_app/services/id_service.dart';
 
 class DriverVehicleSelectionScreen extends StatefulWidget {
   final User user;
@@ -30,9 +31,11 @@ class _DriverVehicleSelectionScreenState
 
   Future<void> _fetchOperatorId() async {
     try {
+      final docId = await IdService.getDriverDocId(widget.user.uid);
+
       final driverDoc = await _firestore
           .collection('drivers')
-          .doc(widget.user.uid)
+          .doc(docId)
           .get();
       if (driverDoc.exists && driverDoc.data() != null) {
         setState(() {
@@ -137,6 +140,11 @@ class _DriverVehicleSelectionScreenState
                   assignedId == null ||
                   assignedId.toString().isEmpty ||
                   assignedId == 'null';
+              
+              // Correctly check if currently assigned to ME (could be UID or DocId if legacy)
+              // But in the database, assignedDriverId should generally be the UID for security rules consistency
+              // However, we should check against the true identifier used in the vehicles collection.
+              // Assuming vehicles collection uses Auth UID for assignedDriverId.
               bool isAssignedToMe = assignedId == widget.user.uid;
               bool isAssignedToOther = !isAvailable && !isAssignedToMe;
 

@@ -11,6 +11,7 @@ import 'package:project_taxi_driver_app/widgets/pro_library.dart';
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:project_taxi_driver_app/utils/upload_progress_dialog.dart';
+import 'package:project_taxi_driver_app/screens/license_verification.dart';
 
 import 'package:project_taxi_driver_app/screens/sign_up.dart'; // For UserRole
 import 'package:project_taxi_driver_app/screens/homepage.dart';
@@ -19,12 +20,14 @@ class AadharVerificationScreen extends StatefulWidget {
   final User? user;
   final UserRole role;
   final String? targetUid;
+  final String? driverDocId; // New parameter
 
   const AadharVerificationScreen({
     super.key,
     this.user,
     required this.role,
     this.targetUid,
+    this.driverDocId,
   });
 
   @override
@@ -276,7 +279,10 @@ class _AadharVerificationScreenState extends State<AadharVerificationScreen> {
       final backUrl = urls[1];
       final panUrl = urls[2];
 
-      await _firestore.collection('drivers').doc(uid).update({
+      // Use driverDocId if provided, otherwise fallback to UID
+      final docId = widget.driverDocId ?? uid;
+
+      await _firestore.collection('drivers').doc(docId).update({
         'aadharNumber': aadharNo,
         'aadharFrontUrl': frontUrl,
         'aadharBackUrl': backUrl,
@@ -305,7 +311,13 @@ class _AadharVerificationScreenState extends State<AadharVerificationScreen> {
               () => DriverHomePage(user: widget.user!, isActingDriver: true),
             );
           } else {
-            Get.offAll(() => CarSelectionScreen(user: widget.user!));
+            Get.offAll(
+              () => CarSelectionScreen(
+                user: widget.user!,
+                role: widget.role,
+                driverDocId: widget.driverDocId, // Pass it forward
+              ),
+            );
           }
         }
       }
@@ -381,7 +393,18 @@ class _AadharVerificationScreenState extends State<AadharVerificationScreen> {
         titleText: _getTranslatedString('title'),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios, color: Colors.white),
-          onPressed: () => Get.back(),
+          onPressed: () {
+            if (Navigator.canPop(context)) {
+              Get.back();
+            } else {
+              Get.offAll(
+                () => LicenseVerificationScreen(
+                  user: widget.user!,
+                  role: widget.role,
+                ),
+              );
+            }
+          },
         ),
       ),
       body: Container(

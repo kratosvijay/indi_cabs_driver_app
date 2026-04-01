@@ -14,6 +14,7 @@ import 'package:project_taxi_driver_app/screens/reviews_screen.dart'; // **NEW I
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
 import 'package:project_taxi_driver_app/screens/driver_vehicle_selection_screen.dart';
+import 'package:project_taxi_driver_app/services/id_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -29,6 +30,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   String _selectedLanguageCode = 'en';
   bool _isLoading = true;
   bool _isUploadingImage = false;
+  String? _driverDocId;
 
   // --- Translations ---
   final Map<String, Map<String, String>> _translations = {
@@ -164,14 +166,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
   @override
   void initState() {
     super.initState();
-    _loadLanguage();
+    _loadInitialData();
   }
 
-  Future<void> _loadLanguage() async {
+  Future<void> _loadInitialData() async {
     final prefs = await SharedPreferences.getInstance();
+    final docId = await IdService.getDriverDocId(widget.user.uid);
     if (mounted) {
       setState(() {
         _selectedLanguageCode = prefs.getString('selectedLanguage') ?? 'en';
+        _driverDocId = docId;
         _isLoading = false;
       });
     }
@@ -208,7 +212,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
       final downloadUrl = await snapshot.ref.getDownloadURL();
 
       // Update Firestore
-      await FirebaseFirestore.instance.collection('drivers').doc(uid).update({
+      final docId = _driverDocId ?? uid;
+      await FirebaseFirestore.instance.collection('drivers').doc(docId).update({
         'photoUrl': downloadUrl,
       });
 
@@ -265,9 +270,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Future<void> _deleteAccount() async {
     try {
       // 1. Delete data from firestore
+      final docId = _driverDocId ?? widget.user.uid;
       await FirebaseFirestore.instance
           .collection('drivers')
-          .doc(widget.user.uid)
+          .doc(docId)
           .delete();
 
       // 2. Delete user authentication
@@ -329,7 +335,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         body: StreamBuilder<DocumentSnapshot>(
           stream: FirebaseFirestore.instance
               .collection('drivers')
-              .doc(widget.user.uid)
+              .doc(_driverDocId ?? widget.user.uid)
               .snapshots(),
           builder: (context, snapshot) {
             if (!snapshot.hasData ||
@@ -637,7 +643,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           );
                           if (result == true) {
                             _languageHasChanged = true;
-                            _loadLanguage();
+                            _loadInitialData(); // Updated name
                           }
                         },
                       ),

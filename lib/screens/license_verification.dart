@@ -12,17 +12,20 @@ import 'package:project_taxi_driver_app/widgets/pro_library.dart';
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:project_taxi_driver_app/utils/upload_progress_dialog.dart';
+import 'package:project_taxi_driver_app/screens/login.dart';
 
 class LicenseVerificationScreen extends StatefulWidget {
   final User? user; // Made nullable for fleet use
   final UserRole role; // Reverted back to UserRole
   final String? targetUid;
+  final String? driverDocId; // New parameter
 
   const LicenseVerificationScreen({
     super.key,
     this.user,
     required this.role,
     this.targetUid,
+    this.driverDocId,
   });
 
   @override
@@ -251,7 +254,10 @@ class _LicenseVerificationScreenState extends State<LicenseVerificationScreen> {
       final frontUrl = urls[0];
       final backUrl = urls[1];
 
-      await _firestore.collection('drivers').doc(uid).update({
+      // Use driverDocId if provided, otherwise fallback to UID (for legacy/fleet)
+      final docId = widget.driverDocId ?? uid;
+
+      await _firestore.collection('drivers').doc(docId).update({
         'licenseNumber': licenseNo,
         'licenseFrontUrl': frontUrl,
         'licenseBackUrl': backUrl,
@@ -279,7 +285,11 @@ class _LicenseVerificationScreenState extends State<LicenseVerificationScreen> {
       } else {
         // Driver Mode: Replace stack
         Get.offAll(
-          () => AadharVerificationScreen(user: widget.user, role: widget.role),
+          () => AadharVerificationScreen(
+            user: widget.user,
+            role: widget.role,
+            driverDocId: widget.driverDocId,
+          ),
         );
       }
     } catch (e) {
@@ -354,7 +364,13 @@ class _LicenseVerificationScreenState extends State<LicenseVerificationScreen> {
         titleText: _getTranslatedString('title'),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios, color: Colors.white),
-          onPressed: () => Get.back(),
+          onPressed: () {
+            if (Navigator.canPop(context)) {
+              Get.back();
+            } else {
+              Get.offAll(() => const LoginScreen());
+            }
+          },
         ),
       ),
       body: Container(

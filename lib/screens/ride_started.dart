@@ -314,13 +314,21 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
     await _repairDropoffLocation();
 
     // Wait for driver location to be available
-    await Future.delayed(const Duration(seconds: 2));
-    if (_driverLocation != null && _dropLocation != null) {
+    int retries = 0;
+    while (_driverLocation == null && retries < 5) {
+      await Future.delayed(const Duration(milliseconds: 500));
+      retries++;
+    }
+
+    if (_driverLocation != null &&
+        _driverLocation!.latitude != 0 &&
+        _dropLocation != null &&
+        _dropLocation!.latitude != 0) {
       await _getRoute(_driverLocation!, _dropLocation!);
     } else {
       // Fallback: If driver location is not valid yet, just center on dropoff.
       // Do NOT route from pickup, as that is confusing for a Started ride.
-      if (_dropLocation != null) {
+      if (_dropLocation != null && _dropLocation!.latitude != 0) {
         final controller = await _controller.future;
         controller.animateCamera(
           maps.CameraUpdate.newLatLngZoom(_dropLocation!, 16),
@@ -454,6 +462,15 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
     maps.LatLng origin,
     maps.LatLng destination,
   ) async {
+    // Add safety check for (0,0) coordinates which show the sea
+    if (origin.latitude == 0 ||
+        origin.longitude == 0 ||
+        destination.latitude == 0 ||
+        destination.longitude == 0) {
+      debugPrint("SKIPPING fitCameraToRoute: Invalid coordinates detected.");
+      return;
+    }
+
     final controller = await _controller.future;
 
     final bounds = maps.LatLngBounds(

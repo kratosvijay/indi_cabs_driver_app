@@ -3,7 +3,7 @@
     "driver_locations": {
       ".read": "auth != null",
       "$driverId": {
-        ".write": "auth != null && auth.uid === $driverId"
+        ".write": "auth != null"
       }
     },
     "$other": {

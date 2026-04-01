@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:project_taxi_driver_app/services/id_service.dart';
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
 
 class QrSettingsScreen extends StatefulWidget {
@@ -20,6 +21,7 @@ class _QrSettingsScreenState extends State<QrSettingsScreen> {
   bool _isLoading = true;
   List<String> _upiIds = [];
   String? _activeUpiId;
+  String? _driverDocId;
 
   @override
   void initState() {
@@ -32,12 +34,14 @@ class _QrSettingsScreenState extends State<QrSettingsScreen> {
     _upiController.dispose();
     super.dispose();
   }
-
   Future<void> _loadDriverData() async {
     try {
+      final docId = await IdService.getDriverDocId(widget.user.uid);
+      _driverDocId = docId;
+
       final doc = await FirebaseFirestore.instance
           .collection('drivers')
-          .doc(widget.user.uid)
+          .doc(_driverDocId)
           .get();
 
       if (doc.exists && mounted) {
@@ -83,7 +87,7 @@ class _QrSettingsScreenState extends State<QrSettingsScreen> {
 
       await FirebaseFirestore.instance
           .collection('drivers')
-          .doc(widget.user.uid)
+          .doc(_driverDocId ?? widget.user.uid)
           .update({'upiIds': updatedList, 'activeUpiId': newActiveId});
 
       setState(() {
@@ -116,7 +120,7 @@ class _QrSettingsScreenState extends State<QrSettingsScreen> {
     try {
       await FirebaseFirestore.instance
           .collection('drivers')
-          .doc(widget.user.uid)
+          .doc(_driverDocId ?? widget.user.uid)
           .update({'activeUpiId': upiId});
 
       setState(() {
@@ -153,7 +157,7 @@ class _QrSettingsScreenState extends State<QrSettingsScreen> {
 
       await FirebaseFirestore.instance
           .collection('drivers')
-          .doc(widget.user.uid)
+          .doc(_driverDocId ?? widget.user.uid)
           .update({'upiIds': updatedList, 'activeUpiId': newActiveId});
 
       setState(() {

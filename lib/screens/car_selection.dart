@@ -12,14 +12,21 @@ import 'package:project_taxi_driver_app/utils/app_colors.dart';
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:project_taxi_driver_app/utils/upload_progress_dialog.dart';
+import 'package:project_taxi_driver_app/screens/sign_up.dart'; // For UserRole
+import 'package:project_taxi_driver_app/screens/aadhar_verification.dart';
 
 class CarSelectionScreen extends StatefulWidget {
   final User user;
   final bool isFleet; // New parameter
+  final UserRole role; // New parameter
+  final String? driverDocId; // New parameter
+
   const CarSelectionScreen({
     super.key,
     required this.user,
     this.isFleet = false,
+    this.role = UserRole.individual, // Default to individual
+    this.driverDocId,
   });
 
   @override
@@ -455,9 +462,10 @@ class _CarSelectionScreenState extends State<CarSelectionScreen> {
         });
       } else {
         // Driver Flow (Existing)
+        final docId = widget.driverDocId ?? widget.user.uid;
         await FirebaseFirestore.instance
             .collection('drivers')
-            .doc(widget.user.uid)
+            .doc(docId)
             .set({
               'vehicleType':
                   (_selectedVehicleType == 'Car' &&
@@ -488,6 +496,8 @@ class _CarSelectionScreenState extends State<CarSelectionScreen> {
             user: widget.user,
             isFleet: widget.isFleet,
             vehicleId: newVehicleId, // Pass the new ID
+            role: widget.role,
+            driverDocId: widget.driverDocId, // Pass it forward
           ),
         );
       }
@@ -591,7 +601,25 @@ class _CarSelectionScreenState extends State<CarSelectionScreen> {
     }
 
     return Scaffold(
-      appBar: ProAppBar(titleText: _getTranslatedString('title')),
+      appBar: ProAppBar(
+        titleText: _getTranslatedString('title'),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            if (Navigator.canPop(context)) {
+              Get.back();
+            } else {
+              Get.offAll(
+                () => AadharVerificationScreen(
+                  user: widget.user,
+                  role: widget.role,
+                  driverDocId: widget.driverDocId,
+                ),
+              );
+            }
+          },
+        ),
+      ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(24.0),
         child: Column(

@@ -19,11 +19,10 @@ import * as path from "path";
 
 import { batchOnboard } from "./onboarding";
 import { aggregateDemandDriver, resetDemandZonesDriver } from "./demandAggregator";
-import { checkAvailableSoonDrivers, acceptBackToBackRide } from "./backToBack";
 import { removeInvalidAirportDrivers, cleanupGhostAirportDrivers, onQueueDriverAdded, onQueueDriverRemoved, acceptAirportRide, assignAirportRide } from "./airportQueue";
 
 export {
-    batchOnboard, aggregateDemandDriver, resetDemandZonesDriver, checkAvailableSoonDrivers, acceptBackToBackRide,
+    batchOnboard, aggregateDemandDriver, resetDemandZonesDriver,
     removeInvalidAirportDrivers, cleanupGhostAirportDrivers, onQueueDriverAdded, onQueueDriverRemoved, acceptAirportRide,
     verifyUpiIdWithOtp, generateOtpDriver
 };
@@ -51,6 +50,7 @@ if (admin.apps.length === 0) {
     admin.initializeApp();
 }
 
+const exotelSubdomain = defineSecret("EXOTEL_SUBDOMAIN");
 const db = admin.firestore();
 const rtdb = getDatabase();
 
@@ -58,7 +58,81 @@ const exotelSid = defineSecret("EXOTEL_SID");
 const exotelApiKey = defineSecret("EXOTEL_API_KEY");
 const exotelApiToken = defineSecret("EXOTEL_API_TOKEN");
 const exotelCallerId = defineSecret("EXOTEL_CALLER_ID");
-const exotelSubdomain = defineSecret("EXOTEL_SUBDOMAIN");
+
+/**
+ * HELPER: Get Professional Driver ID (displayId) from Auth UID
+ */
+export async function getDriverDocId(uid: string): Promise<string> {
+    // 1. Check if the UID itself is already a professional ID (unlikely for auth.uid)
+    if (uid.startsWith('indi-drv-')) return uid;
+
+    // 2. Lookup in drivers collection by 'uid' field
+    const snap = await db.collection('drivers').where('uid', '==', uid).limit(1).get();
+    if (!snap.empty) {
+        return snap.docs[0].id; // Returns "indi-drv-X"
+    }
+
+    // 3. Fallback to the UID itself if no professional record found
+    return uid;
+}
+
+/**
+ * Set Driver Status (Online/Offline)
+ * Uses Admin SDK to bypass Firestore security rules.
+ * Fixes PERMISSION_DENIED when driver doc uses professional ID (indi-drv-X)
+ * and the uid field is missing or mismatched.
+ */
+export const setDriverStatus = onCall({ region: "asia-south1" }, async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Must be logged in');
+
+    const uid = request.auth.uid;
+    const { isOnline, vehicleType } = request.data;
+
+    // Resolve professional Driver ID
+    const driverDocId = await getDriverDocId(uid);
+    const driverRef = db.collection('drivers').doc(driverDocId);
+    const driverDoc = await driverRef.get();
+
+    if (!driverDoc.exists) {
+        throw new HttpsError('not-found', `Driver document ${driverDocId} not found`);
+    }
+
+    const updateData: any = {
+        isOnline: isOnline === true,
+        uid: uid, // CRITICAL: Always ensure uid field is set correctly
+    };
+
+    if (isOnline) {
+        updateData.status = 'active';
+        updateData.goToDestination = null;
+
+        // Auto-correct vehicleType if provided
+        if (vehicleType) {
+            updateData.vehicleType = vehicleType;
+        }
+    }
+
+    await driverRef.update(updateData);
+    console.log(`[setDriverStatus] Driver ${driverDocId} (uid: ${uid}) -> isOnline: ${isOnline}`);
+
+    return { success: true, driverDocId: driverDocId };
+});
+
+/**
+ * DEBUG: Get raw driver data for diagnostics
+ */
+export const debugDriver = onCall({ region: "asia-south1" }, async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Must be logged in');
+    const uid = request.auth.uid;
+    const driverDocId = await getDriverDocId(uid);
+    const doc = await db.collection('drivers').doc(driverDocId).get();
+    return {
+        exists: doc.exists,
+        docId: driverDocId,
+        uid: uid,
+        data: doc.data()
+    };
+});
 
 
 // ============================================================================
@@ -320,36 +394,48 @@ export const distributeRideToDrivers = onDocumentWritten(
                         locData.lng
                     );
 
-                    if (dist <= currentRadius) {
-                        previouslyCheckedDrivers.add(driverId);
-                        const driverDoc = await db.collection('drivers').doc(driverId).get();
-                        
-                        if (!driverDoc.exists) {
-                            console.log(`[Dispatch Flow] Driver ${driverId} document missing in Firestore. Skipping.`);
-                            continue;
-                        }
+                        if (dist <= currentRadius) {
+                            previouslyCheckedDrivers.add(driverId);
+                            
+                            // 1. Try to get doc by ID (works if driver reports using professional ID)
+                            let driverDoc = await db.collection('drivers').doc(driverId).get();
+                            
+                            // 2. Fallback: Search by UID (works if driver reports using legacy UID)
+                            if (!driverDoc.exists) {
+                                const uidQuery = await db.collection('drivers').where('uid', '==', driverId).limit(1).get();
+                                if (!uidQuery.empty) {
+                                    driverDoc = uidQuery.docs[0];
+                                }
+                            }
 
-                        const dData = driverDoc.data();
+                            if (!driverDoc.exists) {
+                                console.log(`[Dispatch Flow] Driver ${driverId} document missing in Firestore. Skipping.`);
+                                continue;
+                            }
+
+                            const resolvedDriverId = driverDoc.id; // Correct Professional ID (e.g. indi-drv-4)
+                            const dData = driverDoc.data();
                         if (!dData) continue;
 
                         // Unified filtering logic
                         const isApproved = dData.isApproved === true;
                         const isOnline = dData.isOnline === true;
-                        const isValidStatus = !dData.status || dData.status === "active" || dData.status === "availableSoon";
+                        const isValidStatus = !dData.status || dData.status === "active";
 
                         if (isApproved && isOnline && isValidStatus) {
                             candidates.push({
-                                id: driverId,
+                                id: driverId, // RTDB key (could be UID)
+                                resolvedId: resolvedDriverId, // Firestore Doc ID (professional ID)
                                 distance: dist,
-                                data: dData,
-                                isB2B: dData.status === 'availableSoon'
+                                data: dData
                             });
                             newCandidatesFound = true;
+                            console.log(`[Dispatch Flow] Candidate found: ${resolvedDriverId} at ${dist.toFixed(2)}km`);
                         } else {
                             // Detailed logging for why a nearby driver was skipped
                             const reasons = [];
-                            if (!isApproved) reasons.push("not approved");
-                            if (!isOnline) reasons.push("offline");
+                            if (dData.isApproved !== true) reasons.push(`isApproved: ${dData.isApproved} (type: ${typeof dData.isApproved})`);
+                            if (dData.isOnline !== true) reasons.push(`isOnline: ${dData.isOnline} (type: ${typeof dData.isOnline})`);
                             if (!isValidStatus) reasons.push(`status: ${dData.status}`);
                             console.log(`[Dispatch Flow] Driver ${driverId} at ${dist.toFixed(2)}km skipped. Reason: ${reasons.join(", ")}`);
                         }
@@ -383,7 +469,7 @@ export const distributeRideToDrivers = onDocumentWritten(
 
                 for (let i = 0; i < maxDrivers; i++) {
                     const driverInfo = candidates[i];
-                    const driverId = driverInfo.id;
+                    const driverId = driverInfo.resolvedId; // Use resolved professional ID
 
                     // Check if driver has already rejected this ride in a previous loop
                     const currentRideDoc = await rideRef.get();
@@ -422,6 +508,8 @@ export const distributeRideToDrivers = onDocumentWritten(
                         rideId: rideId,
                         rideType: afterData.rideType || "daily",
                         riderId: afterData.riderId || "",
+                        driverId: driverId, // Professional ID
+                        driverUid: driverInfo.data.uid, // Auth UID for security rules
                         pickupLocation: afterData.pickupLocation,
                         destinationLocation: afterData.destinationLocation || afterData.pickupLocation,
                         fareEstimate: afterData.fare || afterData.fareEstimate || afterData.rideFare || 0,
@@ -439,7 +527,8 @@ export const distributeRideToDrivers = onDocumentWritten(
                         currentDriverIndex: i,
                         potentialDrivers: candidates.map(d => d.id),
                         notifiedAt: admin.firestore.FieldValue.serverTimestamp(),
-                        driverId: driverId, // <-- Set driverId so frontend listener triggers
+                        driverId: driverId, // Professional ID
+                        driverUid: driverInfo.data.uid, // Auth UID for security rules
                     });
 
                     // Wait 
@@ -496,9 +585,11 @@ export const distributeRideToDrivers = onDocumentWritten(
 export const acceptRide = onCall({ region: "asia-south1" }, async (request) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'Must be logged in');
 
-    const driverId = request.auth.uid;
+    const uid = request.auth.uid;
     const { rideId } = request.data;
-
+    
+    // Resolve professional Driver ID
+    const driverDocId = await getDriverDocId(uid);
     const rideRef = db.collection('ride_requests').doc(rideId); // Central ride doc
 
     try {
@@ -512,20 +603,16 @@ export const acceptRide = onCall({ region: "asia-south1" }, async (request) => {
             if (rideDoc.data()?.status === "searching") {
                 tx.update(rideRef, {
                     status: "accepted",
-                    driverId: driverId,
-                    acceptedAt: admin.firestore.FieldValue.serverTimestamp()
+                    driverId: driverDocId, // Use professional ID
+                    acceptedAt: admin.firestore.Timestamp.now()
                 });
-
-                // (Optional) lock driver
-                // const driverRef = db.collection('drivers').doc(driverId);
-                // tx.update(driverRef, { isBusy: true });
             } else {
                 throw new Error("Already accepted by another driver or cancelled");
             }
         });
 
         // Transaction successful. Cleanup driver's local request list.
-        const myRequestsSnap = await db.collection(`ride_requests/\${driverId}/requests`).where('status', '==', 'pending').get();
+        const myRequestsSnap = await db.collection(`ride_requests/${driverDocId}/requests`).where('status', '==', 'pending').get();
         const batch = db.batch();
         myRequestsSnap.forEach(doc => {
             if (doc.id !== rideId) {
@@ -691,30 +778,28 @@ export const manageDriverStatus = onDocumentUpdated(
         const beforeData = change.before.data();
         const afterData = change.after.data();
 
-        const driverId = afterData.driverId;
-        if (!driverId) return null;
-
-        const driverRef = db.collection("drivers").doc(driverId);
+        if (!afterData) return null;
 
         // Case 1: Ride Accepted -> Set Offline / OnTrip
         if (beforeData.status === "searching" && afterData.status === "accepted") {
-            console.log(`Setting driver ${driverId} to OnTrip/Offline and removing from Airport Queue`);
-            await driverRef.update({
+            const drvId = afterData.driverId; // This is already the professional ID because we fixed acceptRide
+            console.log(`Setting driver ${drvId} to OnTrip/Offline and removing from Airport Queue`);
+            await db.collection("drivers").doc(drvId).update({
                 isOnline: false,
                 status: "on_trip"
             });
 
             // Remove from Airport Queue (MAA) if present
-            // This ensures the queue shifts up (1->0, 2->1, etc.)
-            await db.collection("airport_queues").doc("MAA").collection("drivers").doc(driverId).delete().catch(e => {
+            await db.collection("airport_queues").doc("MAA").collection("drivers").doc(drvId).delete().catch(e => {
                 console.log("Error removing from queue (might not be in one):", e);
             });
         }
 
         // Case 2: Ride Completed -> Set Online / Active
         if (beforeData.status !== "completed" && afterData.status === "completed") {
-            console.log(`Setting driver ${driverId} to Active/Online`);
-            await driverRef.update({
+            const drvId = afterData.driverId; 
+            console.log(`Setting driver ${drvId} to Active/Online`);
+            await db.collection("drivers").doc(drvId).update({
                 isOnline: true,
                 status: "active"
             });
@@ -727,7 +812,7 @@ export const manageDriverStatus = onDocumentUpdated(
                 const earningsData = {
                     amount: amount,
                     createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                    driverId: driverId,
+                    driverId: drvId,
                     rideId: rideId,
                     status: "completed",
                     type: "ride_fare",
@@ -748,11 +833,10 @@ export const manageDriverStatus = onDocumentUpdated(
         }
 
         // Case 3: Ride Cancelled (after acceptance) -> Set Online / Active
-        // (If driver cancelled it, they might be blocked, but they should be conceptually 'available' for other things unless blocked logic overrides)
-        // But if USER cancels, driver should go back online.
         if (beforeData.status === "accepted" && afterData.status === "cancelled") {
-            console.log(`Ride cancelled. Setting driver ${driverId} to Active/Online`);
-            await driverRef.update({
+            const drvId = afterData.driverId;
+            console.log(`Ride cancelled. Setting driver ${drvId} to Active/Online`);
+            await db.collection("drivers").doc(drvId).update({
                 isOnline: true,
                 status: "active"
             });

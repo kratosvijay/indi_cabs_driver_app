@@ -1,4 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/foundation.dart';
 
 class IdService {
   static final FirebaseFirestore _db = FirebaseFirestore.instance;
@@ -23,5 +25,36 @@ class IdService {
       transaction.update(counterRef, {'lastId': nextId});
       return nextId;
     });
+  }
+
+  /// Retrieves the driver's professional document ID, recovering it from Firestore if necessary.
+  static Future<String> getDriverDocId(String uid) async {
+    final prefs = await SharedPreferences.getInstance();
+    String? storedId = prefs.getString('driverDocId');
+
+    if (storedId == null || storedId.isEmpty) {
+      debugPrint("IdService: driverDocId not found in prefs. Attempting recovery for $uid...");
+      try {
+        final snapshot = await _db
+            .collection('drivers')
+            .where('uid', isEqualTo: uid)
+            .limit(1)
+            .get();
+
+        if (snapshot.docs.isNotEmpty) {
+          storedId = snapshot.docs.first.id;
+          await prefs.setString('driverDocId', storedId);
+          debugPrint("IdService: Recovered driverDocId: $storedId");
+        } else {
+          debugPrint("IdService: No matching driver document found for $uid. Using UID as fallback.");
+          storedId = uid;
+        }
+      } catch (e) {
+        debugPrint("IdService: Error recovering driverDocId: $e");
+        storedId = uid;
+      }
+    }
+
+    return storedId;
   }
 }

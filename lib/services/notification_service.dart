@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:project_taxi_driver_app/services/id_service.dart';
 
 class NotificationService {
   static final NotificationService _instance = NotificationService._internal();
@@ -100,7 +101,9 @@ class NotificationService {
     User? user = _auth.currentUser;
     if (user != null) {
       try {
-        await _firestore.collection('drivers').doc(user.uid).set({
+        final docId = await IdService.getDriverDocId(user.uid);
+
+        await _firestore.collection('drivers').doc(docId).set({
           'fcmToken': token,
           'lastTokenUpdate': FieldValue.serverTimestamp(),
         }, SetOptions(merge: true));

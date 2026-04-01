@@ -6,6 +6,7 @@ import 'package:get/get.dart';
 import 'package:pinput/pinput.dart';
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
+import 'package:project_taxi_driver_app/services/id_service.dart';
 import 'package:project_taxi_driver_app/screens/homepage.dart';
 
 class DriverBindingOtpScreen extends StatefulWidget {
@@ -98,6 +99,8 @@ class _DriverBindingOtpScreenState extends State<DriverBindingOtpScreen> {
 
   Future<void> _bindVehicle(String vehicleId) async {
     try {
+      final docId = await IdService.getDriverDocId(widget.user.uid);
+
       // 1. Aggressive Cleanup: Find ALL vehicles currently assigned to this driver
       // Done OUTSIDE transaction to avoid limitations on queries inside transactions
       final existingVehiclesSnapshot = await _firestore
@@ -140,7 +143,7 @@ class _DriverBindingOtpScreenState extends State<DriverBindingOtpScreen> {
         final String plate = vehicleData?['plateNumber'] ?? '';
         final String vClass = vehicleData?['class'] ?? 'Unknown';
 
-        final driverRef = _firestore.collection('drivers').doc(widget.user.uid);
+        final driverRef = _firestore.collection('drivers').doc(docId);
         transaction.update(driverRef, {
           'vehicleId': vehicleId,
           'vehicleType':

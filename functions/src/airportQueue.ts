@@ -3,6 +3,7 @@ import { onDocumentUpdated, onDocumentCreated, onDocumentDeleted } from "firebas
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import { getFirestore } from "firebase-admin/firestore";
+import { getDriverDocId } from "./index";
 
 // ------------------------------------------------------------------
 // 1. Invalid Driver Prevention (Remove from queue if offline/on_trip)
@@ -166,6 +167,8 @@ export const assignAirportRide = async (airportId: string, rideId: string, rideD
             await requestRef.set({
                 rideId: rideId,
                 riderId: rideData.riderId || "",
+                driverId: dId, // Professional ID
+                driverUid: dData.uid, // Auth UID for security rules
                 pickupLocation: rideData.pickupLocation,
                 destinationLocation: rideData.destinationLocation || rideData.pickupLocation,
                 fareEstimate: rideData.fare || rideData.fareEstimate || 0,
@@ -181,7 +184,9 @@ export const assignAirportRide = async (airportId: string, rideId: string, rideD
                 currentDriverIndex: 0,
                 potentialDrivers: [dId],
                 notifiedAt: admin.firestore.FieldValue.serverTimestamp(),
-                isAirportRide: true
+                isAirportRide: true,
+                driverId: dId, // Professional ID
+                driverUid: dData.uid, // Auth UID for security rules
             });
 
             // 3. WAIT exactly 5 seconds
@@ -223,15 +228,18 @@ export const assignAirportRide = async (airportId: string, rideId: string, rideD
 export const acceptAirportRide = onCall({ region: "asia-south1" }, async (request) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'Must be logged in');
 
-    const driverId = request.auth.uid;
+    const uid = request.auth.uid;
     const { rideId, airportId = 'MAA' } = request.data;
 
     if (!rideId) throw new HttpsError('invalid-argument', 'rideId is required');
 
+    // Resolve professional Driver ID
+    const driverDocId = await getDriverDocId(uid);
+
     const db = getFirestore();
-    const rideRef = db.collection('rides').doc(rideId);
-    const driverQueueRef = db.collection(`airport_queues/${airportId}/drivers`).doc(driverId);
-    const driverRef = db.collection('drivers').doc(driverId);
+    const rideRef = db.collection('ride_requests').doc(rideId); // Use central ride_requests
+    const driverQueueRef = db.collection(`airport_queues/${airportId}/drivers`).doc(driverDocId);
+    const driverRef = db.collection('drivers').doc(driverDocId);
 
     try {
         await db.runTransaction(async (tx) => {
@@ -244,7 +252,7 @@ export const acceptAirportRide = onCall({ region: "asia-south1" }, async (reques
             // 1. Mark Ride accepted
             tx.update(rideRef, {
                 status: "accepted",
-                driverId: driverId,
+                driverId: driverDocId,
                 acceptedAt: admin.firestore.FieldValue.serverTimestamp(),
                 isAirportRide: true
             });
@@ -261,9 +269,9 @@ export const acceptAirportRide = onCall({ region: "asia-south1" }, async (reques
         });
 
         // Async cleanup: Clear local pending ride requests for this driver
-        const myRequestsSnap = await db.collection(`ride_requests/${driverId}/requests`).where('status', '==', 'pending').get();
+        const myRequestsSnap = await db.collection(`ride_requests/${driverDocId}/requests`).where('status', '==', 'pending').get();
         const batch = db.batch();
-        myRequestsSnap.docs.forEach(doc => {
+        myRequestsSnap.docs.forEach((doc: any) => {
             if (doc.id !== rideId) batch.delete(doc.ref);
         });
         await batch.commit();

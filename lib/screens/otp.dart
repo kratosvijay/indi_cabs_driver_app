@@ -281,10 +281,14 @@ class _OtpScreenState extends State<OtpScreen> with CodeAutoFill {
         // Registration flow
         if (widget.role == UserRole.individual ||
             widget.role == UserRole.actingDriver) {
-          await _createIndividualDriver(user);
+          final String displayId = await _createIndividualDriver(user);
           if (mounted) {
             Get.offAll(
-              () => LicenseVerificationScreen(user: user, role: widget.role),
+              () => LicenseVerificationScreen(
+                user: user,
+                role: widget.role,
+                driverDocId: displayId,
+              ),
             );
           }
         } else {
@@ -310,7 +314,7 @@ class _OtpScreenState extends State<OtpScreen> with CodeAutoFill {
       if (mounted) {
         Get.snackbar(
           'Error',
-          _getTranslatedString('unexpectedError'),
+          "${_getTranslatedString('unexpectedError')}: $e",
           backgroundColor: Colors.red,
           colorText: Colors.white,
         );
@@ -319,7 +323,7 @@ class _OtpScreenState extends State<OtpScreen> with CodeAutoFill {
     }
   }
 
-  Future<void> _createIndividualDriver(User user) async {
+  Future<String> _createIndividualDriver(User user) async {
     String? photoUrl;
     if (widget.imageFile != null) {
       photoUrl = await _uploadProfilePicture(user.uid, widget.imageFile!);
@@ -334,7 +338,7 @@ class _OtpScreenState extends State<OtpScreen> with CodeAutoFill {
     final nextId = await IdService.getNextDriverId();
     final displayId = 'indi-drv-$nextId';
 
-    await _firestore.collection('drivers').doc(user.uid).set({
+    await _firestore.collection('drivers').doc(displayId).set({
       ...widget.userData,
       'uid': user.uid,
       'displayId': displayId,
@@ -351,7 +355,7 @@ class _OtpScreenState extends State<OtpScreen> with CodeAutoFill {
     // Initialize Wallet
     await _firestore
         .collection('drivers')
-        .doc(user.uid)
+        .doc(displayId) // Use displayId instead of user.uid
         .collection('wallet')
         .doc('balance')
         .set({
@@ -361,13 +365,18 @@ class _OtpScreenState extends State<OtpScreen> with CodeAutoFill {
 
     await _firestore
         .collection('drivers')
-        .doc(user.uid)
+        .doc(displayId)
         .collection('wallet')
         .doc('metadata')
         .set({
-      'settlementsThisWeek': 0,
       'lastSettlementDate': null,
     });
+
+    // Persist the Document ID for use in other screens
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('driverDocId', displayId);
+
+    return displayId;
   }
 
   Future<void> _createFleetOperator(User user) async {
