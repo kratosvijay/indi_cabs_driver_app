@@ -20,10 +20,16 @@ import 'package:upgrader/upgrader.dart';
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
 import 'package:project_taxi_driver_app/utils/app_translations.dart';
 
-// Re-export the overlay entry point for flutter_overlay_window
-// This MUST be in main.dart for the plugin to find it
-export 'package:project_taxi_driver_app/services/overlay_main.dart'
-    show overlayMain;
+import 'package:project_taxi_driver_app/services/overlay_main.dart' show OverlayApp;
+
+// Overlay entry point for flutter_overlay_window.
+// MUST be in main.dart and annotated with @pragma("vm:entry-point") for Release builds.
+@pragma("vm:entry-point")
+void overlayMain() {
+  WidgetsFlutterBinding.ensureInitialized();
+  DartPluginRegistrant.ensureInitialized();
+  runApp(const OverlayApp());
+}
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();

@@ -59,8 +59,8 @@ service cloud.firestore {
       // READ (GET): Allow any authenticated user to read a specific driver's document.
       allow get: if request.auth != null;
       
-      // LIST (QUERY): Allow queries.
-      allow list: if request.auth != null;
+      // LIST (QUERY): Allow unauthenticated users to query drivers (used in phone_auth.dart)
+      allow list: if true;
 
       // CREATE: Allow creation if UID matches.
       allow create: if request.auth != null && 

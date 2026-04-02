@@ -270,7 +270,8 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
     if (state == AppLifecycleState.paused) {
       debugPrint("App paused. Driver Status: ${driverStatus.value}");
-      if (driverStatus.value == DriverStatus.online) {
+      if (driverStatus.value == DriverStatus.online ||
+          driverStatus.value == DriverStatus.goTo) {
         final ride = activeRideRequest;
         if (ride != null && ride.status == 'searching') {
           debugPrint("Showing Overlay for Ride Request");
@@ -1480,13 +1481,12 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       dropoffDetails = await getParsedAddressFromLatLng(finalDestination);
     }
 
-    // Prioritize Firebase Data if available
     final String pickupFull =
-        data['pickupAddress'] ?? pickupDetails['fullAddress']!;
+        data['pickupAddress'] ?? pickupDetails['fullAddress'] ?? 'Unknown Location';
     // Extract simple title from full address if needed, or use formatted area
     final String pickupTitle = data['pickupAddress'] != null
         ? RideRequest.extractTitle(data['pickupAddress'])
-        : pickupDetails['area']!;
+        : (pickupDetails['area'] ?? 'Unknown Area');
 
     final String dropoffFull =
         data['destinationAddress'] ?? dropoffDetails['fullAddress']!;

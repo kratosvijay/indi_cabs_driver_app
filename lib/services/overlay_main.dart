@@ -1,18 +1,11 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:ui' show IsolateNameServer, DartPluginRegistrant;
+import 'dart:ui' show IsolateNameServer;
 import 'package:flutter/material.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
 import 'package:project_taxi_driver_app/widgets/rental_overlay_card.dart';
-
-@pragma("vm:entry-point")
-void overlayMain() {
-  WidgetsFlutterBinding.ensureInitialized();
-  DartPluginRegistrant.ensureInitialized();
-  runApp(const OverlayApp());
-}
 
 /* ---------------- APP ---------------- */
 

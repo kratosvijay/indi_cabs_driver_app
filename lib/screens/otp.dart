@@ -257,6 +257,17 @@ class _OtpScreenState extends State<OtpScreen> with CodeAutoFill {
       );
       return;
     }
+
+    if (_verificationId == null && credential == null) {
+      Get.snackbar(
+        'Wait',
+        "Please wait for the service to initiate the verification code.",
+        backgroundColor: Colors.orange.withValues(alpha: 0.1),
+        colorText: Colors.orange,
+      );
+      return;
+    }
+
     setState(() => _isLoading = true);
 
     try {
@@ -274,7 +285,7 @@ class _OtpScreenState extends State<OtpScreen> with CodeAutoFill {
       if (user != null) {
         // If userData is empty, it means we are in Login flow (from PhoneAuthScreen)
         if (widget.userData.isEmpty) {
-          await AuthController.instance.decideRoute();
+          await AuthController.instance.decideRoute(externalUser: user);
           return;
         }
 
@@ -497,7 +508,7 @@ class _OtpScreenState extends State<OtpScreen> with CodeAutoFill {
                     else ...[
                       ProButton(
                         text: _getTranslatedString('verify'),
-                        onPressed: _isLoading ? null : _verifyOtp,
+                        onPressed: (_isLoading || _isSendingOtp || _verificationId == null) ? null : _verifyOtp,
                         isLoading: _isLoading,
                         // backgroundColor: Colors.white,
                         // textColor: AppColors.primary,

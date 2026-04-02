@@ -80,7 +80,7 @@ android {
             
             // Apply proguard rules for things like flutter_overlay_window
             isMinifyEnabled = true
-            isShrinkResources = true
+            isShrinkResources = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

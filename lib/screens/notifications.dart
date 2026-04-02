@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import 'package:get/get.dart';
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
+import 'package:project_taxi_driver_app/services/id_service.dart';
 
 /// A simple model for a notification
 class AppNotification {
@@ -47,17 +48,26 @@ class NotificationsScreen extends StatefulWidget {
 class _NotificationsScreenState extends State<NotificationsScreen> {
   Stream<List<AppNotification>>? _notificationsStream; // Make nullable
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  String? _driverDocId;
 
   @override
   void initState() {
     super.initState();
-    _notificationsStream = _getNotificationsStream();
+    _initStream();
+  }
+
+  Future<void> _initStream() async {
+    final uid = widget.user?.uid ?? _auth.currentUser?.uid;
+    if (uid != null) {
+      _driverDocId = await IdService.getDriverDocId(uid);
+      setState(() {
+        _notificationsStream = _getNotificationsStream();
+      });
+    }
   }
 
   Stream<List<AppNotification>> _getNotificationsStream() {
-    final uid = widget.user?.uid ?? _auth.currentUser?.uid;
-
-    if (uid == null) {
+    if (_driverDocId == null) {
       return Stream.value([]);
     }
 
@@ -65,7 +75,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     // Changed 'users' to 'drivers' to match app schema
     return FirebaseFirestore.instance
         .collection('drivers')
-        .doc(uid)
+        .doc(_driverDocId)
         .collection('notifications')
         .orderBy('timestamp', descending: true)
         .limit(50)
@@ -83,13 +93,12 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
   /// Marks a notification as read
   Future<void> _markAsRead(String notificationId) async {
-    final uid = widget.user?.uid ?? _auth.currentUser?.uid;
-    if (uid == null) return;
+    if (_driverDocId == null) return;
 
     try {
       await FirebaseFirestore.instance
           .collection('drivers')
-          .doc(uid)
+          .doc(_driverDocId)
           .collection('notifications')
           .doc(notificationId)
           .update({'isRead': true});

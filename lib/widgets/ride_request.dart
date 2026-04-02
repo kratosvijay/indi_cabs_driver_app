@@ -491,13 +491,16 @@ class _RideRequestCardState extends State<RideRequestCard> {
 
     if (mounted) {
       setState(() {
-        if (results[0] != null) {
-          _translatedPickupAddress = results[0]!['address'];
-          _translatedPickupTitle = results[0]!['name'];
+        final pickupRes = results[0];
+        final dropoffRes = results[1];
+
+        if (pickupRes != null) {
+          _translatedPickupAddress = pickupRes['address'];
+          _translatedPickupTitle = pickupRes['name'];
         }
-        if (results[1] != null) {
-          _translatedDropoffAddress = results[1]!['address'];
-          _translatedDropoffTitle = results[1]!['name'];
+        if (dropoffRes != null) {
+          _translatedDropoffAddress = dropoffRes['address'];
+          _translatedDropoffTitle = dropoffRes['name'];
         }
         _isTranslating = false;
       });

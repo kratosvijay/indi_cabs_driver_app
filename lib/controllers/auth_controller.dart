@@ -36,10 +36,13 @@ class AuthController extends GetxController {
   }
 
   // Determine where to go after successful login or auto-login check
-  Future<void> decideRoute({DriverStatus? initialStatus}) async {
-    User? user = firebaseUser.value;
+  /// [externalUser] can be passed directly from login screens for immediate navigation.
+  Future<void> decideRoute({DriverStatus? initialStatus, User? externalUser}) async {
+    // Priority: Explicitly passed user, then current firebase user Rx value, then FirebaseAuth instance.
+    User? user = externalUser ?? firebaseUser.value ?? _auth.currentUser;
 
     if (user == null) {
+      debugPrint("Auth: No user found in decideRoute. Redirecting to Login.");
       Get.offAll(() => const LoginScreen());
       return;
     }
@@ -193,8 +196,9 @@ class AuthController extends GetxController {
 
         // --- NEW: Check for Pending Fleet Invite (Migration Logic) ---
         // If user is 'individual' (or unspecified) but has a pending 'fleet_driver' account created by Operator via phone
-        if (user.phoneNumber != null) {
-          final rawPhone = user.phoneNumber!.replaceFirst('+91', '');
+        final String? phoneNumber = user.phoneNumber;
+        if (phoneNumber != null && phoneNumber.isNotEmpty) {
+          final rawPhone = phoneNumber.replaceFirst('+91', '');
           // Check both formatted (+91) and raw number
           final pendingFleetDocs = await _db
               .collection('drivers')
