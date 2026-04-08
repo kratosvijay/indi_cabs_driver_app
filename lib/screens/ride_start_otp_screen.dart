@@ -8,8 +8,13 @@ import 'package:project_taxi_driver_app/widgets/pro_library.dart';
 
 class RideStartOtpScreen extends StatefulWidget {
   final RideRequest rideRequest;
+  final double waitingCharge;
 
-  const RideStartOtpScreen({super.key, required this.rideRequest});
+  const RideStartOtpScreen({
+    super.key,
+    required this.rideRequest,
+    this.waitingCharge = 0.0,
+  });
 
   @override
   State<RideStartOtpScreen> createState() => _RideStartOtpScreenState();
@@ -109,11 +114,15 @@ class _RideStartOtpScreenState extends State<RideStartOtpScreen> {
           .update({
             'status': 'started',
             'startedAt': FieldValue.serverTimestamp(),
+            'waitingCharge': widget.waitingCharge,
           });
 
       if (mounted) {
-        // Pass the updated rideRequest with startedAt set
-        final updatedRequest = widget.rideRequest.copyWith(startedAt: now);
+        // Pass the updated rideRequest with startedAt and pickup waitingCharge
+        final updatedRequest = widget.rideRequest.copyWith(
+          startedAt: now,
+          waitingCharge: widget.waitingCharge,
+        );
         Get.off(() => RideStartedScreen(rideRequest: updatedRequest));
       }
     } catch (e) {

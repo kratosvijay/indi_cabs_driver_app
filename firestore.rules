@@ -2,210 +2,202 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    // --- HELPER FUNCTIONS ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Checks if the caller is the driver who owns a driver document.
+    // driverId in the path is the professional ID (e.g. indi-drv-4), NOT the auth UID.
+    // The driver doc stores the auth UID in the 'uid' field.
+    function isDriverOwner(driverId) {
+      return isSignedIn() && (
+        request.auth.uid == driverId ||
+        resource.data.get('uid', '') == request.auth.uid
+      );
+    }
+
+    // Checks if the caller is the driver who owns a driver document, using get().
+    // Used for subcollections where 'resource' is the subcollection doc, not the parent.
+    function isDriverOwnerByGet(driverId) {
+      return isSignedIn() && (
+        request.auth.uid == driverId ||
+        get(/databases/$(database)/documents/drivers/$(driverId)).data.get('uid', '') == request.auth.uid
+      );
+    }
 
     // --- DEFAULT DENY ---
-    // By default, deny all reads and writes unless explicitly allowed below.
     match /{document=**} {
       allow read, write: if false;
     }
 
     // --- USERS COLLECTION ---
-    // Rules for individual user (rider) profiles.
     match /users/{userId} {
-
-      // READ: Allow a user to read their own profile document.
-      allow read: if request.auth != null && request.auth.uid == userId;
-
-      // CREATE: Allow a user to create their own profile document
-      allow create: if request.auth != null && request.auth.uid == userId;
-
-      // UPDATE: Allow a user to update their profile,
-      // **BUT NOT their wallet_balance**.
-      allow update: if request.auth != null && request.auth.uid == userId &&
-                      !("wallet_balance" in request.resource.data.diff(resource.data).affectedKeys());
-
-      // DELETE: Disallow users from deleting their own user document.
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId);
       allow delete: if false;
 
-      // --- Nested User Collections ---
-      match /favorites/{favoriteId} {
-        // Allow the user to manage their own favorites.
-        allow read, write, delete: if request.auth != null && request.auth.uid == userId;
-      }
-      
-      // **NEW:** Rules for Payment History
-      match /payment_history/{paymentId} {
-        // User can read their own transaction history
-        allow read: if request.auth != null && request.auth.uid == userId;
-        // Nobody can write/delete history from the app (only Cloud Function)
-        allow write, delete: if false;
-      }
-
-      // **NEW:** Rules for Notifications
-      match /notifications/{notificationId} {
-        allow read, update: if request.auth != null && request.auth.uid == userId;
-        allow create, delete: if false;
-      }
-
-      // **NEW:** Rules for Wallet
-      match /wallet/{walletId} {
-        allow read: if request.auth != null && request.auth.uid == userId;
-        allow write: if false;
+      match /{subcollection=**} {
+        allow read, write: if isOwner(userId);
       }
     }
+
     // --- DRIVERS COLLECTION ---
     match /drivers/{driverId} {
+      // Any signed-in user can read driver profiles (for ride tracking, ratings)
+      allow get: if isSignedIn();
+      allow list: if isSignedIn();
+      // Create: UID-based docs only (professional ID docs created by Cloud Functions)
+      allow create: if isOwner(driverId);
+      // Update: allow if auth UID matches doc ID (legacy) OR the 'uid' field in the doc
+      allow update: if isDriverOwner(driverId);
+      allow delete: if false;
 
-      // READ (GET): Allow any authenticated user to read a specific driver's document.
-      allow get: if request.auth != null;
-      
-      // LIST (QUERY): Allow unauthenticated users to query drivers (used in phone_auth.dart)
-      allow list: if true;
-
-      // CREATE: Allow creation if UID matches.
-      allow create: if request.auth != null && 
-        (request.auth.uid == driverId || request.auth.uid == request.resource.data.uid);
-
-      // UPDATE: 
-      allow update: if request.auth != null && 
-          (request.auth.uid == driverId || request.auth.uid == resource.data.uid);
-
-      allow delete: if request.auth != null && 
-          (request.auth.uid == driverId || request.auth.uid == resource.data.uid);
-
-      // --- Driver Subcollections ---
+      // Subcollections: only the owning driver can access
       match /{subcollection=**} {
-        allow read, write: if request.auth != null;
+        allow read, write: if isDriverOwnerByGet(driverId);
       }
     }
 
-    // --- FLEET OPERATORS COLLECTION ---
-    // Rules for fleet manager profiles.
-    match /fleet_operators/{operatorId} {
-
-      // READ (GET): Allow a fleet operator to read their own profile.
-      allow get: if request.auth != null && request.auth.uid == operatorId;
-      
-      // LIST (QUERY): Allow unauthenticated users to query fleet_operators (used in sign_up.dart)
-      allow list: if true;
-
-      // CREATE: Allow a user to create their own fleet operator document.
-      allow create: if request.auth != null && request.auth.uid == operatorId;
-
-      // UPDATE: Allow a fleet operator to update their own profile.
-      allow update: if request.auth != null && request.auth.uid == operatorId;
-
-      // DELETE: Disallow deletion from the app.
-      allow delete: if false; // Admin task.
-    }
-
-    // --- OTP VERIFICATIONS COLLECTION ---
+    // --- OTP VERIFICATIONS ---
     match /otp_verifications/{phoneNumber} {
-      allow read, write: if request.auth != null;
+      allow read, write: if false; // Cloud Functions only
     }
 
-    // --- AIRPORT QUEUES COLLECTION ---
-    match /airport_queues/{queueId} {
-      allow read: if request.auth != null;
-      allow write: if false;
-      
-      match /drivers/{driverId} {
-        allow read: if request.auth != null;
-        allow create, update, delete: if request.auth != null && request.auth.uid == driverId;
-      }
-    }
+    // --- RIDE REQUESTS ---
+    match /ride_requests/{rideId} {
+      // GET: users read their own ride, drivers read their assigned ride
+      allow get: if isSignedIn() &&
+                    (request.auth.uid == resource.data.userId ||
+                     request.auth.uid == resource.data.driverUid);
 
-    // --- DEMAND ZONES COLLECTION ---
-    match /demand_zones/{zoneId} {
-      allow read: if request.auth != null;
-      allow write: if false;
-    }
+      // LIST: only when querying with driverUid == auth.uid OR userId == auth.uid
+      // This ensures the security rule is provably satisfied for all query results.
+      allow list: if isSignedIn() &&
+                    (request.auth.uid == resource.data.userId ||
+                     request.auth.uid == resource.data.driverUid);
 
-    // --- PRICING RULES COLLECTION ---
-    // Assumes a single document holds configuration, e.g., /pricing_rules/current
-    match /pricing_rules/{ruleId} { 
+      // Users create rides
+      allow create: if isOwner(request.resource.data.userId);
 
-      // READ: Allow any authenticated user (user app, driver app, backend) to read pricing.
-      allow read: if request.auth != null;
+      // Users and assigned drivers can update
+      allow update: if isSignedIn() &&
+                      (request.auth.uid == resource.data.userId ||
+                       request.auth.uid == resource.data.driverUid);
 
-      // WRITE (Create, Update, Delete): Deny all writes from client apps.
-      allow write: if false;
-    }
-
-    // --- RENTAL PACKAGES COLLECTION ---
-    // Rules for rental package definitions.
-    match /rental_packages/{packageId} {
-      
-      // READ: Allow any authenticated user (your app) to read the list of packages.
-      allow read: if request.auth != null;
-
-      // WRITE: Deny all writes from the app. 
-      allow write: if false;
-    }
-    
-    // --- GEOFENCED ZONES COLLECTION ---
-    // Allow any authenticated user (your app) to read the zones.
-    match /geofenced_zones/{zoneId} {
-      allow read: if request.auth != null;
-      allow write: if false; // Only edit in the console
-    }
-
-    // --- OFFERS COLLECTION ---
-    // Created by Cloud Functions for specific drivers.
-    match /offers/{offerId} {
-      // Allow driver to read their specific offers
-      allow read: if request.auth != null && request.auth.uid == resource.data.driverId;
-      // No writes allowed from client (handled by Cloud Functions)
-      allow write: if false; 
-    }
-
-    // --- RIDE REQUESTS COLLECTION ---
-    match /ride_requests/{requestId} {
-      allow read, create, update, delete: if request.auth != null;
+      allow delete: if false;
 
       match /messages/{messageId} {
-        allow read, create: if request.auth != null;
+        allow read, create: if isSignedIn() &&
+          (request.auth.uid == get(/databases/$(database)/documents/ride_requests/$(rideId)).data.userId ||
+           request.auth.uid == get(/databases/$(database)/documents/ride_requests/$(rideId)).data.driverUid);
         allow update, delete: if false;
       }
     }
-    
-    // --- COUNTERS COLLECTION ---
-    match /counters/{counterId} {
-      allow read, write: if request.auth != null;
-    }
-    
-    // --- RENTAL REQUESTS COLLECTION ---
-    match /rental_requests/{requestId} {
-      allow read, create, update, delete: if request.auth != null;
+
+    // --- FLEET OPERATORS ---
+    match /fleet_operators/{operatorId} {
+      allow get: if isOwner(operatorId);
+      allow list: if isSignedIn();
+      allow create: if isOwner(operatorId);
+      allow update: if isOwner(operatorId);
+      allow delete: if false;
     }
 
-    // --- VEHICLES COLLECTION ---
-    // Rules for fleet vehicles.
-    match /vehicles/{vehicleId} {
-      // READ: Allow any authenticated user to read vehicles (needed for selection list).
-      allow read: if request.auth != null;
-
-      // UPDATE: Allow drivers to Assign/Unassign themselves.
-      // 1. Assigning: Setting assignedDriverId to their own UID.
-      // 2. Unassigning: Setting assignedDriverId to null (if it was their own UID).
-      allow update: if request.auth != null && (
-        (request.resource.data.assignedDriverId == request.auth.uid) || 
-        (resource.data.assignedDriverId == request.auth.uid && request.resource.data.assignedDriverId == null)
+    // --- EARNINGS (READ ONLY) ---
+    match /earnings/{earningId} {
+      allow read: if isSignedIn() && (
+        resource.data.driverUid == request.auth.uid ||
+        resource.data.driverId == request.auth.uid
       );
-      
-      // CREATE/DELETE: Only Fleet Managers/Admin (blocked here, assumed backend/web console)
-      allow create, delete: if false; 
+      allow write: if false; // Cloud Functions only
     }
 
-    // --- REVIEWS COLLECTION (TOP-LEVEL) ---
+    // --- WALLET TRANSACTIONS (READ ONLY) ---
+    match /wallet_transactions/{txId} {
+      allow read: if isSignedIn();
+      allow write: if false; // Cloud Functions only
+    }
+
+    // --- PRICING RULES (READ ONLY) ---
+    match /pricing_rules/{ruleId} {
+      allow read: if isSignedIn();
+      allow write: if false; // Admin only
+    }
+
+    // --- RENTAL PACKAGES (READ ONLY) ---
+    match /rental_packages/{packageId} {
+      allow read: if isSignedIn();
+      allow write: if false; // Admin only
+    }
+
+    // --- GEOFENCED ZONES (READ ONLY) ---
+    match /geofenced_zones/{zoneId} {
+      allow read: if isSignedIn();
+      allow write: if false; // Admin only
+    }
+
+    // --- AIRPORT QUEUES ---
+    match /airport_queues/{queueId} {
+      allow read: if isSignedIn();
+      allow write: if false; // Cloud Functions only
+
+      match /drivers/{driverId} {
+        allow read: if isSignedIn();
+        allow create, update, delete: if isDriverOwnerByGet(driverId);
+      }
+    }
+
+    // --- DEMAND ZONES (READ ONLY) ---
+    match /demand_zones/{zoneId} {
+      allow read: if isSignedIn();
+      allow write: if false; // Admin only
+    }
+
+    // --- REVIEWS (READ + CREATE) ---
     match /reviews/{reviewId} {
-      // READ: Allow any authenticated user to view reviews
-      allow read: if request.auth != null;
-      // CREATE: Allow any authenticated user to submit a review
-      allow create: if request.auth != null;
-      // UPDATE/DELETE: Prevent modification of submitted reviews
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
       allow update, delete: if false;
     }
 
+    // --- VEHICLES ---
+    match /vehicles/{vehicleId} {
+      allow read: if isSignedIn();
+      allow update: if isSignedIn() &&
+        (request.resource.data.assignedDriverId == request.auth.uid ||
+         (resource.data.assignedDriverId == request.auth.uid &&
+          request.resource.data.assignedDriverId == null));
+      allow create, delete: if false;
+    }
+
+    // --- RENTAL REQUESTS ---
+    match /rental_requests/{rideId} {
+      // GET: users or assigned driver only
+      allow get: if isSignedIn() &&
+                    (request.auth.uid == resource.data.userId ||
+                     request.auth.uid == resource.data.driverUid);
+
+      // LIST: allow any signed-in user to browse available rentals.
+      // Drivers need to see all status=='searching' rentals to find jobs nearby.
+      allow list: if isSignedIn();
+
+      allow create: if isOwner(request.resource.data.userId);
+      allow update: if isSignedIn() &&
+                      (request.auth.uid == resource.data.userId ||
+                       request.auth.uid == resource.data.driverUid);
+      allow delete: if false;
+    }
+
+    // --- COUNTERS ---
+    match /counters/{counterId} {
+      allow read: if isSignedIn();
+      allow write: if false; // Cloud Functions only
+    }
   }
 }

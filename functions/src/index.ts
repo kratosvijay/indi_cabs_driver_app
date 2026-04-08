@@ -813,6 +813,7 @@ export const manageDriverStatus = onDocumentUpdated(
                     amount: amount,
                     createdAt: admin.firestore.FieldValue.serverTimestamp(),
                     driverId: drvId,
+                    driverUid: afterData.driverUid || drvId, // Auth UID for security rules
                     rideId: rideId,
                     status: "completed",
                     type: "ride_fare",
@@ -1022,40 +1023,98 @@ export const calculateDynamicPricing = onCall({ region: "asia-south1" }, async (
         let minFare = 100;
         let perMinute = 0; // User App has time charge
 
-        if (pricingRules.vehicle_types && pricingRules.vehicle_types[vehicleType]) {
+        if (vehicleType && pricingRules.vehicle_types && pricingRules.vehicle_types[vehicleType]) {
             const vRules = pricingRules.vehicle_types[vehicleType];
-            baseFare = vRules.baseFare || baseFare;
-            perKm = vRules.perKilometer || perKm;
-            minFare = vRules.minimumFare || minFare;
-            perMinute = vRules.perMinute || 0;
-            console.log(`[DEBUG] Applied Rules for ${vehicleType}: Base=${baseFare}, PerKm=${perKm}`);
+            if (vRules) {
+              baseFare = vRules.baseFare || baseFare;
+              perKm = vRules.perKilometer || perKm;
+              minFare = vRules.minimumFare || minFare;
+              perMinute = vRules.perMinute || 0;
+              console.log(`[DEBUG] Applied Rules for ${vehicleType}: Base=${baseFare}, PerKm=${perKm}`);
+            }
         } else {
             console.warn(`[WARN] No pricing rules found for vehicle type: ${vehicleType}. Using defaults.`);
         }
 
-        // --- GEOFENCE LOGIC ---
+        // --- GEOFENCE LOGIC & TOLL DETECTION ---
         let geofenceSurcharge = 0.0;
+        let actualTollCrossed = false;
+        let tollZonesCrossed: string[] = [];
+        let totalTollAmount = 0.0;
+
         try {
             const zonesSnapshot = await db.collection("geofenced_zones").get();
-            // rideData.pickupLocation handling
+            // Parse pickup location
             let pickupGeoPoint = null;
+            let dropoffGeoPoint = null;
+
             if (rideData.pickupLocation) {
                 if (rideData.pickupLocation instanceof admin.firestore.GeoPoint) {
                     pickupGeoPoint = rideData.pickupLocation;
-                } else if (rideData.pickupLocation.latitude && rideData.pickupLocation.longitude) {
-                    pickupGeoPoint = new admin.firestore.GeoPoint(rideData.pickupLocation.latitude, rideData.pickupLocation.longitude);
-                } else if (rideData.pickupLocation.lat && rideData.pickupLocation.lng) {
-                    pickupGeoPoint = new admin.firestore.GeoPoint(rideData.pickupLocation.lat, rideData.pickupLocation.lng);
+                } else if (typeof rideData.pickupLocation === 'object' && rideData.pickupLocation !== null) {
+                    const location = rideData.pickupLocation as any;
+                    const lat = location.latitude ?? location.lat;
+                    const lng = location.longitude ?? location.lng;
+                    if (typeof lat === 'number' && typeof lng === 'number' && isFinite(lat) && isFinite(lng)) {
+                        pickupGeoPoint = new admin.firestore.GeoPoint(lat, lng);
+                    }
+                }
+            }
+
+            // Parse dropoff/destination location
+            if (rideData.dropoffLocation) {
+                if (rideData.dropoffLocation instanceof admin.firestore.GeoPoint) {
+                    dropoffGeoPoint = rideData.dropoffLocation;
+                } else if (typeof rideData.dropoffLocation === 'object' && rideData.dropoffLocation !== null) {
+                    const location = rideData.dropoffLocation as any;
+                    const lat = location.latitude ?? location.lat;
+                    const lng = location.longitude ?? location.lng;
+                    if (typeof lat === 'number' && typeof lng === 'number' && isFinite(lat) && isFinite(lng)) {
+                        dropoffGeoPoint = new admin.firestore.GeoPoint(lat, lng);
+                    }
+                }
+            } else if (rideData.destinationLocation) {
+                // Fallback to destinationLocation field
+                if (rideData.destinationLocation instanceof admin.firestore.GeoPoint) {
+                    dropoffGeoPoint = rideData.destinationLocation;
+                } else if (typeof rideData.destinationLocation === 'object' && rideData.destinationLocation !== null) {
+                    const location = rideData.destinationLocation as any;
+                    const lat = location.latitude ?? location.lat;
+                    const lng = location.longitude ?? location.lng;
+                    if (typeof lat === 'number' && typeof lng === 'number' && isFinite(lat) && isFinite(lng)) {
+                        dropoffGeoPoint = new admin.firestore.GeoPoint(lat, lng);
+                    }
+                } else if (rideData.destinationLocation.lat && rideData.destinationLocation.lng) {
+                    dropoffGeoPoint = new admin.firestore.GeoPoint(rideData.destinationLocation.lat, rideData.destinationLocation.lng);
                 }
             }
 
             if (pickupGeoPoint) {
                 for (const doc of zonesSnapshot.docs) {
                     const zone = doc.data();
-                    if (zone.surcharge_amount && zone.surcharge_amount > 0 && zone.boundary && isPointInPolygon(pickupGeoPoint, zone.boundary)) {
-                        geofenceSurcharge = zone.surcharge_amount;
-                        console.log(`Applying surcharge of ${geofenceSurcharge} for zone ${doc.id}`);
-                        break;
+                    if (zone.surcharge_amount && zone.surcharge_amount > 0 && zone.boundary) {
+                        const pickupInZone = isPointInPolygon(pickupGeoPoint, zone.boundary);
+                        const dropoffInZone = dropoffGeoPoint ? isPointInPolygon(dropoffGeoPoint, zone.boundary) : false;
+
+                        // Geofence surcharge applies if pickup is in zone
+                        if (pickupInZone) {
+                            geofenceSurcharge = zone.surcharge_amount;
+                            console.log(`Applying surcharge of ${geofenceSurcharge} for zone ${doc.id}`);
+                        }
+
+                        // Toll detection: Route crosses toll zone if pickup and dropoff are on opposite sides
+                        // Scenario 1: Pickup inside zone, dropoff outside = Route crossed OUT
+                        // Scenario 2: Pickup outside zone, dropoff inside = Route crossed IN
+                        // Scenario 3: Both inside = Already in toll zone (geofence applies)
+                        // Scenario 4: Both outside = No toll crossing
+                        const routeCrossesTollZone = (pickupInZone && !dropoffInZone) || (!pickupInZone && dropoffInZone);
+
+                        if (routeCrossesTollZone) {
+                            actualTollCrossed = true;
+                            tollZonesCrossed.push(doc.id);
+                            totalTollAmount += zone.surcharge_amount; // SUM all toll zones crossed
+                            console.log(`Toll zone ${doc.id} crossed on route (pickup: ${pickupInZone}, dropoff: ${dropoffInZone}, amount: ${zone.surcharge_amount})`);
+                        }
                     }
                 }
             }
@@ -1101,10 +1160,19 @@ export const calculateDynamicPricing = onCall({ region: "asia-south1" }, async (
         // 4. Extras
         calculatedFare += nightCharge;
         calculatedFare += geofenceSurcharge; // Added Geofence
-        // Add Toll if exists (User App passes it in request, Driver App might have it in rideData??)
-        // Let's check rideData.tollPrice
-        if (rideData.tollPrice) {
-            calculatedFare += (rideData.tollPrice || 0);
+
+        // Toll Handling:
+        // - For daily rides: User app adds toll pessimistically upfront
+        //   - If toll was actually crossed: keep the toll charge (use actual amount from zones)
+        //   - If toll was NOT crossed: we'll deduct it below
+        // - For rental rides: Only add toll if actually crossed (use actual amount from zones)
+        if (actualTollCrossed && totalTollAmount > 0) {
+            calculatedFare += totalTollAmount;
+            console.log(`Toll crossed: Adding ₹${totalTollAmount} to fare (${tollZonesCrossed.join(", ")})`);
+        } else if (!actualTollCrossed && rideData.tollPrice) {
+            // Toll was charged by user app but NOT actually crossed
+            // Will be deducted in daily ride logic below
+            console.log(`Toll NOT crossed but charged: ${rideData.tollPrice}. Will deduct if within tolerance.`);
         }
 
         // 5. Min Fare
@@ -1141,33 +1209,32 @@ export const calculateDynamicPricing = onCall({ region: "asia-south1" }, async (
         const isPeak = surgeMultiplier > 1.0; // Derived for update
 
         if (distanceDiff <= 1.5 && distanceDiff >= -5.0) {
-            // Within tolerance: Trust the original estimate (BUT add Waiting/Toll if new)
-            // Wait, if the original estimate was WRONG (e.g. 306 vs 220 issue), we shouldn't trust it?
-            // User said: "initially display 306... final bill 220". 
-            // This implies the Estimate was 306, but the Final (Old Logic) calculated 220?
-            // If so, the Old Logic was MISSING something (like Surge).
-            // So we SHOULD recalculate to confirm it matches 306, or at least stays close.
-
-            // Allow Update if the "Locked" fare is suspiciously different?
-            // No, safer to standard behavior:
-            // If actual distance is close to estimated, use Estimated Fare.
-            // UNLESS we want to force "Metered" behavior. 
-            // User Request: "Reworking Billing logic".
-            // Let's stick to Tolerance.
-
+            // Within tolerance: Use original estimate + waiting charge + geofence surcharge
             finalFare = parseFloat(rideData.rideFare || finalFare); // Use Locked, ensure number
             finalFare += providedWaitingCharge;
-
-            // Add Extras: Toll and Geofence must ALWAYS be paid if crossed, regardless of locked distance
             finalFare += geofenceSurcharge;
-            if (rideData.tollPrice) {
-                finalFare += (rideData.tollPrice || 0);
+
+            // Toll handling for daily rides within tolerance:
+            // - If toll was crossed: use actual calculated toll amount
+            // - If toll was NOT crossed but was charged by user app: deduct it
+            if (actualTollCrossed && totalTollAmount > 0) {
+                // Toll crossed - use actual calculated amount (may differ from user app estimate)
+                finalFare += totalTollAmount;
+                console.log(`[Within Tolerance] Toll crossed: Adding ₹${totalTollAmount} charge`);
+            } else if (!actualTollCrossed && rideData.tollPrice) {
+                // Toll NOT crossed but was charged - DEDUCT it
+                finalFare -= rideData.tollPrice;
+                console.log(`[Within Tolerance] Toll NOT crossed: Deducting ₹${rideData.tollPrice} from bill`);
+                priceUpdated = true;
+                reason = `Distance within tolerance, but toll deducted (not crossed). Base: ${rideData.rideFare}`;
             }
 
         } else {
+            // Outside tolerance: Use recalculated fare
             priceUpdated = true;
             reason = "Distance/Route changed - Recalculated";
-            // finalFare is already calculated above using the comprehensive User App logic
+            // finalFare is already calculated above using comprehensive User App logic
+            // Toll is already included in totalTollAmount calculation above
         }
 
 
@@ -1187,6 +1254,11 @@ export const calculateDynamicPricing = onCall({ region: "asia-south1" }, async (
             pricingReason: reason,
             isPeakHour: isPeak,
             peakMultiplier: surgeMultiplier,
+            // Toll information
+            tollCrossed: actualTollCrossed,
+            tollZonesCrossed: tollZonesCrossed,
+            totalTollAmount: totalTollAmount,
+            geofenceSurcharge: geofenceSurcharge,
             calculatedAt: admin.firestore.FieldValue.serverTimestamp()
         });
 
@@ -1198,7 +1270,12 @@ export const calculateDynamicPricing = onCall({ region: "asia-south1" }, async (
             reason: reason,
             actualDistance: actualDistanceKm,
             waitingCharge: providedWaitingCharge,
-            isPeak: isPeak
+            isPeak: isPeak,
+            tollCrossed: actualTollCrossed,
+            tollZonesCrossed: tollZonesCrossed,
+            tollCharge: totalTollAmount,
+            geofenceSurcharge: geofenceSurcharge,
+            distanceDifference: distanceDiff
         };
 
     } catch (error) {
@@ -1259,8 +1336,8 @@ export const cleanupBlockedDrivers = onSchedule("every 24 hours",
  */
 export const createCashfreeOrder = onCall({
     region: "asia-south1",
-    vpcConnector: "cashfree-vpc",
-    vpcConnectorEgressSettings: "ALL_TRAFFIC",
+    // VPC connector removed: cashfree-vpc does not exist in this project.
+    // Cashfree's public API is reachable without VPC egress.
 }, async (request) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'Must be logged in');
 
@@ -1325,8 +1402,8 @@ export const processWalletSettlement = onDocumentCreated(
     {
         document: "drivers/{driverId}/wallet_transactions/{transactionId}",
         region: "asia-south1",
-        vpcConnector: "cashfree-vpc",
-        vpcConnectorEgressSettings: "ALL_TRAFFIC",
+        // VPC connector removed: cashfree-vpc does not exist in this project.
+        // Cashfree's public API (api.cashfree.com) is reachable without VPC egress.
     },
     async (event) => {
         const snap = event.data;
@@ -1346,6 +1423,11 @@ export const processWalletSettlement = onDocumentCreated(
         const CASHFREE_CLIENT_SECRET = process.env.CASHFREE_CLIENT_SECRET || "cfsk_ma_prod_6cd6a70049ee342ff9cf855781ca03ea_39219573";
         const CASHFREE_ENV = process.env.CASHFREE_ENV || "PRODUCTION"; // SANDBOX or PRODUCTION
 
+        // SAFETY: Warn if using hardcoded fallback credentials (means env vars are not set)
+        if (!process.env.CASHFREE_CLIENT_ID || !process.env.CASHFREE_CLIENT_SECRET) {
+            console.warn("[WARN] CASHFREE_CLIENT_ID or CASHFREE_CLIENT_SECRET not set in environment. Using hardcoded fallback. This may cause AUTH failures if keys are stale.");
+        }
+
         if (!CASHFREE_CLIENT_ID) {
             console.error("Cashfree credentials are not configured in .env");
             return null;
@@ -1362,9 +1444,15 @@ export const processWalletSettlement = onDocumentCreated(
         try {
             console.log(`Processing settlement for ${driverId}: ₹${data.amount} to ${data.upiId}`);
 
+            // BUG FIX: Cashfree migrated to unified API endpoint.
+            // Old: payout-api.cashfree.com (legacy, may reject valid credentials)
+            // New: api.cashfree.com/payout (current unified API)
             const baseUrl = CASHFREE_ENV === "PRODUCTION"
-                ? "https://payout-api.cashfree.com/payout/transfers"
+                ? "https://api.cashfree.com/payout/transfers"
                 : "https://sandbox.cashfree.com/payout/transfers";
+            const beneficiaryBaseUrl = CASHFREE_ENV === "PRODUCTION"
+                ? "https://api.cashfree.com/payout/beneficiary"
+                : "https://sandbox.cashfree.com/payout/beneficiary";
 
             const safeDriverId = driverId.replace(/[^a-zA-Z0-9]/g, '');
 
@@ -1400,8 +1488,9 @@ export const processWalletSettlement = onDocumentCreated(
                     Buffer.from(dataToSign)
                 ).toString("base64");
 
+                // BUG FIX: Cashfree Payouts uses 'x-cf-signature' ONLY.
+                // 'x-client-signature' is NOT a valid Cashfree header and causes auth confusion.
                 headers['x-cf-signature'] = signature;
-                headers['x-client-signature'] = signature; // Payouts standard uses x-client-signature sometimes
                 headers['x-request-id'] = `req_${Date.now()}`;
                 
                 // Note: Keep client secret when using RSA encryption signature for Payouts
@@ -1413,7 +1502,8 @@ export const processWalletSettlement = onDocumentCreated(
             console.log(`[DEBUG] Sending Payout with headers:`, Object.keys(headers));
 
             // 1. Ensure beneficiary exists
-            const beneficiaryUrl = baseUrl.replace('/transfers', '/beneficiary');
+            // BUG FIX: Use explicit beneficiaryBaseUrl instead of fragile string replacement
+            const beneficiaryUrl = beneficiaryBaseUrl;
             const benePayload = {
                 beneficiary_id: `driver_${safeDriverId}`,
                 beneficiary_name: "IndiCabs Driver",
@@ -1523,6 +1613,17 @@ export const autoSettleWallets = onSchedule("every day 00:00", async (event) => 
     console.log("Starting midnight auto-settlement...");
 
     try {
+        // 1. IDEMPOTENCY CHECK: Prevent running twice same day
+        const today = new Date().toISOString().split("T")[0]; // Format: YYYY-MM-DD
+        const settleLogRef = db.collection("_settlement_log").doc(today);
+        const alreadyRan = await settleLogRef.get();
+
+        if (alreadyRan.exists) {
+            console.log(`Settlement already ran on ${today}. Skipping.`);
+            return;
+        }
+
+        // 2. GET ALL DRIVERS WITH AUTO-SETTLE ENABLED
         const driversSnapshot = await db.collection("drivers")
             .where("autoSettleEnabled", "==", true)
             .get();
@@ -1532,9 +1633,10 @@ export const autoSettleWallets = onSchedule("every day 00:00", async (event) => 
             return;
         }
 
-        let batch = db.batch();
-        let operationCount = 0;
+        let settledCount = 0;
+        let totalAmount = 0;
 
+        // 3. SETTLE EACH DRIVER (ATOMIC TRANSACTIONS)
         for (const driverDoc of driversSnapshot.docs) {
             const data = driverDoc.data();
             const upiId = data.autoSettleUpiId;
@@ -1544,47 +1646,48 @@ export const autoSettleWallets = onSchedule("every day 00:00", async (event) => 
                 continue;
             }
 
-            // Get balance
-            const balanceRef = driverDoc.ref.collection("wallet").doc("balance");
-            const balanceDoc = await balanceRef.get();
-            const currentBalance = balanceDoc.data()?.currentBalance || 0;
+            // Use transaction for atomic balance + transaction creation
+            try {
+                await db.runTransaction(async (t) => {
+                    // Get balance within transaction
+                    const balanceRef = driverDoc.ref.collection("wallet").doc("balance");
+                    const balanceDoc = await t.get(balanceRef);
+                    const currentBalance = balanceDoc.data()?.currentBalance || 0;
 
-            if (currentBalance > 0) {
-                console.log(`Settling driver ${driverDoc.id}: ${currentBalance}`);
+                    if (currentBalance > 0) {
+                        // Both operations succeed or both fail (atomic)
+                        t.set(balanceRef, { currentBalance: 0 }, { merge: true });
 
-                // Debit Balance
-                batch.set(balanceRef, { currentBalance: 0 }, { merge: true });
+                        const transactionRef = driverDoc.ref.collection("wallet_transactions").doc();
+                        t.set(transactionRef, {
+                            amount: currentBalance,
+                            type: "debit",
+                            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                            description: `Auto-Settled to UPI: ${upiId}`,
+                            upiId: upiId,
+                            status: "pending", // processSettlement will pick this up
+                            isAutoSettlement: true
+                        });
 
-                // Create Transaction
-                const transactionRef = driverDoc.ref.collection("wallet_transactions").doc();
-                batch.set(transactionRef, {
-                    amount: currentBalance,
-                    type: "debit",
-                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                    description: `Auto-Settled to UPI: ${upiId}`,
-                    upiId: upiId,
-                    status: "pending", // processSettlement will pick this up
-                    isAutoSettlement: true
+                        settledCount++;
+                        totalAmount += currentBalance;
+                        console.log(`Settled driver ${driverDoc.id}: ₹${currentBalance}`);
+                    }
                 });
-
-                operationCount += 2; // 2 writes per driver
-
-                if (operationCount >= 400) {
-                    console.log("Committing batch chunk...");
-                    await batch.commit();
-                    batch = db.batch(); // Re-initialize batch
-                    operationCount = 0;
-                }
+            } catch (err) {
+                console.error(`Failed to settle driver ${driverDoc.id}:`, err);
+                // Continue with next driver on error
             }
         }
 
-        if (operationCount > 0) {
-            await batch.commit();
-        }
+        // 4. MARK AS COMPLETED (IDEMPOTENCY LOG)
+        await settleLogRef.set({
+            completedAt: admin.firestore.FieldValue.serverTimestamp(),
+            driverCount: settledCount,
+            totalAmount: totalAmount
+        });
 
-        console.log(`Auto-settlement completed.`);
-
-        console.log(`Auto-settlement completed.`);
+        console.log(`Auto-settlement completed: ${settledCount} drivers, ₹${totalAmount} total.`);
 
     } catch (error) {
         console.error("Error in auto-settlement:", error);

@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import 'package:project_taxi_driver_app/widgets/pro_library.dart'; // Using ProAppBar
+import 'package:project_taxi_driver_app/services/id_service.dart';
 
 class ReviewsScreen extends StatefulWidget {
   final User user;
@@ -13,27 +14,46 @@ class ReviewsScreen extends StatefulWidget {
 }
 
 class _ReviewsScreenState extends State<ReviewsScreen> {
-  late Stream<QuerySnapshot> _reviewsStream;
+  String? _driverDocId;
+  bool _isLoadingId = true;
 
   @override
   void initState() {
     super.initState();
-    _reviewsStream = FirebaseFirestore.instance
-        .collection('reviews')
-        .where('driverId', isEqualTo: widget.user.uid)
-        .orderBy('timestamp', descending: true)
-        .snapshots();
+    _fetchId();
+  }
+
+  Future<void> _fetchId() async {
+    final id = await IdService.getDriverDocId(widget.user.uid);
+    if (mounted) {
+      setState(() {
+        _driverDocId = id;
+        _isLoadingId = false;
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
+    if (_isLoadingId) {
+      return Scaffold(
+        backgroundColor: isDark ? const Color(0xFF121212) : const Color(0xFFF5F5F5),
+        appBar: const ProAppBar(titleText: 'My Reviews'),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
     return Scaffold(
       backgroundColor: isDark ? const Color(0xFF121212) : const Color(0xFFF5F5F5),
       appBar: const ProAppBar(titleText: 'My Reviews'),
       body: StreamBuilder<QuerySnapshot>(
-        stream: _reviewsStream,
+        stream: FirebaseFirestore.instance
+            .collection('reviews')
+            .where('driverId', isEqualTo: _driverDocId)
+            .orderBy('timestamp', descending: true)
+            .snapshots(),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());

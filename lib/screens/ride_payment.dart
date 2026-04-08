@@ -14,15 +14,23 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:project_taxi_driver_app/widgets/status_slider.dart';
 import 'package:project_taxi_driver_app/controllers/wallet_controller.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:project_taxi_driver_app/services/id_service.dart';
+import 'package:project_taxi_driver_app/screens/qr_settings_screen.dart';
 
 class RidePaymentScreen extends StatefulWidget {
   final RideRequest rideRequest;
   final double totalAmount;
+  final bool priceUpdated;
+  final bool tollCrossed;
+  final double tollCharge;
 
   const RidePaymentScreen({
     super.key,
     required this.rideRequest,
     required this.totalAmount,
+    this.priceUpdated = false,
+    this.tollCrossed = false,
+    this.tollCharge = 0.0,
   });
 
   @override
@@ -32,6 +40,7 @@ class RidePaymentScreen extends StatefulWidget {
 class _RidePaymentScreenState extends State<RidePaymentScreen> {
   String? _driverUpiId;
   String? _driverName;
+  String? _driverDocId;
 
   StreamSubscription<DocumentSnapshot>? _rideSubscription;
   bool _isDataLoaded = false;
@@ -99,27 +108,251 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
     try {
       final user = FirebaseAuth.instance.currentUser;
       if (user != null) {
+        if (_driverDocId == null) {
+          _driverDocId = await IdService.getDriverDocId(user.uid);
+          debugPrint('RidePayment: Resolved DriverDocID: $_driverDocId');
+        }
+        
         final doc = await FirebaseFirestore.instance
             .collection('drivers')
-            .doc(user.uid)
+            .doc(_driverDocId)
             .get();
+            
         if (doc.exists) {
           final data = doc.data();
+          debugPrint('RidePayment: Fetched Driver Data. activeUpiId: ${data?['activeUpiId']}');
+          
           if (mounted) {
             setState(() {
-              _driverUpiId = data?['activeUpiId'];
-              if (_driverUpiId == null && data?['upiIds'] != null) {
+              // OPTIMIZATION: Only update if the fetched data is non-null
+              // This prevents stale Cloud data (lag) from overwriting a freshly saved local UPI ID
+              final fetchedUpi = data?['activeUpiId'] ?? data?['upiId'];
+              if (fetchedUpi != null) {
+                _driverUpiId = fetchedUpi;
+              } else if (data?['upiIds'] != null) {
                 final list = List<String>.from(data!['upiIds']);
                 if (list.isNotEmpty) _driverUpiId = list.first;
               }
-              _driverUpiId ??= data?['upiId'];
-              _driverName = data?['userName'] ?? 'Customer'.trim();
+              
+              _driverName = (data?['userName'] ?? 'Customer').toString().trim();
             });
           }
+        } else {
+          debugPrint('RidePayment: Driver document does not exist for ID: $_driverDocId');
         }
       }
     } catch (e) {
       debugPrint('Error fetching driver UPI details: $e');
+    }
+  }
+
+  Future<void> _addUpiId(String upiId) async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+
+      // Ensure we have the Doc ID
+      if (_driverDocId == null) {
+        debugPrint("RidePayment: Resolving driverDocId in _addUpiId...");
+        _driverDocId = await IdService.getDriverDocId(user.uid);
+      }
+
+      debugPrint("RidePayment: Adding UPI $upiId to Doc $_driverDocId");
+      
+      final docRef = FirebaseFirestore.instance.collection('drivers').doc(_driverDocId);
+      
+      // Use set with merge to create/update fields reliably
+      await docRef.set({
+        'activeUpiId': upiId,
+        'upiIds': FieldValue.arrayUnion([upiId]),
+      }, SetOptions(merge: true));
+
+      debugPrint("RidePayment: Firestore update successful for UPI: $upiId");
+
+      // Set state FIRST to ensure UI updates immediately
+      if (mounted) {
+        setState(() {
+          _driverUpiId = upiId;
+        });
+      }
+
+      // Then trigger refresh (the fetch guard will now protect the local state)
+      await _fetchDriverUpiDetails();
+      
+      Get.snackbar(
+        'Success',
+        'UPI ID added successfully',
+        backgroundColor: Colors.green,
+        colorText: Colors.white,
+        snackPosition: SnackPosition.BOTTOM,
+      );
+    } catch (e) {
+      debugPrint('Error adding UPI ID: $e');
+      Get.snackbar(
+        'Error',
+        'Failed to save UPI ID. Please check your connection.',
+        backgroundColor: Colors.red,
+        colorText: Colors.white,
+        snackPosition: SnackPosition.BOTTOM,
+      );
+    }
+  }
+
+  void _showAddUpiDialog() {
+    final TextEditingController upiController = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Add UPI ID'),
+        content: Form(
+          key: formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Add your UPI ID to let customers scan and pay.'),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextFormField(
+                      controller: upiController,
+                      decoration: const InputDecoration(
+                        labelText: 'UPI ID (e.g. name@bank)',
+                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(Icons.payment),
+                      ),
+                      validator: (value) {
+                        if (value == null || value.trim().isEmpty) {
+                          return 'Please enter a UPI ID';
+                        }
+                        if (!value.contains('@')) {
+                          return 'Invalid format';
+                        }
+                        return null;
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton.filledTonal(
+                    onPressed: () async {
+                      final result = await Get.to<String?>(() => const QrScannerView());
+                      if (result != null && result.isNotEmpty) {
+                        String extractedId = result;
+                        if (result.startsWith('upi://')) {
+                          try {
+                            final uri = Uri.parse(result);
+                            final pa = uri.queryParameters['pa'];
+                            if (pa != null) extractedId = pa;
+                          } catch (e) {
+                            debugPrint("Error parsing UPI URI: $e");
+                          }
+                        }
+                        upiController.text = extractedId;
+                      }
+                    },
+                    icon: const Icon(Icons.qr_code_scanner),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Get.back(), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              if (formKey.currentState!.validate()) {
+                final newId = upiController.text.trim();
+                Get.back();
+                _addUpiId(newId);
+              }
+            },
+            child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildUpiSection() {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    if (_driverUpiId != null && _driverUpiId!.isNotEmpty) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 20.0),
+        child: Column(
+          children: [
+            Text(
+              'scanToPay'.tr,
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: Colors.grey.shade300,
+                ),
+              ),
+              child: QrImageView(
+                data: 'upi://pay?pa=$_driverUpiId&pn=$_driverName&am=$_cashToCollect&cu=INR',
+                version: QrVersions.auto,
+                size: 200.0,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '${'upiId'.tr}: $_driverUpiId',
+              style: TextStyle(
+                color: isDark ? Colors.grey[400] : Colors.grey[600],
+              ),
+            ),
+          ],
+        ),
+      );
+    } else {
+      // Empty state prompt
+      return Padding(
+        padding: const EdgeInsets.only(top: 20.0),
+        child: Card(
+          elevation: 2,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: BorderSide(color: Colors.blue.withAlpha(50), width: 1),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              children: [
+                const Icon(Icons.qr_code_2, size: 48, color: Colors.blue),
+                const SizedBox(height: 12),
+                const Text(
+                  'Accept QR Payments',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Add your UPI ID to let customers scan and pay you instantly.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: isDark ? Colors.grey[400] : Colors.grey[600]),
+                ),
+                const SizedBox(height: 16),
+                ProButton(
+                  text: 'Add UPI ID',
+                  onPressed: _showAddUpiDialog,
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
     }
   }
 
@@ -236,13 +469,15 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
       final double walletAmt = _walletAmount;
 
       // 2. Navigation Logic
-      final homeController = Get.find<HomePageController>();
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('details_accepted_ride_id');
 
-      // Standard Flow: Go Home
-      // Prevent the just-finished ride from ghost-triggering due to local cache lag
-      homeController.ignoreRide(localRideId);
+      // Prevent the just-finished ride from ghost-triggering due to local cache lag.
+      // HomePageController may not be registered if the app was restored directly
+      // to RidePaymentScreen (e.g. after a crash/restart mid-ride).
+      if (Get.isRegistered<HomePageController>()) {
+        Get.find<HomePageController>().ignoreRide(localRideId);
+      }
 
       Get.offAll(
         () => DriverHomePage(user: user, initialStatus: DriverStatus.online),
@@ -253,24 +488,15 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
       // Since we already navigated, 'context' is unsafe, but Firebase calls are fine.
 
       // Credit Logic
-      double amountToCredit = 0.0;
-      String description = "";
-
-      if (isOnline) {
-        amountToCredit = localTotalAmount;
-        description = "Earnings for Ride ID: $localRideId (Online)";
-      } else if (isCashPlusWallet) {
-        amountToCredit = walletAmt;
-        description = "Wallet Portion for Ride ID: $localRideId";
-      }
+      final amountToCredit = isOnline ? localTotalAmount : (isCashPlusWallet ? walletAmt : 0.0);
 
       if (amountToCredit > 0) {
         try {
           // A. Credit Driver Wallet
           await WalletController.instance.creditWallet(
             amountToCredit,
-            "ride_$localRideId",
-            description: description,
+            "ride_${_rideRequest.rideId}",
+            description: "Ride Credit: ${_rideRequest.rideId}",
           );
 
           // B. Create Earnings Record
@@ -310,30 +536,33 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
 
               final userSnapshot = await transaction.get(userRef);
               if (userSnapshot.exists) {
-                var currentBalance =
-                    (userSnapshot.data()?['wallet_balance'] as num?)
-                        ?.toDouble();
-                currentBalance ??=
-                    (userSnapshot.data()?['walletBalance'] as num?)?.toDouble();
-                currentBalance ??= 0.0;
+                final userData = userSnapshot.data();
+                if (userData != null) {
+                  var currentBalance =
+                      (userData['wallet_balance'] as num?)
+                          ?.toDouble();
+                  currentBalance ??=
+                      (userData['walletBalance'] as num?)?.toDouble();
+                  currentBalance ??= 0.0;
 
-                final newBalance = currentBalance - amountToDeduct;
+                  final newBalance = currentBalance - amountToDeduct;
 
-                if (userSnapshot.data()!.containsKey('wallet_balance')) {
-                  transaction.update(userRef, {'wallet_balance': newBalance});
-                } else {
-                  transaction.update(userRef, {'walletBalance': newBalance});
+                  if (userData.containsKey('wallet_balance')) {
+                    transaction.update(userRef, {'wallet_balance': newBalance});
+                  } else {
+                    transaction.update(userRef, {'walletBalance': newBalance});
+                  }
+
+                  final transactionRef = userRef
+                      .collection('wallet_transactions')
+                      .doc();
+                  transaction.set(transactionRef, {
+                    'amount': -amountToDeduct,
+                    'description': 'Ride Payment: $localRideId',
+                    'timestamp': FieldValue.serverTimestamp(),
+                    'type': 'debit',
+                  });
                 }
-
-                final transactionRef = userRef
-                    .collection('wallet_transactions')
-                    .doc();
-                transaction.set(transactionRef, {
-                  'amount': -amountToDeduct,
-                  'description': 'Ride Payment: $localRideId',
-                  'timestamp': FieldValue.serverTimestamp(),
-                  'type': 'debit',
-                });
               }
             });
             debugPrint(
@@ -353,18 +582,20 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
           await FirebaseFirestore.instance.runTransaction((transaction) async {
             final snapshot = await transaction.get(userRef);
             if (snapshot.exists) {
-              final data = snapshot.data()!;
-              final currentRating = (data['rating'] as num?)?.toDouble() ?? 5.0;
-              final currentCount = (data['ratingCount'] as num?)?.toInt() ?? 0;
-              
-              final newCount = currentCount + 1;
-              final totalScore = currentCount == 0 ? 0.0 : (currentRating * currentCount);
-              final newRating = (totalScore + driverProvidedRating) / newCount;
-              
-              transaction.update(userRef, {
-                'rating': double.parse(newRating.toStringAsFixed(1)),
-                'ratingCount': newCount,
-              });
+              final data = snapshot.data();
+              if (data != null) {
+                final currentRating = (data['rating'] as num?)?.toDouble() ?? 5.0;
+                final currentCount = (data['ratingCount'] as num?)?.toInt() ?? 0;
+
+                final newCount = currentCount + 1;
+                final totalScore = currentCount == 0 ? 0.0 : (currentRating * currentCount);
+                final newRating = (totalScore + driverProvidedRating) / newCount;
+
+                transaction.update(userRef, {
+                  'rating': double.parse(newRating.toStringAsFixed(1)),
+                  'ratingCount': newCount,
+                });
+              }
             }
           });
           debugPrint("Successfully updated customer rating to $driverProvidedRating");
@@ -433,15 +664,15 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                             'estimatedBill'.tr,
                                             style: TextStyle(
                                               fontSize: 16,
-                                              color: Colors.grey,
+                                              color: Theme.of(context).brightness == Brightness.dark ? Colors.grey[400] : Colors.grey[600],
                                             ),
                                           ),
                                           Text(
                                             '₹${(widget.totalAmount - _rideRequest.waitingCharge).toStringAsFixed(2)}',
-                                            style: const TextStyle(
+                                            style: TextStyle(
                                               fontSize: 16,
                                               fontWeight: FontWeight.bold,
-                                              color: Colors.black87,
+                                              color: Theme.of(context).textTheme.bodyLarge?.color,
                                             ),
                                           ),
                                         ],
@@ -455,7 +686,7 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                             'waitingCharges'.tr,
                                             style: TextStyle(
                                               fontSize: 16,
-                                              color: Colors.grey,
+                                              color: Theme.of(context).brightness == Brightness.dark ? Colors.grey[400] : Colors.grey[600],
                                             ),
                                           ),
                                           Text(
@@ -468,6 +699,93 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                           ),
                                         ],
                                       ),
+                                      const Divider(height: 20),
+                                    ],
+
+                                    // Toll Information (if applicable)
+                                    if (widget.tollCharge > 0) ...[
+                                      Container(
+                                        padding: const EdgeInsets.all(12),
+                                        decoration: BoxDecoration(
+                                          color: Colors.orange.withAlpha(20),
+                                          borderRadius: BorderRadius.circular(8),
+                                          border: Border.all(
+                                            color: Colors.orange.withAlpha(100),
+                                          ),
+                                        ),
+                                        child: Row(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.spaceBetween,
+                                          children: [
+                                            Row(
+                                              children: [
+                                                Icon(
+                                                  Icons.directions,
+                                                  color: Colors.orange,
+                                                  size: 20,
+                                                ),
+                                                const SizedBox(width: 8),
+                                                Text(
+                                                  widget.tollCrossed
+                                                      ? 'Toll Charges'
+                                                      : 'Toll (Deducted)',
+                                                  style: const TextStyle(
+                                                    fontSize: 16,
+                                                    fontWeight: FontWeight.bold,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            Text(
+                                              widget.tollCrossed
+                                                  ? '+ ₹${widget.tollCharge.toStringAsFixed(2)}'
+                                                  : '- ₹${widget.tollCharge.toStringAsFixed(2)}',
+                                              style: TextStyle(
+                                                fontSize: 16,
+                                                fontWeight: FontWeight.bold,
+                                                color: widget.tollCrossed
+                                                    ? Colors.orange
+                                                    : Colors.green,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(height: 12),
+                                      const Divider(height: 20),
+                                    ],
+
+                                    // Price Update Status
+                                    if (widget.priceUpdated) ...[
+                                      Container(
+                                        padding: const EdgeInsets.all(12),
+                                        decoration: BoxDecoration(
+                                          color: Colors.blue.withAlpha(20),
+                                          borderRadius: BorderRadius.circular(8),
+                                          border: Border.all(
+                                            color: Colors.blue.withAlpha(100),
+                                          ),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            const Icon(
+                                              Icons.info_outline,
+                                              color: Colors.blue,
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Expanded(
+                                              child: Text(
+                                                'Price recalculated based on actual distance traveled',
+                                                style: TextStyle(
+                                                  fontSize: 13,
+                                                  color: Colors.blue[700],
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(height: 12),
                                       const Divider(height: 20),
                                     ],
 
@@ -514,18 +832,17 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                                 children: [
                                                   Text(
                                                     '${'baseFare'.tr} (${_rideRequest.packageName})',
-                                                    style: const TextStyle(
+                                                    style: TextStyle(
                                                       fontSize: 16,
-                                                      color: Colors.grey,
+                                                      color: Theme.of(context).brightness == Brightness.dark ? Colors.grey[400] : Colors.grey[600],
                                                     ),
                                                   ),
                                                   Text(
                                                     '₹${_rideRequest.rideFare.toStringAsFixed(2)}',
-                                                    style: const TextStyle(
+                                                    style: TextStyle(
                                                       fontSize: 16,
-                                                      fontWeight:
-                                                          FontWeight.bold,
-                                                      color: Colors.black87,
+                                                      fontWeight: FontWeight.bold,
+                                                      color: Theme.of(context).textTheme.bodyLarge?.color,
                                                     ),
                                                   ),
                                                 ],
@@ -539,9 +856,9 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                                   children: [
                                                     Text(
                                                       '${'extraDistance'.tr} (${extraDistance.toStringAsFixed(1)} km)',
-                                                      style: const TextStyle(
+                                                      style: TextStyle(
                                                         fontSize: 16,
-                                                        color: Colors.grey,
+                                                        color: Theme.of(context).brightness == Brightness.dark ? Colors.grey[400] : Colors.grey[600],
                                                       ),
                                                     ),
                                                     Text(
@@ -565,9 +882,9 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                                   children: [
                                                     Text(
                                                       '${'extraTime'.tr} (${extraDuration.toStringAsFixed(0)} ${'mins'.tr})',
-                                                      style: const TextStyle(
+                                                      style: TextStyle(
                                                         fontSize: 16,
-                                                        color: Colors.grey,
+                                                        color: Theme.of(context).brightness == Brightness.dark ? Colors.grey[400] : Colors.grey[600],
                                                       ),
                                                     ),
                                                     Text(
@@ -708,7 +1025,7 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                               'earnedPerKm'.tr,
                                               style: TextStyle(
                                                 fontSize: 14,
-                                                color: Colors.grey,
+                                                color: Theme.of(context).brightness == Brightness.dark ? Colors.grey[400] : Colors.grey[600],
                                                 fontWeight: FontWeight.bold,
                                               ),
                                             ),
@@ -743,7 +1060,7 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                               'timeTaken'.tr,
                                               style: TextStyle(
                                                 fontSize: 14,
-                                                color: Colors.grey,
+                                                color: Theme.of(context).brightness == Brightness.dark ? Colors.grey[400] : Colors.grey[600],
                                                 fontWeight: FontWeight.bold,
                                               ),
                                             ),
@@ -765,50 +1082,10 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                   ),
                                 ],
                               ),
-
-                            // QR Code for Payment
+                            // UPI Section
                             if ((_isCashOnly || _isCashPlusWallet) &&
-                                _cashToCollect > 0 &&
-                                _driverUpiId != null &&
-                                _driverUpiId!.isNotEmpty)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 20.0),
-                                child: Column(
-                                  children: [
-                                    Text(
-                                      'scanToPay'.tr,
-                                      style: TextStyle(
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 10),
-                                    Container(
-                                      padding: const EdgeInsets.all(10),
-                                      decoration: BoxDecoration(
-                                        color: Colors.white,
-                                        borderRadius: BorderRadius.circular(10),
-                                        border: Border.all(
-                                          color: Colors.grey.shade300,
-                                        ),
-                                      ),
-                                      child: QrImageView(
-                                        data:
-                                            'upi://pay?pa=$_driverUpiId&pn=$_driverName&am=$_cashToCollect&cu=INR',
-                                        version: QrVersions.auto,
-                                        size: 200.0,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 8),
-                                    Text(
-                                      '${'upiId'.tr}: $_driverUpiId',
-                                      style: const TextStyle(
-                                        color: Colors.grey,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
+                                _cashToCollect > 0)
+                              _buildUpiSection(),
                             const SizedBox(height: 20),
                           ],
                         ),

@@ -3,6 +3,7 @@ import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:sms_autofill/sms_autofill.dart';
 
@@ -46,9 +47,16 @@ Future<void> main() async {
   };
 
   await FirebaseAppCheck.instance.activate(
-    providerAndroid: AndroidDebugProvider(),
-    providerApple: AppleDebugProvider(),
+    providerAndroid: kDebugMode ? AndroidDebugProvider() : AndroidPlayIntegrityProvider(),
+    providerApple: kDebugMode ? AppleDebugProvider() : AppleAppAttestProvider(),
   );
+
+  if (kDebugMode) {
+    debugPrint("--------------------------------------------------");
+    debugPrint("FIREBASE APP CHECK DEBUG MODE ACTIVE");
+    debugPrint("Please ensure your Debug Token is added to Firebase Console");
+    debugPrint("--------------------------------------------------");
+  }
 
   // Set high refresh rate
   try {

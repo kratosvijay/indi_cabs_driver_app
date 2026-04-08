@@ -64,6 +64,7 @@ class RideRequest {
   final double waitingCharge;
   final double? paidByWallet; // Amount paid by wallet in a split payment
   final double? tollPrice; // Added toll price
+  final double? surgeMultiplier; // **NEW** Added surge multiplier
 
   final String? userName;
   final String? pickupPlaceName; // **NEW**
@@ -72,6 +73,7 @@ class RideRequest {
   RideRequest({
     required this.rideId,
     required this.userId,
+    this.surgeMultiplier, // **NEW**
     this.userName,
     this.pickupPlaceName, // **NEW**
     this.dropoffPlaceName, // **NEW**
@@ -703,12 +705,50 @@ class _RideRequestCardState extends State<RideRequestCard> {
                         if (widget.rideRequest.tollPrice != null &&
                             widget.rideRequest.tollPrice! > 0)
                           Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.orange.withValues(alpha: 0.2),
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(
+                                  color: Colors.orange.withValues(alpha: 0.5),
+                                  width: 1,
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.directions,
+                                    color: Colors.orange,
+                                    size: 14,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    "Toll: ₹${widget.rideRequest.tollPrice!.toStringAsFixed(0)}",
+                                    style: const TextStyle(
+                                      color: Colors.orange,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        if (widget.rideRequest.surgeMultiplier != null &&
+                            widget.rideRequest.surgeMultiplier! > 1.0)
+                          Padding(
                             padding: const EdgeInsets.only(top: 2),
                             child: Text(
-                              "Includes ₹${widget.rideRequest.tollPrice!.toStringAsFixed(0)} Toll",
+                              "Surge Active: ${widget.rideRequest.surgeMultiplier!.toStringAsFixed(1)}x",
                               style: const TextStyle(
-                                color: Colors.orangeAccent,
-                                fontSize: 13, // Slightly larger
+                                color: Colors.yellowAccent,
+                                fontSize: 13,
                                 fontWeight: FontWeight.bold,
                               ),
                             ),

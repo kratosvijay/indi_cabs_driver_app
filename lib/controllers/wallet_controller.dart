@@ -5,6 +5,7 @@ import 'package:pinput/pinput.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart'; // Changed from foundation
+import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 import 'package:flutter_cashfree_pg_sdk/api/cferrorresponse/cferrorresponse.dart';
 import 'package:flutter_cashfree_pg_sdk/api/cfpayment/cfwebcheckoutpayment.dart';
@@ -344,7 +345,20 @@ class WalletController extends GetxController {
     final user = _auth.currentUser;
     if (user == null) return;
 
+    // 1. Guard against ₹0 credit records (ghost transactions)
+    if (amount <= 0) {
+      debugPrint("WalletController: Skipping credit for zero amount.");
+      return;
+    }
+
     try {
+      isLoading.value = true;
+
+      // 2. Ensure Driver Doc ID is resolved before performing the transaction
+      if (_driverDocId == null) {
+        await _loadDocId();
+      }
+
       await _db.runTransaction((transaction) async {
         final balanceRef = _db
             .collection('drivers')
@@ -378,7 +392,21 @@ class WalletController extends GetxController {
           'paymentId': paymentId,
         });
       });
+
+      // 3. Trigger In-App Notification for the Driver
+      Get.snackbar(
+        "Payment Received",
+        "₹${amount.toStringAsFixed(2)} has been credited to your wallet.",
+        snackPosition: SnackPosition.TOP,
+        backgroundColor: Colors.green,
+        colorText: Colors.white,
+        duration: const Duration(seconds: 4),
+        icon: const Icon(Icons.account_balance_wallet, color: Colors.white),
+      );
+
+      debugPrint("WalletController: Credit successful for amount: $amount");
     } catch (e) {
+      debugPrint("WalletController: Credit failed: $e");
       Get.snackbar("Error", "Wallet update failed: $e");
     } finally {
       isLoading.value = false;
@@ -652,6 +680,11 @@ class WalletController extends GetxController {
     final user = _auth.currentUser;
     if (user == null) return;
 
+    // CRITICAL: Ensure DocID is loaded before any subscription action
+    if (_driverDocId == null) {
+      await _loadDocId();
+    }
+
     if (totalPrice <= 0) {
       isLoading.value = true;
       await _finalizeSubscriptionPurchase(
@@ -686,8 +719,8 @@ class WalletController extends GetxController {
 
         var session = CFSessionBuilder()
             .setEnvironment(
-              CFEnvironment.PRODUCTION,
-            ) // Set to PRODUCTION for live subscription keys
+              kDebugMode ? CFEnvironment.SANDBOX : CFEnvironment.PRODUCTION,
+            ) // Use Sandbox in debug mode to bypass "Trusted Source" checks
             .setOrderId(orderId)
             .setPaymentSessionId(paymentSessionId)
             .build();
@@ -703,7 +736,11 @@ class WalletController extends GetxController {
     } catch (e) {
       _pendingSubscription = null;
       isLoading.value = false;
-      Get.snackbar("Error", "Failed to initiate payment: $e");
+      String errorMsg = e.toString();
+      if (e is FirebaseFunctionsException) {
+        errorMsg = "${e.code}: ${e.message}";
+      }
+      Get.snackbar("Payment Error", "Failed to initiate: $errorMsg");
     }
   }
 
@@ -711,8 +748,15 @@ class WalletController extends GetxController {
     String paymentId,
     Map<String, dynamic> planDetails,
   ) async {
-    final user = _auth.currentUser;
-    if (user == null) return;
+    // Ensure DocID is available
+    if (_driverDocId == null) {
+      await _loadDocId();
+    }
+    
+    if (_driverDocId == null) {
+      Get.snackbar("Error", "Could not identify driver document. Contact support.");
+      return;
+    }
 
     final String planName = planDetails['planName'];
     final double price = planDetails['price'];
@@ -720,7 +764,7 @@ class WalletController extends GetxController {
 
     try {
       await _db.runTransaction((transaction) async {
-        final driverRef = _db.collection('drivers').doc(_driverDocId ?? user.uid);
+        final driverRef = _db.collection('drivers').doc(_driverDocId!);
 
         // 1. Update Subscription Expiry
         final driverDoc = await transaction.get(driverRef);

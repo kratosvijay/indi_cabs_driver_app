@@ -219,9 +219,9 @@ class _RideAcceptedScreenState extends State<RideAcceptedScreen> {
         setState(() {
           _elapsedSeconds++;
           if (_elapsedSeconds > 180) {
-            // Charge ₹5 for every minute (or part of it) after 3 mins
+            // Charge ₹3 for every minute (or part of it) after 3 mins
             int extraMinutes = ((_elapsedSeconds - 180) / 60).ceil();
-            _waitingCharge = extraMinutes * 5.0;
+            _waitingCharge = extraMinutes * 3.0;
           }
         });
       }
@@ -954,12 +954,14 @@ class _RideAcceptedScreenState extends State<RideAcceptedScreen> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
-                                      widget
-                                          .rideRequest
-                                          .pickupTitle, // Area Name
-                                      style: const TextStyle(
-                                        color: Colors.grey,
-                                        fontSize: 12,
+                                      widget.rideRequest.pickupPlaceName ??
+                                          widget.rideRequest.pickupTitle,
+                                      style: TextStyle(
+                                        color: Theme.of(context).brightness ==
+                                                Brightness.dark
+                                            ? Colors.white70
+                                            : Colors.grey,
+                                        fontSize: 13,
                                         fontWeight: FontWeight.bold,
                                       ),
                                     ),
@@ -975,6 +977,8 @@ class _RideAcceptedScreenState extends State<RideAcceptedScreen> {
                                             ? Colors.white
                                             : Colors.black,
                                       ),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
                                     ),
                                   ],
                                 ),
@@ -1087,31 +1091,67 @@ class _RideAcceptedScreenState extends State<RideAcceptedScreen> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
-                                      widget.rideRequest.dropoffTitle,
+                                      widget.rideRequest.dropoffPlaceName ??
+                                          widget.rideRequest.dropoffTitle,
                                       style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 16,
-                                        color:
-                                            Theme.of(context).brightness ==
+                                        color: Theme.of(context).brightness ==
                                                 Brightness.dark
-                                            ? Colors.white
-                                            : Colors.black,
+                                            ? Colors.white70
+                                            : Colors.grey,
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.bold,
                                       ),
                                     ),
                                     const SizedBox(height: 4),
                                     Text(
                                       widget.rideRequest.dropoffFullAddress,
-                                      style: const TextStyle(
-                                        color: Colors.grey,
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.normal,
+                                      style: TextStyle(
+                                        color: Theme.of(context).brightness ==
+                                                Brightness.dark
+                                            ? Colors.white
+                                            : Colors.black,
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold,
                                       ),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
                                     ),
                                   ],
                                 ),
                               ),
                             ],
                           ),
+                          const SizedBox(height: 12),
+                          // Toll Display if applicable
+                          if ((widget.rideRequest.tollPrice ?? 0) > 0)
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Colors.orange.withAlpha(20),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: Colors.orange.withAlpha(100),
+                                ),
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.directions,
+                                    color: Colors.orange,
+                                    size: 20,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    'Toll Charges: ₹${widget.rideRequest.tollPrice!.toStringAsFixed(0)}',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 15,
+                                      color: Colors.orange,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
                           const SizedBox(height: 24),
 
                           // Slider
@@ -1139,6 +1179,7 @@ class _RideAcceptedScreenState extends State<RideAcceptedScreen> {
                                   Get.to(
                                     () => RideStartOtpScreen(
                                       rideRequest: widget.rideRequest,
+                                      waitingCharge: _waitingCharge,
                                     ),
                                   );
                                 }

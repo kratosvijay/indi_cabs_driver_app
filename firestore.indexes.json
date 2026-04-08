@@ -19,11 +19,47 @@
             ]
         },
         {
+            "collectionGroup": "ride_requests",
+            "queryScope": "COLLECTION",
+            "fields": [
+                {
+                    "fieldPath": "driverUid",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "status",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "createdAt",
+                    "order": "DESCENDING"
+                }
+            ]
+        },
+        {
             "collectionGroup": "rental_requests",
             "queryScope": "COLLECTION",
             "fields": [
                 {
                     "fieldPath": "driverId",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "status",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "createdAt",
+                    "order": "DESCENDING"
+                }
+            ]
+        },
+        {
+            "collectionGroup": "rental_requests",
+            "queryScope": "COLLECTION",
+            "fields": [
+                {
+                    "fieldPath": "driverUid",
                     "order": "ASCENDING"
                 },
                 {
@@ -47,6 +83,66 @@
                 {
                     "fieldPath": "isOnline",
                     "order": "ASCENDING"
+                }
+            ]
+        },
+        {
+            "collectionGroup": "earnings",
+            "queryScope": "COLLECTION",
+            "fields": [
+                {
+                    "fieldPath": "driverId",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "createdAt",
+                    "order": "DESCENDING"
+                }
+            ]
+        },
+        {
+            "collectionGroup": "earnings",
+            "queryScope": "COLLECTION",
+            "fields": [
+                {
+                    "fieldPath": "rideId",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "createdAt",
+                    "order": "DESCENDING"
+                }
+            ]
+        },
+        {
+            "collectionGroup": "drivers",
+            "queryScope": "COLLECTION",
+            "fields": [
+                {
+                    "fieldPath": "autoSettleEnabled",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "createdAt",
+                    "order": "DESCENDING"
+                }
+            ]
+        },
+        {
+            "collectionGroup": "wallet_transactions",
+            "queryScope": "COLLECTION",
+            "fields": [
+                {
+                    "fieldPath": "driverId",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "status",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "createdAt",
+                    "order": "DESCENDING"
                 }
             ]
         }

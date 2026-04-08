@@ -2,7 +2,9 @@
 
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:get/get.dart';
@@ -12,6 +14,7 @@ import 'package:project_taxi_driver_app/widgets/ride_status_slider.dart';
 import 'package:project_taxi_driver_app/screens/ride_payment.dart';
 import 'package:project_taxi_driver_app/screens/navigation_screen.dart'; // Import NavigationScreen
 import 'package:project_taxi_driver_app/screens/ride_end_otp_screen.dart';
+import 'package:project_taxi_driver_app/services/ride_queue_service.dart';
 
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:cloud_functions/cloud_functions.dart';
@@ -144,11 +147,15 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
         "PATCH: Invalid Dropoff (0,0) detected. Waiting for driver location...",
       );
 
-      // Wait for driver location (up to 5 seconds)
+      // Wait for driver location (up to 5 seconds) - non-blocking
       int retries = 0;
       while (_driverLocation == null && retries < 10) {
         await Future.delayed(const Duration(milliseconds: 500));
         retries++;
+        // Avoid blocking the UI during the wait
+        if (kDebugMode && retries % 2 == 0) {
+          debugPrint("PATCH: Waiting for driver location... retry $retries/10");
+        }
       }
 
       if (_driverLocation != null) {
@@ -280,25 +287,35 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
 
                   // Notify about new stop if added
                   if (newPendingCount > oldPendingCount) {
-                    final newStop = updatedRide.stops.lastWhere(
-                      (s) => s.isPending,
-                    );
-                    Get.snackbar(
-                      'stopAdded'.tr,
-                      newStop.title,
-                      backgroundColor: Colors.orange,
-                      colorText: Colors.white,
-                      snackPosition: SnackPosition.TOP,
-                      duration: const Duration(seconds: 4),
-                      icon: const Icon(Icons.add_location, color: Colors.white),
-                    );
+                    try {
+                      final pendingStops = updatedRide.stops
+                          .where((s) => s.isPending)
+                          .toList();
+                      if (pendingStops.isNotEmpty) {
+                        final newStop = pendingStops.last;
+                        Get.snackbar(
+                          'stopAdded'.tr,
+                          newStop.title,
+                          backgroundColor: Colors.orange,
+                          colorText: Colors.white,
+                          snackPosition: SnackPosition.TOP,
+                          duration: const Duration(seconds: 4),
+                          icon: const Icon(
+                            Icons.add_location,
+                            color: Colors.white,
+                          ),
+                        );
+                      }
+                    } catch (e) {
+                      debugPrint("Error notifying about new stop: $e");
+                    }
                   }
+
+                  _isFirstListen = false;
+
+                  // Always update markers (for stops or single dest)
+                  _updateMarkers();
                 }
-
-                _isFirstListen = false;
-
-                // Always update markers (for stops or single dest)
-                _updateMarkers();
               });
             } catch (e) {
               debugPrint("Error parsing dynamic ride update: $e");
@@ -531,7 +548,6 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
 
           _lastRecordedLocation = newLoc;
 
-
           setState(() {
             _driverLocation = newLoc;
             _updateMarkers();
@@ -547,7 +563,6 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
 
   // Track previous status to avoid redundant writes
   final String _lastSetStatus = '';
-
 
   void _updateMarkers() {
     _markers.clear();
@@ -780,10 +795,7 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
   }
 
   Future<void> _makePhoneCall() async {
-    final Uri launchUri = Uri(
-      scheme: 'tel',
-      path: '04446972845',
-    );
+    final Uri launchUri = Uri(scheme: 'tel', path: '04446972845');
     if (await canLaunchUrl(launchUri)) {
       await launchUrl(launchUri);
     } else {
@@ -1038,15 +1050,22 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
       } else {
         actualDistance = _rideRequest.rideDistance;
       }
-
       debugPrint(
         "Ending Ride. Accumulated Distance: ${_accumulatedDistance}m. Final used km: $actualDistance",
       );
 
-      // Calculate Paid Waiting Charge locally to pass to backend
-      // _paidWaitSeconds is total seconds beyond the free 3 mins per stop
-      int totalPaidMinutes = (_paidWaitSeconds / 60).ceil();
-      double waitingCharge = totalPaidMinutes * 3.0; // ₹3 per min
+      // Calculate Paid Waiting Charge
+      // pickupWait comes from the pickup phase (passed via RideRequest)
+      double pickupWait = _rideRequest.waitingCharge;
+      
+      // stopWait is total seconds beyond the free 3 mins per stop during the trip
+      int totalStopWaitMinutes = (_paidWaitSeconds / 60).ceil();
+      double stopWait = totalStopWaitMinutes * 3.0; // ₹3 per min
+
+      double totalWaitCharge = pickupWait + stopWait;
+
+      // Get ride type
+      final rideType = _rideRequest.rideType;
 
       // Start Cloud Function Call (Pricing)
       final pricingFuture = FirebaseFunctions.instanceFor(region: 'asia-south1')
@@ -1054,8 +1073,8 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
           .call({
             'rideId': _rideRequest.rideId,
             'actualDistanceKm': actualDistance,
-            'waitingCharge': waitingCharge,
-            'rideType': 'daily',
+            'waitingCharge': totalWaitCharge, // Pass aggregated total to Cloud Function
+            'rideType': rideType,
           });
 
       // Start Address Fetch in Parallel if location known
@@ -1064,24 +1083,59 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
         addressFuture = _getAddressFromLatLng(_driverLocation!);
       }
 
-      // Wait for Pricing
-      final resultFuture = await pricingFuture;
-      final resultData =
-          resultFuture.data as Map<String, dynamic>; // Explicit cast
+      // Wait for Pricing (with fallback to Firestore if error)
+      Map<String, dynamic> resultData;
+      double finalFare = _rideRequest.rideFare; // Default fallback
+      bool priceUpdated = false;
+      bool tollCrossed = false;
+      List<dynamic> tollZones = [];
+      double tollCharge = 0.0;
 
-      final baseFare = (resultData['finalFare'] ?? _rideRequest.rideFare)
-          .toDouble();
+      try {
+        final resultFuture = await pricingFuture.timeout(
+          const Duration(seconds: 10),
+        );
+        resultData = resultFuture.data as Map<String, dynamic>;
+        
+        // The Cloud Function ALREADY includes the waitingCharge in its finalFare calculation
+        finalFare = (resultData['finalFare'] ?? _rideRequest.rideFare).toDouble();
+        
+        priceUpdated = resultData['priceUpdated'] ?? false;
+        tollCrossed = resultData['tollCrossed'] ?? false;
+        tollZones = resultData['tollZonesCrossed'] ?? [];
+        tollCharge = (resultData['tollCharge'] ?? 0.0).toDouble();
 
-      // Final fare returned by backend SHOULD include waiting charge if we used it correctly,
-      // OR we can trust the backend's 'finalFare' as the source of truth.
-      // The backend adds waitingCharge to the total.
-      final finalFare = baseFare; // backend finalFare includes everything.
+        debugPrint(
+          "Dynamic Pricing Success. Final Fare: $finalFare, Toll Crossed: $tollCrossed",
+        );
+      } catch (e) {
+        // Network error or timeout - use Firestore fare as fallback
+        debugPrint("Dynamic Pricing Error (using Firestore fallback): $e");
+        
+        // If pricing call fails, we take the original estimate and add the total waiting charge manually
+        finalFare = _rideRequest.rideFare + totalWaitCharge;
+        
+        Get.snackbar(
+          'Network Issue',
+          'Using stored price. Toll adjustments will be verified later.',
+          snackPosition: SnackPosition.BOTTOM,
+          backgroundColor: Colors.orange,
+          colorText: Colors.white,
+          duration: const Duration(seconds: 3),
+        );
+      }
 
       final Map<String, dynamic> updateData = {
         'status': 'completed',
         'rideFare': finalFare,
-        'baseFare': baseFare,
-        'waitingCharge': waitingCharge,
+        'baseFare': finalFare,
+        'waitingCharge': totalWaitCharge,
+        'pickupWaitingCharge': pickupWait, // Store breakdown for transparency
+        'stopWaitingCharge': stopWait,
+        'priceUpdated': priceUpdated,
+        'tollCrossed': tollCrossed,
+        'tollZonesCrossed': tollZones,
+        'tollCharge': tollCharge,
         'completedAt': FieldValue.serverTimestamp(),
       };
 
@@ -1123,7 +1177,9 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
       updatedRequest = updatedRequest.copyWith(
         actualDuration: durationMins,
         actualDistance: actualDistance,
-        waitingCharge: waitingCharge,
+        waitingCharge: totalWaitCharge,
+        tollPrice: tollCharge,
+        rideFare: finalFare,
       );
 
       await _firestore
@@ -1131,11 +1187,51 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
           .doc(_rideRequest.rideId)
           .update(updateData);
 
+      // NEW: Check for back-to-back ride queuing
+      final rideQueueService = RideQueueService();
+      final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+      if (currentUserId != null) {
+        final hasNextRide = await rideQueueService.hasQueuedRides(
+          currentUserId,
+        );
+
+        if (hasNextRide) {
+          debugPrint("[BackToBack] Next ride queued, auto-transitioning...");
+          final nextRideId = await rideQueueService.popNextRide(currentUserId);
+          if (nextRideId != null) {
+            try {
+              final nextRideDoc = await _firestore
+                  .collection('ride_requests')
+                  .doc(nextRideId)
+                  .get();
+
+              if (nextRideDoc.exists) {
+                final nextRide = RideRequest.fromJson(nextRideDoc.data()!);
+
+                if (mounted) {
+                  debugPrint(
+                    "[BackToBack] Auto-transitioning to next ride: $nextRideId",
+                  );
+                  Get.off(() => RideStartedScreen(rideRequest: nextRide));
+                }
+                return; // Don't show payment screen
+              }
+            } catch (e) {
+              debugPrint("[BackToBack] Error fetching next ride: $e");
+            }
+          }
+        }
+      }
+
+      // Regular payment screen flow (if no queued ride)
       if (mounted) {
         Get.off(
           () => RidePaymentScreen(
             rideRequest: updatedRequest,
             totalAmount: finalFare,
+            priceUpdated: priceUpdated,
+            tollCrossed: tollCrossed,
+            tollCharge: tollCharge,
           ),
         );
       }
@@ -1261,7 +1357,6 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
                 myLocationButtonEnabled: true,
               ),
 
-
               Positioned(
                 bottom: 0,
                 left: 0,
@@ -1351,7 +1446,9 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
                                         title = pendingStop.title;
                                         address = pendingStop.fullAddress;
                                       } else {
-                                        title = _rideRequest.dropoffTitle;
+                                        title =
+                                            _rideRequest.dropoffPlaceName ??
+                                            _rideRequest.dropoffTitle;
                                         address =
                                             _rideRequest.dropoffFullAddress;
                                       }
@@ -1385,6 +1482,8 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
                                                 context,
                                               ).textTheme.bodySmall?.color,
                                             ),
+                                            maxLines: 2,
+                                            overflow: TextOverflow.ellipsis,
                                           ),
                                         ],
                                       );
@@ -1417,6 +1516,50 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
                               ),
                             ],
                           ),
+                          const SizedBox(height: 12),
+                          // Toll Display if applicable
+                          if ((_rideRequest.tollPrice ?? 0) > 0)
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Colors.orange.withAlpha(20),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: Colors.orange.withAlpha(100),
+                                ),
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(Icons.directions, color: Colors.orange),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          'Toll Charges',
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            color: Theme.of(
+                                              context,
+                                            ).textTheme.bodySmall?.color,
+                                          ),
+                                        ),
+                                        Text(
+                                          '₹${_rideRequest.tollPrice!.toStringAsFixed(0)}',
+                                          style: const TextStyle(
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.orange,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
                           const SizedBox(height: 16),
                           if (_isWaiting) ...[
                             Text(
@@ -1433,7 +1576,7 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
                             ),
                             if (_paidWaitSeconds > 0)
                               Text(
-                                "+ ₹${((_paidWaitSeconds / 60).ceil() * 5)}",
+                                "+ ₹${((_paidWaitSeconds / 60).ceil() * 3)}",
                                 style: const TextStyle(
                                   fontSize: 18,
                                   color: Colors.redAccent,

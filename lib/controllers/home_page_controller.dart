@@ -15,6 +15,7 @@ import 'package:get/get.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:project_taxi_driver_app/services/id_service.dart';
+import 'package:project_taxi_driver_app/services/ride_queue_service.dart';
 
 import 'package:project_taxi_driver_app/screens/earnings.dart';
 import 'package:project_taxi_driver_app/screens/wallet_screen.dart';
@@ -30,7 +31,7 @@ import 'package:volume_controller/volume_controller.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'package:project_taxi_driver_app/screens/rental_request_screen.dart';
-// import 'package:flutter_overlay_window/flutter_overlay_window.dart';
+import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:project_taxi_driver_app/services/overlay_service.dart';
 import 'package:project_taxi_driver_app/services/queue_service.dart';
 import 'package:project_taxi_driver_app/services/demand_service.dart';
@@ -112,11 +113,18 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
   // App Lifecycle
   AppLifecycleState _appLifecycleState = AppLifecycleState.resumed;
+  DateTime? _lastBubbleShowTime;
 
   //  Timer? locationUpdateTimer;
   Timer? _revaluationTimer; // Added for re-checking ignored rides
   QuerySnapshot? _lastSnapshot; // Cache for re-evaluation
   String? _driverDocId;
+  DateTime? _lastOverlayActionTime; // Time of last major overlay action (accept/reject)
+  bool _locationUpdatesRunning = false; // Flag to prevent duplicate location updates
+
+  // NEW: Back-to-back rides queue management
+  final RideQueueService _rideQueueService = RideQueueService();
+  Timer? _etaCheckTimer;
 
   Future<void> _loadDocId() async {
     _driverDocId = await IdService.getDriverDocId(user.uid);
@@ -134,16 +142,28 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     // Diagnostic Check: Verify real Firestore data
     _runDiagnostics();
 
+    WidgetsBinding.instance.addObserver(this);
+    ever(driverStatus, (status) => handleStatusChange(status));
     _loadDocId().then((_) {
       listenForWallet();
       listenForNotifications();
+      _fetchTollZones(); // Pre-fetch toll zones for dynamic pricing
+      if ((driverStatus.value == DriverStatus.online ||
+              driverStatus.value == DriverStatus.goTo) &&
+          _appLifecycleState != AppLifecycleState.resumed) {
+        showStatusBubble();
+      }
     });
 
     // Request initial position immediately
     goToCurrentUserLocation();
     
     final apiKeyValue = dotenv.env['GOOGLE_MAPS_API_KEY'];
-    if (apiKeyValue == null) throw Exception("API Key not found");
+    if (apiKeyValue == null) {
+      debugPrint("ERROR: GOOGLE_MAPS_API_KEY not found in .env file");
+      isLoading.value = false;
+      return;
+    }
     apiKey = apiKeyValue;
 
     loadLanguage();
@@ -227,6 +247,9 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         }
         listenForEarnings();
 
+        // Start back-to-back rides ETA monitoring
+        _startETAMonitoring();
+
         // Start Queue Monitoring on startup if already online
         QueueService().onQueueEvent = (title, message, type) {
           if (Get.isSnackbarOpen) {
@@ -262,85 +285,6 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     }
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    super.didChangeAppLifecycleState(state);
-    _appLifecycleState = state;
-    debugPrint("App Lifecycle Changed: $state");
-
-    if (state == AppLifecycleState.paused) {
-      debugPrint("App paused. Driver Status: ${driverStatus.value}");
-      if (driverStatus.value == DriverStatus.online ||
-          driverStatus.value == DriverStatus.goTo) {
-        final ride = activeRideRequest;
-        if (ride != null && ride.status == 'searching') {
-          debugPrint("Showing Overlay for Ride Request");
-          _showOverlayForRide(ride);
-        } else {
-          // Show status bubble if online but no active request
-          debugPrint("Showing Status Bubble");
-          showStatusBubble();
-        }
-      }
-    } else if (state == AppLifecycleState.resumed) {
-      debugPrint("App resumed. Checking for overlay acceptance...");
-
-      // Check for SharedPreferences backup flag with retry
-      _checkForAcceptedRideInPrefs();
-
-      debugPrint("Closing overlay.");
-      OverlayService.instance.hideFloatingBubble();
-    }
-  }
-
-  void _checkForAcceptedRideInPrefs({int retries = 5}) {
-    SharedPreferences.getInstance().then((prefs) async {
-      await prefs
-          .reload(); // CRITICAL: Force reload to see changes from Overlay isolate
-      final acceptedId = prefs.getString('details_accepted_ride_id');
-      final ride = activeRideRequest;
-      if (acceptedId != null && ride != null && ride.rideId == acceptedId) {
-        debugPrint(
-          "Resume: Found accepted ride ID in prefs: $acceptedId. Triggering acceptance.",
-        );
-        isRideAcceptanceInProgress.value =
-            true; // Prevents "Processing" card flicker
-        if (activeRequests.isNotEmpty) {
-          final ride =
-              activeRequests.firstWhereOrNull((r) => r.rideId == acceptedId) ??
-              activeRequests.first;
-          onRideAccepted(ride);
-        }
-        prefs.remove('details_accepted_ride_id'); // Clear flag
-      } else {
-        debugPrint(
-          "Resume: No matching accepted ride found in prefs. Retries left: $retries",
-        );
-        if (retries > 0) {
-          Future.delayed(const Duration(milliseconds: 500), () {
-            _checkForAcceptedRideInPrefs(retries: retries - 1);
-          });
-        }
-      }
-    });
-  }
-
-  Future<void> showStatusBubble() async {
-    // Only show bubble when driver is online
-    if (driverStatus.value != DriverStatus.online &&
-        driverStatus.value != DriverStatus.goTo) {
-      debugPrint("_showStatusBubble: Skipped (Driver is offline)");
-      return;
-    }
-    debugPrint("_showStatusBubble: Showing floating bubble...");
-    await OverlayService.instance.showFloatingBubble();
-  }
-
-  bool get shouldShowOverlayBubble {
-    return (driverStatus.value == DriverStatus.online ||
-            driverStatus.value == DriverStatus.goTo) &&
-        _appLifecycleState != AppLifecycleState.resumed;
-  }
 
   Map<String, dynamic> _buildOverlayPayload(RideRequest request) {
     return {
@@ -457,8 +401,9 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
             // Ignore updates if we are in the middle of accepting THIS ride
             // Only skip if WE are currently in the acceptance flow
+            // Check driverUid (auth UID) — driverId is the professional ID
             if (status == 'accepted' &&
-                data?['driverId'] == user.uid &&
+                (data?['driverUid'] == user.uid || data?['driverId'] == user.uid) &&
                 _isAcceptingRide) {
               return;
             }
@@ -503,6 +448,9 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   void _clearLocalRide(String rideId) {
     debugPrint("Clearing local ride: $rideId");
     
+    // 0. Trigger Overlay Lockdown
+    _lastOverlayActionTime = DateTime.now();
+
     // Add to temporary blacklist to prevent "one last time" reappear bug
     _recentlyClearedRideIds.add(rideId);
     Future.delayed(const Duration(seconds: 10), () {
@@ -783,7 +731,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       OverlayService.instance.stopDriverForeground();
     }
 
-    if (status == DriverStatus.goTo) {
+    if (status == DriverStatus.goTo && activeRequests.isEmpty) {
       debugPrint("Opening GoToScreen...");
       // Revert if GoTo Is Cancelled
       // logic handles this by checking result
@@ -908,17 +856,30 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
     if (driverStatus.value == DriverStatus.online ||
         driverStatus.value == DriverStatus.goTo) {
-      debugPrint("Starting location updates and listening for rides");
+      debugPrint("Starting location updates (Status: ${driverStatus.value})");
       startLocationUpdates();
-      listenForRideRequests();
-      if (!isActingDriver) {
-        listenForRentalRequests();
+
+      if (driverStatus.value == DriverStatus.online) {
+        debugPrint("Starting ride listeners (Status: Online)");
+        listenForRideRequests();
+        if (!isActingDriver) {
+          listenForRentalRequests();
+        }
+      } else {
+        // Driver is 'goTo' (Heading to Pickup) - stop looking for new 'searching' rides
+        debugPrint("Stopping ride listeners (Status: Busy/GoTo)");
+        rideRequestSubscription?.cancel();
+        rentalRequestSubscription?.cancel();
+        // Nuclear Cleanup of overlay data
+        activeRequests.clear();
+        OverlayService.instance.clearRideQueue();
       }
     } else {
-      debugPrint("Stopping location updates");
+      debugPrint("Stopping location updates and listeners (Status: Offline)");
       stopLocationUpdates();
       rideRequestSubscription?.cancel();
       rentalRequestSubscription?.cancel();
+      activeRequests.clear();
     }
   }
 
@@ -926,9 +887,16 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   Position? _lastSentPosition;
 
   void startLocationUpdates() async {
+    // Prevent duplicate location updates if already running
+    if (_locationUpdatesRunning) {
+      debugPrint("Location updates already running, skipping duplicate start");
+      return;
+    }
+
     final hasPermission = await _handleLocationPermission();
     if (!hasPermission) return;
 
+    _locationUpdatesRunning = true;
     final driverIdForRTDB = _driverDocId ?? user.uid;
     debugPrint("QueueService: Starting Location Updates for RTDB with ID: $driverIdForRTDB");
     final locRef = FirebaseDatabase.instance.ref('driver_locations/$driverIdForRTDB');
@@ -1015,7 +983,59 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     }
   }
 
+  // NEW: ETA Monitoring for back-to-back rides
+  void _startETAMonitoring() {
+    _etaCheckTimer?.cancel();
+    _etaCheckTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      _checkAndShowNextRides();
+    });
+    debugPrint("[BackToBack] ETA monitoring started");
+  }
+
+  Future<void> _checkAndShowNextRides() async {
+    try {
+      // Skip if driver is offline or not on a ride
+      if (driverStatus.value != DriverStatus.online ||
+          activeRideRequest == null ||
+          currentPosition.value == null) {
+        return;
+      }
+
+      // Check if driver already has queued rides
+      final hasQueued =
+          await _rideQueueService.hasQueuedRides(user.uid);
+      if (hasQueued) {
+        debugPrint("[BackToBack] Already has queued rides, skipping");
+        return;
+      }
+
+      // Calculate ETA to destination
+      final isApproaching =
+          await _rideQueueService.isApproachingDestination(
+        currentPosition.value!,
+        activeRideRequest!.dropoffLocation,
+      );
+
+      if (isApproaching) {
+        debugPrint(
+          "[BackToBack] ETA < 3 mins - Show next rides overlay",
+        );
+        _showNextRidesOverlay();
+      }
+    } catch (e) {
+      debugPrint("[BackToBack] Error checking ETA: $e");
+    }
+  }
+
+  void _showNextRidesOverlay() {
+    // This will be integrated with your existing overlay system
+    debugPrint("[BackToBack] Next rides overlay should be shown here");
+  }
+
   void stopLocationUpdates() {
+    _locationUpdatesRunning = false;
+    _etaCheckTimer?.cancel();
+    _etaCheckTimer = null;
     _positionStreamSubscription?.cancel();
     _positionStreamSubscription = null;
     locationUpdateTimer?.cancel();
@@ -1030,6 +1050,9 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     } catch (e) {
       debugPrint("Error removing driver location from RTDB: $e");
     }
+
+    // NEW: Clear ride queue when going offline
+    _rideQueueService.clearQueue(user.uid);
   }
 
   Future<void> listenForRideRequests() async {
@@ -1058,13 +1081,15 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       return;
     }
     debugPrint("DEBUG: Driver doc exists. Setting up query...");
+    debugPrint("DEBUG: Querying ride_requests WHERE driverUid == '${user.uid}' AND status == 'searching'");
 
     // 2. Listener for Assigned Rides (Direct Assignments)
+    // Query by driverUid (auth UID) + status. The security rule checks driverUid,
+    // so Firestore can prove the rule is satisfied for all query results.
     Query query = FirebaseFirestore.instance
         .collection('ride_requests')
-        .where('driverId', isEqualTo: _driverDocId ?? user.uid)
-        .where('driverUid', isEqualTo: user.uid) // Required for security rules
-        .where('status', isEqualTo: 'searching') // Only listen for searching
+        .where('driverUid', isEqualTo: user.uid)
+        .where('status', isEqualTo: 'searching')
         .orderBy('createdAt', descending: true);
 
     // Filter based on driver type
@@ -1514,11 +1539,19 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         tollPrice = (data['tollPrice'] as num?)?.toDouble();
       }
 
+      // If no toll from server, calculate using geofenced zones
+      if (tollPrice == null || tollPrice == 0.0) {
+        tollPrice = calculateToll(pickupLocation);
+      }
+
+      final double? surge = (data['surgeMultiplier'] as num?)?.toDouble();
+
       // Create RideRequest object
       RideRequest newRequest = RideRequest(
         rideId: rideId,
         userId: userId,
         userName: userName,
+        surgeMultiplier: surge,
         pickupTitle: pickupTitle,
         dropoffTitle: dropoffTitle,
         pickupFullAddress: pickupFull,
@@ -1552,8 +1585,8 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         extraHourCharge: data['extraHourCharge'],
         extraKmCharge: data['extraKmCharge'],
         driverDuration: (data['driverDuration'] as num?)?.toDouble(),
-        rideDuration: (data['estimatedDurationSeconds'] != null)
-            ? (data['estimatedDurationSeconds'] as num).toDouble() / 60
+        rideDuration: (data['estimatedDurationSeconds'] != null && data['estimatedDurationSeconds'] is num)
+            ? ((data['estimatedDurationSeconds'] as num).toDouble() / 60)
             : null,
         convenienceFee: (data['convenienceFee'] as num?)?.toDouble() ?? 0.0,
         safetyPin: data['startRidePin'] ?? data['safetyPin'] ?? '',
@@ -1693,7 +1726,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
         return {
           'distance': route.distanceKm,
-          'duration': route.durationMinutes!.toDouble(),
+          'duration': (route.durationMinutes as num?)?.toDouble() ?? 0.0,
         };
       }
     } catch (e) {
@@ -1731,10 +1764,10 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       }
     }
 
-    // 1. Daily Rides Stream
+    // 1. Daily Rides Stream — use driverUid (auth UID), not driverId (professional ID)
     earningsSubscription = FirebaseFirestore.instance
         .collection('ride_requests')
-        .where('driverId', isEqualTo: user.uid)
+        .where('driverUid', isEqualTo: user.uid)
         .where('status', isEqualTo: 'completed')
         .where('createdAt', isGreaterThanOrEqualTo: startOfToday)
         .where('createdAt', isLessThan: endOfToday)
@@ -1758,10 +1791,10 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
           updateState();
         }, onError: (error) => debugPrint("Daily Earnings Error: $error"));
 
-    // 2. Rental Rides Stream
+    // 2. Rental Rides Stream — use driverUid (auth UID), not driverId (professional ID)
     rentalEarningsSubscriptionLocal = FirebaseFirestore.instance
         .collection('rental_requests')
-        .where('driverId', isEqualTo: user.uid)
+        .where('driverUid', isEqualTo: user.uid)
         .where('status', isEqualTo: 'completed')
         .where('createdAt', isGreaterThanOrEqualTo: startOfToday)
         .where('createdAt', isLessThan: endOfToday)
@@ -1967,10 +2000,18 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   bool _isAcceptingRide = false;
 
   Future<void> onRideAccepted(RideRequest request) async {
-    if (_isAcceptingRide) return;
+    debugPrint("onRideAccepted: Closing Overlay immediately");
+    FlutterOverlayWindow.closeOverlay();
+    
+    _lastOverlayActionTime = DateTime.now();
     _isAcceptingRide = true;
     isRideAcceptanceInProgress.value = true;
     stopRideRequestSound();
+
+    // Dismiss all pending overlays immediately
+    OverlayService.instance.clearRideQueue();
+    OverlayService.instance.hideFloatingBubble();
+    activeRequests.clear();
 
     // Persist this ride ID to ignored_rides so it doesn't ghost-appear
     // after Get.offAll recreates the controller
@@ -2002,15 +2043,15 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       }
 
       if (expiry == null || expiry.isBefore(DateTime.now())) {
-        Get.snackbar(
-          "Auto-Activation",
-          "No active plan found. Activating 1 Day Free Trial.",
-          duration: const Duration(seconds: 4),
-        );
-        await Get.find<WalletController>().activateFreeTrialPlan(
-          "1 Day Auto (Trial)",
-          1,
-        );
+        // Only trigger if no active plan for > 5 minutes to avoid race conditions during acceptance
+        if (expiry == null ||
+            expiry.add(const Duration(minutes: 5)).isBefore(DateTime.now())) {
+          debugPrint("No active plan found. Attemping silent auto-activation.");
+          await Get.find<WalletController>().activateFreeTrialPlan(
+            "1 Day Auto (Trial)",
+            1,
+          );
+        }
       }
     } catch (e) {
       debugPrint("Subscription Check Error: $e");
@@ -2049,12 +2090,12 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         final rideDoc = await transaction.get(rideRef);
 
         if (!rideDoc.exists) {
-          throw "Ride document does not exist";
+          throw Exception("Ride document does not exist");
         }
 
         final status = rideDoc.data()?['status'];
         if (status != 'searching') {
-          throw "Ride is no longer available (Status: $status)";
+          throw Exception("Ride is no longer available (Status: $status)");
         }
 
         transaction.update(rideRef, {
@@ -2073,6 +2114,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
       // 2. Set Driver Status to Busy/Offline locally
       driverStatus.value = DriverStatus.goTo;
+      handleStatusChange(DriverStatus.goTo);
 
       // Preserve ONLY the accepted ride so we don't re-process it
       activeRequests.removeWhere((r) => r.rideId != rideId);
@@ -2086,6 +2128,28 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       Get.offAll(() => RideAcceptedScreen(rideRequest: request));
     } catch (e) {
       if (e.toString().contains("Ride is no longer available")) {
+        // Check if THIS driver actually accepted it (double-tap / race condition)
+        try {
+          final rideDoc = await FirebaseFirestore.instance
+              .collection(request.rideType == 'rental' ? 'rental_requests' : 'ride_requests')
+              .doc(request.rideId)
+              .get();
+          final rideData = rideDoc.data();
+          final acceptedDriverUid = rideData?['driverUid'];
+          final acceptedStatus = rideData?['status'];
+
+          if (acceptedStatus == 'accepted' && acceptedDriverUid == user.uid) {
+            // This driver already accepted it — navigate to ride screen
+            debugPrint("Accept: Ride already accepted by this driver. Navigating...");
+            OverlayService.instance.clearRideQueue();
+            handleStatusChange(DriverStatus.goTo);
+            _isAcceptingRide = false;
+            isRideAcceptanceInProgress.value = false;
+            Get.offAll(() => RideAcceptedScreen(rideRequest: request));
+            return;
+          }
+        } catch (_) {}
+
         Get.snackbar(
           "Ride Missed",
           "Ride accepted by another driver",
@@ -2423,6 +2487,146 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     _demandSubscription?.cancel();
     _demandSubscription = null;
     demandCircles.clear();
+  }
+
+  void showStatusBubble() {
+    final now = DateTime.now();
+    _lastBubbleShowTime = now;
+
+    // LOCKDOWN GUARD: If a ride was just rejected/accepted/cleared within 3 seconds,
+    // skip showing the overlay entirely to prevent ghosting during app transitions.
+    if (_lastOverlayActionTime != null && 
+        now.difference(_lastOverlayActionTime!).inMilliseconds < 3000) {
+      debugPrint("showStatusBubble: Overlay Lockdown Active. Skipping...");
+      return;
+    }
+
+    // GUARD: If we are CURRENTLY accepting a ride, DO NOT show any cards
+    if (_isAcceptingRide) {
+      debugPrint("showStatusBubble: Skip (isAcceptingRide=true)");
+      return;
+    }
+
+    // Only show the Large Ride Request Card if strictly in 'online' status
+    // and there are active requests.
+    if (activeRequests.isNotEmpty && driverStatus.value == DriverStatus.online) {
+      _showOverlayForRide(activeRequests.first);
+    } else {
+      // If we are in 'goTo' or 'online' with no requests, just show the small bubble
+      OverlayService.instance.showFloatingBubble();
+    }
+  }
+
+  void hideFloatingBubble() {
+    OverlayService.instance.hideFloatingBubble();
+  }
+
+  final RxList<Map<String, dynamic>> _tollZones = <Map<String, dynamic>>[].obs;
+
+  Future<void> _fetchTollZones() async {
+    try {
+      final snapshot =
+          await FirebaseFirestore.instance.collection('geofenced_zones').get();
+      _tollZones.assignAll(
+        snapshot.docs.map((doc) => {...doc.data(), 'id': doc.id}).toList(),
+      );
+      debugPrint("Fetched ${_tollZones.length} toll zones.");
+    } catch (e) {
+      debugPrint("Error fetching toll zones: $e");
+    }
+  }
+
+  double calculateToll(LatLng point) {
+    for (var zone in _tollZones) {
+      final boundary = zone['boundary'] as List<dynamic>?;
+      final surcharge = (zone['surcharge_amount'] as num?)?.toDouble() ?? 0.0;
+
+      if (boundary != null && boundary.isNotEmpty && surcharge > 0) {
+        final List<LatLng> polygon = boundary.map((p) {
+          if (p is GeoPoint) return LatLng(p.latitude, p.longitude);
+          if (p is Map) {
+            final lat = (p['latitude'] as num?)?.toDouble() ??
+                (p['lat'] as num?)?.toDouble();
+            final lng = (p['longitude'] as num?)?.toDouble() ??
+                (p['lng'] as num?)?.toDouble();
+            if (lat != null && lng != null) {
+              return LatLng(lat, lng);
+            }
+          }
+          return const LatLng(0, 0);
+        }).toList();
+
+        if (_isPointInPolygon(point, polygon)) {
+          debugPrint("Point in toll zone: ${zone['id']} (+₹$surcharge)");
+          return surcharge;
+        }
+      }
+    }
+    return 0.0;
+  }
+
+  bool _isPointInPolygon(LatLng point, List<LatLng> polygon) {
+    bool isInside = false;
+    int i, j = polygon.length - 1;
+    for (i = 0; i < polygon.length; i++) {
+      if (((polygon[i].latitude > point.latitude) !=
+              (polygon[j].latitude > point.latitude)) &&
+          (point.longitude <
+              (polygon[j].longitude - polygon[i].longitude) *
+                      (point.latitude - polygon[i].latitude) /
+                      (polygon[j].latitude - polygon[i].latitude) +
+                  polygon[i].longitude)) {
+        isInside = !isInside;
+      }
+      j = i;
+    }
+    return isInside;
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _appLifecycleState = state;
+    debugPrint("App Lifecycle Changed: $state");
+
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.inactive) {
+      // GUARD: Avoid triggering overlay if we are in the middle of accepting a ride
+      if (_isAcceptingRide) {
+        debugPrint("didChangeAppLifecycleState: Skip bubble (isAcceptingRide=true)");
+        return;
+      }
+
+      if (driverStatus.value == DriverStatus.online ||
+          driverStatus.value == DriverStatus.goTo) {
+        showStatusBubble();
+      }
+    } else if (state == AppLifecycleState.resumed) {
+      final now = DateTime.now();
+      final diff = _lastBubbleShowTime == null
+          ? 1001
+          : now.difference(_lastBubbleShowTime!).inMilliseconds;
+
+      if (activeRequests.isEmpty) {
+        if (diff > 1000) {
+          OverlayService.instance.hideFloatingBubble();
+        } else {
+          // Schedule a delayed hide to catch the end of the transition guard
+          Future.delayed(Duration(milliseconds: 1050 - diff), () {
+            if (_appLifecycleState == AppLifecycleState.resumed &&
+                activeRequests.isEmpty) {
+              OverlayService.instance.hideFloatingBubble();
+            }
+          });
+        }
+      }
+    }
+  }
+
+  bool get shouldShowOverlayBubble {
+    return (driverStatus.value == DriverStatus.online ||
+            driverStatus.value == DriverStatus.goTo) &&
+        _appLifecycleState != AppLifecycleState.resumed;
   }
 
   // ------------------------------------------------------------------

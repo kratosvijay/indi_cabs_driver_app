@@ -293,6 +293,13 @@ class OverlayService {
     await _showNextRequest();
   }
 
+  Future<void> clearRideQueue() async {
+    log("OverlayService: Purging ride queue and hiding request overlay.");
+    _rideQueue.clear();
+    _requestShowing = false;
+    await _cleanupIfIdle();
+  }
+
   Future<void> removeRide(String rideId) async {
     if (_rideQueue.isEmpty) return;
 

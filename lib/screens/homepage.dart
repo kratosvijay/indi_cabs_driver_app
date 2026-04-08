@@ -138,13 +138,16 @@ class _DriverHomePageState extends State<DriverHomePage>
         appBar: ProAppBar(
           toolbarHeight: 100,
           title: Obx(
-            () => StatusSlider(
-              currentStatus: controller.driverStatus.value,
-              onStatusChanged: (status) =>
-                  controller.handleStatusChange(status),
-              offlineText: controller.getTranslatedString('offDuty'),
-              onlineText: controller.getTranslatedString('onDuty'),
-              goToText: controller.getTranslatedString('goTo'),
+            () => Visibility(
+              visible: controller.activeRequests.isEmpty,
+              child: StatusSlider(
+                currentStatus: controller.driverStatus.value,
+                onStatusChanged: (status) =>
+                    controller.handleStatusChange(status),
+                offlineText: controller.getTranslatedString('offDuty'),
+                onlineText: controller.getTranslatedString('onDuty'),
+                goToText: controller.getTranslatedString('goTo'),
+              ),
             ),
           ),
           actions: [

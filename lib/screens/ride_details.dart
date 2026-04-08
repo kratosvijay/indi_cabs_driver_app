@@ -430,7 +430,7 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
                       children: [
                         _buildTimelineRow(
                           context,
-                          title: "Pickup",
+                          title: widget.ride.pickupPlaceName ?? "Pickup",
                           address: _pickupAddress ?? widget.ride.pickupAddress,
                           location: widget.ride.pickupLocation,
                           icon: Icons.my_location,
@@ -457,7 +457,7 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
                         }),
                         _buildTimelineRow(
                           context,
-                          title: "Drop-off",
+                          title: widget.ride.dropoffPlaceName ?? "Drop-off",
                           address:
                               _dropoffAddress ?? widget.ride.dropoffAddress,
                           location: widget.ride.dropoffLocation,
@@ -563,6 +563,35 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
                               textColor,
                               subTextColor,
                             ),
+                          if ((widget.ride.tollPrice ?? 0) > 0) ...[
+                            const SizedBox(height: 8),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Row(
+                                  children: [
+                                    Icon(Icons.directions, color: Colors.orange, size: 18),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      "Toll Charges",
+                                      style: TextStyle(
+                                        color: subTextColor,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                Text(
+                                  "₹${widget.ride.tollPrice!.toStringAsFixed(2)}",
+                                  style: const TextStyle(
+                                    color: Colors.orange,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 15,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
 
                           const SizedBox(height: 8),
                           Row(

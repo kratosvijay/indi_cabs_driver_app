@@ -133,25 +133,46 @@ class AuthController extends GetxController {
               Get.offAll(() => RideStartedScreen(rideRequest: rideRequest));
               return;
             } else if (status == 'completed') {
-              // Check if earnings record exists
-              final earningsSnapshot = await _db
-                  .collection('earnings')
-                  .where('rideId', isEqualTo: rideRequest.rideId)
-                  .limit(1)
-                  .get();
+              // Skip restoration if the ride was completed more than 2 hours ago
+              bool isStale = false;
+              final completedAt = rideDoc.data()['completedAt'] ??
+                  rideDoc.data()['updatedAt'] ??
+                  rideDoc.data()['createdAt'];
+              if (completedAt is Timestamp) {
+                final age = DateTime.now().difference(completedAt.toDate());
+                if (age.inHours >= 2) {
+                  debugPrint(
+                    "DEBUG: Skipping stale completed ride (${age.inHours}h old).",
+                  );
+                  isStale = true;
+                }
+              }
 
-              if (earningsSnapshot.docs.isEmpty) {
+              if (!isStale) {
+                // Check if earnings record exists.
+                // Query by rideId only — driverId in earnings is the professional ID,
+                // NOT the auth UID, so filtering by user.uid would never match.
+                final earningsSnapshot = await _db
+                    .collection('earnings')
+                    .where('rideId', isEqualTo: rideRequest.rideId)
+                    .limit(1)
+                    .get();
+
+                if (earningsSnapshot.docs.isEmpty) {
+                  debugPrint(
+                    "DEBUG: Restoring RidePaymentScreen (No earnings found)",
+                  );
+                  Get.offAll(
+                    () => RidePaymentScreen(
+                      rideRequest: rideRequest,
+                      totalAmount: rideRequest.rideFare,
+                    ),
+                  );
+                  return;
+                }
                 debugPrint(
-                  "DEBUG: Restoring RidePaymentScreen (No earnings found)",
+                  "DEBUG: Completed ride has earnings. Skipping restore.",
                 );
-                // If totalFare is present in rideRequest, use it.
-                Get.offAll(
-                  () => RidePaymentScreen(
-                    rideRequest: rideRequest,
-                    totalAmount: rideRequest.rideFare,
-                  ),
-                );
-                return;
               }
             }
           }

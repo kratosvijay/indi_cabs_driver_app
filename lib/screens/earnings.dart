@@ -35,6 +35,9 @@ class Ride {
   final LatLng dropoffLocation;
   final RideStatus status;
   final String? cancelledBy; // 'Driver' or 'Customer'
+  final String? pickupPlaceName; // NEW: Place name for pickup (e.g., "Phoenix Mall")
+  final String? dropoffPlaceName; // NEW: Place name for dropoff
+  final double? tollPrice; // NEW: Toll charges if any
 
   Ride({
     required this.id,
@@ -48,6 +51,9 @@ class Ride {
     required this.dropoffLocation,
     required this.status,
     this.cancelledBy,
+    this.pickupPlaceName,
+    this.dropoffPlaceName,
+    this.tollPrice,
     this.stops = const [],
     this.rideType = 'daily',
     this.packageName,
@@ -80,7 +86,13 @@ class Ride {
         pickup = LatLng(p.latitude, p.longitude);
       } else if (data['pickupLocation'] is Map) {
         final p = data['pickupLocation'] as Map<String, dynamic>;
-        pickup = LatLng(p['latitude'] ?? 0, p['longitude'] ?? 0);
+        final lat = p['latitude'] ?? p['lat'];
+        final lng = p['longitude'] ?? p['lng'];
+        if (lat != null && lng != null) {
+          pickup = LatLng((lat as num).toDouble(), (lng as num).toDouble());
+        } else {
+          debugPrint('Warning: Invalid pickup location in earnings: $p');
+        }
       }
     }
 
@@ -88,11 +100,16 @@ class Ride {
     final dropoffData = data['dropoffLocation'] ?? data['destinationLocation'];
     if (dropoffData != null) {
       if (dropoffData is GeoPoint) {
-        final d = dropoffData;
-        dropoff = LatLng(d.latitude, d.longitude);
+        dropoff = LatLng(dropoffData.latitude, dropoffData.longitude);
       } else if (dropoffData is Map) {
         final d = dropoffData as Map<String, dynamic>;
-        dropoff = LatLng(d['latitude'] ?? 0, d['longitude'] ?? 0);
+        final lat = d['latitude'] ?? d['lat'];
+        final lng = d['longitude'] ?? d['lng'];
+        if (lat != null && lng != null) {
+          dropoff = LatLng((lat as num).toDouble(), (lng as num).toDouble());
+        } else {
+          debugPrint('Warning: Invalid dropoff location in earnings: $d');
+        }
       }
     }
 
@@ -137,6 +154,9 @@ class Ride {
       dropoffLocation: dropoff,
       status: status,
       cancelledBy: data['cancelledBy'],
+      pickupPlaceName: data['pickupPlaceName'],
+      dropoffPlaceName: data['destinationPlaceName'] ?? data['dropoffPlaceName'],
+      tollPrice: parseDouble(data['tollPrice']),
       stops: _parseStops(data['intermediateStops']),
       rideType: data['rideType'] ?? 'daily',
       packageName: data['packageName'],
@@ -197,10 +217,10 @@ class _EarningsScreenState extends State<EarningsScreen>
 
   Future<void> _fetchRides() async {
     try {
-      // Fetch Daily Rides
+      // Fetch Daily Rides — filter by driverUid (auth UID), not driverId (professional ID)
       final dailySnapshot = await FirebaseFirestore.instance
           .collection('ride_requests')
-          .where('driverId', isEqualTo: widget.user.uid)
+          .where('driverUid', isEqualTo: widget.user.uid)
           .orderBy('createdAt', descending: true)
           .limit(50)
           .get();
@@ -208,7 +228,7 @@ class _EarningsScreenState extends State<EarningsScreen>
       // Fetch Rental Rides
       final rentalSnapshot = await FirebaseFirestore.instance
           .collection('rental_requests')
-          .where('driverId', isEqualTo: widget.user.uid)
+          .where('driverUid', isEqualTo: widget.user.uid)
           .orderBy('createdAt', descending: true)
           .limit(50)
           .get();
