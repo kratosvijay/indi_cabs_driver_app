@@ -4,16 +4,15 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:project_taxi_driver_app/presentation/screens/fleet/vehicles/fleet_vehicle_otp_screen.dart';
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:project_taxi_driver_app/screens/login.dart';
 import 'package:project_taxi_driver_app/utils/upload_progress_dialog.dart';
 import 'package:project_taxi_driver_app/screens/sign_up.dart'; // For UserRole
-import 'package:project_taxi_driver_app/screens/car_selection.dart';
 
 // Enum to manage the verification status
 enum VerificationStatus { initial, pending, rejected }
@@ -544,47 +543,96 @@ class _DocumentVerificationScreenState
     }
   }
 
+  Future<void> _showExitDialog() async {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final shouldExit = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        backgroundColor: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+        ),
+        title: const Text(
+          'Exit App',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
+        content: const Text('Are you sure you want to exit the app?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: Text(
+              'No',
+              style: TextStyle(color: Colors.grey.shade600),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+            child: const Text(
+              'Yes',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (shouldExit == true) {
+      SystemNavigator.pop();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_status == VerificationStatus.pending) {
-      return _buildStatusScreen(
-        icon: Icons.hourglass_top,
-        title: _getTranslatedString('pendingTitle'),
-        message: _getTranslatedString('pendingMsg'),
+      return PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, _) async {
+          if (!didPop) await _showExitDialog();
+        },
+        child: _buildStatusScreen(
+          icon: Icons.hourglass_top,
+          title: _getTranslatedString('pendingTitle'),
+          message: _getTranslatedString('pendingMsg'),
+        ),
       );
     }
     if (_status == VerificationStatus.rejected) {
-      return _buildStatusScreen(
-        icon: Icons.error_outline,
-        title: _getTranslatedString('rejectedTitle'),
-        message:
-            "${_getTranslatedString('reason')} $_rejectionReason${_getTranslatedString('rejectedMsg')}",
-        isRejected: true,
+      return PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, _) async {
+          if (!didPop) await _showExitDialog();
+        },
+        child: _buildStatusScreen(
+          icon: Icons.error_outline,
+          title: _getTranslatedString('rejectedTitle'),
+          message:
+              "${_getTranslatedString('reason')} $_rejectionReason${_getTranslatedString('rejectedMsg')}",
+          isRejected: true,
+        ),
       );
     }
 
-    return Scaffold(
-      appBar: ProAppBar(
-        titleText: _getTranslatedString('title'),
-        automaticallyImplyLeading: true,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () {
-            if (Navigator.canPop(context)) {
-              Get.back();
-            } else {
-              Get.offAll(
-                () => CarSelectionScreen(
-                  user: widget.user,
-                  isFleet: widget.isFleet,
-                  role: widget.role,
-                  driverDocId: widget.driverDocId, // Pass it back
-                ),
-              );
-            }
-          },
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (!didPop) await _showExitDialog();
+      },
+      child: Scaffold(
+        appBar: ProAppBar(
+          titleText: _getTranslatedString('title'),
+          automaticallyImplyLeading: true,
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: _showExitDialog,
+          ),
         ),
-      ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20.0),
         child: Column(
@@ -642,12 +690,13 @@ class _DocumentVerificationScreenState
           ],
         ),
       ),
-      bottomNavigationBar: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 30),
-        child: ProButton(
-          text: _getTranslatedString('next'),
-          onPressed: _isLoading ? null : _submitDocuments,
-          isLoading: _isLoading,
+        bottomNavigationBar: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 30),
+          child: ProButton(
+            text: _getTranslatedString('next'),
+            onPressed: _isLoading ? null : _submitDocuments,
+            isLoading: _isLoading,
+          ),
         ),
       ),
     );
@@ -751,13 +800,7 @@ class _DocumentVerificationScreenState
         automaticallyImplyLeading: true,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
-          onPressed: () {
-            if (Navigator.canPop(context)) {
-              Get.back();
-            } else {
-              Get.offAll(() => const LoginScreen());
-            }
-          },
+          onPressed: _showExitDialog,
         ),
       ),
       body: Center(

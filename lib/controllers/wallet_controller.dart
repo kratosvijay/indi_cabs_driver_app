@@ -5,7 +5,6 @@ import 'package:pinput/pinput.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart'; // Changed from foundation
-import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 import 'package:flutter_cashfree_pg_sdk/api/cferrorresponse/cferrorresponse.dart';
 import 'package:flutter_cashfree_pg_sdk/api/cfpayment/cfwebcheckoutpayment.dart';
@@ -59,6 +58,10 @@ class WalletController extends GetxController {
   RxInt settlementsThisWeek = 0.obs;
   Rx<DateTime?> lastSettlementReset = Rx<DateTime?>(null);
   Rx<DateTime?> lastSettlementDate = Rx<DateTime?>(null);
+
+  // Queued Subscription State
+  RxString queuedPlanName = "".obs;
+  RxInt queuedPlanDurationDays = 0.obs;
 
   // Pending Subscription State
   Map<String, dynamic>? _pendingSubscription;
@@ -252,33 +255,42 @@ class WalletController extends GetxController {
     }
   }
 
-  Future<void> fetchWalletData() async {
+  String get _id => _driverDocId ?? _auth.currentUser?.uid ?? "";
+
+  void fetchWalletData() async {
     final user = _auth.currentUser;
     if (user == null) return;
 
-    _listenToAutoSettleSettings(user);
+    // Ensure we have the correct ID before starting any listeners
+    if (_driverDocId == null) {
+      await _loadDocId();
+    }
+
+    // Cancel existing listeners to prevent duplicates
+    for (var sub in _subscriptions) {
+      sub.cancel();
+    }
+    _subscriptions.clear();
 
     try {
-      // Listen to wallet document
       _subscriptions.add(_db
           .collection('drivers')
-          .doc(_driverDocId ?? user.uid)
+          .doc(_id)
           .collection('wallet')
           .doc('balance')
           .snapshots()
           .listen((snapshot) {
-            if (snapshot.exists) {
-              balance.value = (snapshot.data()?['currentBalance'] ?? 0.0)
-                  .toDouble();
-            } else {
-              balance.value = 0.0;
-            }
-          }, onError: (e) => debugPrint("Wallet balance stream error: \$e")));
+        if (snapshot.exists) {
+          balance.value = (snapshot.data()?['currentBalance'] ?? 0.0).toDouble();
+        }
+      }, onError: (e) => debugPrint("Balance stream error: $e")));
+
+      _listenToAutoSettleSettings(user);
 
       // Listen to transactions
       _subscriptions.add(_db
           .collection('drivers')
-          .doc(_driverDocId ?? user.uid)
+          .doc(_id)
           .collection('wallet_transactions')
           .orderBy('createdAt', descending: true)
           .snapshots()
@@ -286,24 +298,47 @@ class WalletController extends GetxController {
             transactions.value = snapshot.docs
                 .map((doc) => WalletTransaction.fromFirestore(doc))
                 .toList();
-          }, onError: (e) => debugPrint("Transactions stream error: \$e")));
+          }, onError: (e) => debugPrint("Transactions stream error: $e")));
     } catch (e) {
       Get.snackbar("Error", "Failed to fetch wallet data: $e");
     }
   }
 
   void _listenToAutoSettleSettings(User user) {
-    _subscriptions.add(_db.collection('drivers').doc(_driverDocId ?? user.uid).snapshots().listen((snapshot) {
+    _subscriptions.add(_db.collection('drivers').doc(_id).snapshots().listen((snapshot) async {
       if (snapshot.exists) {
         final data = snapshot.data();
         autoSettleEnabled.value = data?['autoSettleEnabled'] ?? false;
         autoSettleUpiId.value = data?['autoSettleUpiId'] ?? "";
+        queuedPlanName.value = data?['queuedPlanName'] ?? "";
+        queuedPlanDurationDays.value = data?['queuedPlanDurationDays'] ?? 0;
+
+        // Auto Promotion Check
+        if (queuedPlanName.value.isNotEmpty) {
+          bool shouldPromote = false;
+          if (data!.containsKey('subscriptionExpiry')) {
+            final ts = data['subscriptionExpiry'];
+            if (ts is Timestamp) {
+              if (ts.toDate().isBefore(DateTime.now())) {
+                shouldPromote = true;
+              }
+            } else {
+              shouldPromote = true;
+            }
+          } else {
+            shouldPromote = true;
+          }
+
+          if (shouldPromote) {
+             await _promoteQueuedPlan(user);
+          }
+        }
       }
-    }, onError: (e) => debugPrint("Driver autoSettle stream error: \$e")));
+    }, onError: (e) => debugPrint("Driver info stream error: $e")));
 
     _subscriptions.add(_db
         .collection('drivers')
-        .doc(_driverDocId ?? user.uid)
+        .doc(_id)
         .collection('wallet')
         .doc('metadata')
         .snapshots()
@@ -319,9 +354,41 @@ class WalletController extends GetxController {
             if (settlementTimestamp is Timestamp) {
               lastSettlementDate.value = settlementTimestamp.toDate();
             }
+            debugPrint("WALLET METADATA SYNCED: count=${settlementsThisWeek.value}, lastDate=${lastSettlementDate.value}");
+          } else {
+            debugPrint("WALLET METADATA: Document does not exist yet at pilots/$_id/wallet/metadata");
           }
-        }, onError: (e) => debugPrint("Wallet metadata stream error: \$e")));
+        }, onError: (e) => debugPrint("Wallet metadata stream error: $e")));
   }
+
+  Future<void> _promoteQueuedPlan(User user) async {
+      try {
+        await _db.runTransaction((transaction) async {
+           final driverRef = _db.collection('drivers').doc(_driverDocId ?? user.uid);
+           final driverDoc = await transaction.get(driverRef);
+           if (!driverDoc.exists) return;
+           
+           final data = driverDoc.data()!;
+           final queuedName = data['queuedPlanName'];
+           final queuedDays = data['queuedPlanDurationDays'] ?? 0;
+
+           if (queuedName == null || queuedName == "") return; // already processed
+
+           final newExpiry = DateTime.now().add(Duration(days: queuedDays));
+
+           transaction.set(driverRef, {
+              'subscriptionPlan': queuedName,
+              'subscriptionExpiry': Timestamp.fromDate(newExpiry),
+              'queuedPlanName': FieldValue.delete(),
+              'queuedPlanDurationDays': FieldValue.delete(),
+           }, SetOptions(merge: true));
+        });
+        debugPrint("Queued Plan Promoted successfully!");
+      } catch (e) {
+        debugPrint("Failed to promote queued plan: $e");
+      }
+  }
+
 
   Future<void> updateAutoSettleSettings(bool enabled, String upiId) async {
     final user = _auth.currentUser;
@@ -413,6 +480,64 @@ class WalletController extends GetxController {
     }
   }
 
+  Future<void> debitWallet(
+    double amount,
+    String paymentId, {
+    String description = 'Money Deducted from Wallet',
+  }) async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+
+    if (amount <= 0) {
+      debugPrint("WalletController: Skipping debit for zero amount.");
+      return;
+    }
+
+    try {
+      isLoading.value = true;
+      if (_driverDocId == null) {
+        await _loadDocId();
+      }
+
+      await _db.runTransaction((transaction) async {
+        final balanceRef = _db
+            .collection('drivers')
+            .doc(_driverDocId ?? user.uid)
+            .collection('wallet')
+            .doc('balance');
+        final balanceDoc = await transaction.get(balanceRef);
+
+        double currentBalance = 0.0;
+        if (balanceDoc.exists) {
+          currentBalance = (balanceDoc.data()?['currentBalance'] ?? 0.0).toDouble();
+        }
+
+        final newBalance = currentBalance - amount;
+        transaction.set(balanceRef, {
+          'currentBalance': newBalance,
+        }, SetOptions(merge: true));
+
+        // Add Transaction Record
+        final transactionRef = _db
+            .collection('drivers')
+            .doc(_driverDocId ?? user.uid)
+            .collection('wallet_transactions')
+            .doc();
+        transaction.set(transactionRef, {
+          'amount': amount, // Store as positive value, type identifies debit
+          'type': 'debit',
+          'createdAt': FieldValue.serverTimestamp(),
+          'description': description,
+          'paymentId': paymentId,
+        });
+      });
+    } catch (e) {
+      debugPrint("Error debiting wallet: $e");
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
   Future<void> settleBalance(String upiId) async {
     final user = _auth.currentUser;
     if (user == null) return;
@@ -424,6 +549,13 @@ class WalletController extends GetxController {
 
     try {
       isLoading.value = true;
+      
+      // Ensure DocID is loaded
+      if (_driverDocId == null) {
+        await _loadDocId();
+      }
+      
+      debugPrint("Settlement initiated for driver: $_id");
       Get.back(); // Close dialog
 
       // Simulate bank processing delay
@@ -432,7 +564,7 @@ class WalletController extends GetxController {
       await _db.runTransaction((transaction) async {
         final balanceRef = _db
             .collection('drivers')
-            .doc(_driverDocId ?? user.uid)
+            .doc(_id)
             .collection('wallet')
             .doc('balance');
         final balanceDoc = await transaction.get(balanceRef);
@@ -448,7 +580,7 @@ class WalletController extends GetxController {
         // Check and update settlement limits
         final metadataRef = _db
             .collection('drivers')
-            .doc(_driverDocId ?? user.uid)
+            .doc(_id)
             .collection('wallet')
             .doc('metadata');
         final metadataDoc = await transaction.get(metadataRef);
@@ -482,14 +614,18 @@ class WalletController extends GetxController {
         final lastDate = metadataDoc.data()?['lastSettlementDate'];
         if (lastDate is Timestamp) {
           final lastSettle = lastDate.toDate();
+          debugPrint("Last settlement date found: $lastSettle");
           if (lastSettle.year == now.year &&
               lastSettle.month == now.month &&
               lastSettle.day == now.day) {
+            debugPrint("DENIED: Already settled today.");
             throw Exception("Only 1 settlement per day is allowed. Next reset: Midnight.");
           }
         }
 
+        debugPrint("Weekly count: $currentCount/7");
         if (currentCount >= 7) {
+          debugPrint("DENIED: Weekly limit reached.");
           throw Exception("Weekly settlement limit (7) reached.");
         }
 
@@ -540,9 +676,9 @@ class WalletController extends GetxController {
       await _db.runTransaction((transaction) async {
         final driverRef = _db.collection('drivers').doc(_driverDocId ?? user.uid);
 
-        // Fetch current expiry
         final driverDoc = await transaction.get(driverRef);
         DateTime currentExpiry = DateTime.now();
+        bool hasActivePlan = false;
 
         if (driverDoc.exists &&
             driverDoc.data()!.containsKey('subscriptionExpiry')) {
@@ -551,30 +687,33 @@ class WalletController extends GetxController {
             final exp = ts.toDate();
             if (exp.isAfter(DateTime.now())) {
               currentExpiry = exp;
+              hasActivePlan = true;
             }
           }
         }
 
-        final newExpiry = currentExpiry.add(Duration(days: durationDays));
-
-        // Update Driver Subscription
-        transaction.set(driverRef, {
-          'subscriptionExpiry': Timestamp.fromDate(newExpiry),
-          'subscriptionPlan': planName,
-        }, SetOptions(merge: true));
-
-        // Create Zero-Cost Transaction Record
-        final transactionRef = driverRef
-            .collection('wallet_transactions')
-            .doc();
-        transaction.set(transactionRef, {
-          'amount': 0.0,
-          'type': 'credit', // Credit of 0, purely informational
-          'createdAt': FieldValue.serverTimestamp(),
-          'description': 'Auto-Activation: $planName',
-          'status': 'success',
-          'method': 'system_trial',
-        });
+        if (hasActivePlan) {
+          final existingQueue = driverDoc.data()?['queuedPlanName'];
+          if (existingQueue != null && existingQueue != "") {
+             throw Exception("You already have a plan ($existingQueue) queued. Please wait for it to activate.");
+          }
+          // Queue the trial plan
+          transaction.set(driverRef, {
+            'queuedPlanName': planName,
+            'queuedPlanDurationDays': durationDays,
+          }, SetOptions(merge: true));
+          debugPrint("Trial Plan Queued: $planName");
+        } else {
+          // Activate immediately
+          final newExpiry = currentExpiry.add(Duration(days: durationDays));
+          transaction.set(driverRef, {
+            'subscriptionExpiry': Timestamp.fromDate(newExpiry),
+            'subscriptionPlan': planName,
+          }, SetOptions(merge: true));
+          debugPrint("Trial Plan Activated Immediately: $planName");
+        }
+        
+        // Ensure no transaction record for 0 amount to avoid ghost entries
       });
 
       // Update local state if needed (listeners should handle it)
@@ -718,9 +857,7 @@ class WalletController extends GetxController {
         final orderId = result.data['orderId'];
 
         var session = CFSessionBuilder()
-            .setEnvironment(
-              kDebugMode ? CFEnvironment.SANDBOX : CFEnvironment.PRODUCTION,
-            ) // Use Sandbox in debug mode to bypass "Trusted Source" checks
+            .setEnvironment(CFEnvironment.PRODUCTION)
             .setOrderId(orderId)
             .setPaymentSessionId(paymentSessionId)
             .build();
@@ -769,6 +906,7 @@ class WalletController extends GetxController {
         // 1. Update Subscription Expiry
         final driverDoc = await transaction.get(driverRef);
         DateTime currentExpiry = DateTime.now();
+        bool hasActivePlan = false;
 
         if (driverDoc.exists &&
             driverDoc.data()!.containsKey('subscriptionExpiry')) {
@@ -777,30 +915,43 @@ class WalletController extends GetxController {
             final exp = ts.toDate();
             if (exp.isAfter(DateTime.now())) {
               currentExpiry = exp;
+              hasActivePlan = true;
             }
           }
         }
 
-        final newExpiry = currentExpiry.add(Duration(days: durationDays));
-
-        transaction.set(driverRef, {
-          'subscriptionExpiry': Timestamp.fromDate(newExpiry),
-          'subscriptionPlan': planName,
-        }, SetOptions(merge: true));
+        if (hasActivePlan) {
+           final existingQueue = driverDoc.data()?['queuedPlanName'];
+           if (existingQueue != null && existingQueue != "") {
+               throw Exception("You already have a \"$existingQueue\" plan queued. Please wait for it to activate before purchasing another.");
+           }
+           transaction.set(driverRef, {
+              'queuedPlanName': planName,
+              'queuedPlanDurationDays': durationDays,
+           }, SetOptions(merge: true));
+        } else {
+           final newExpiry = currentExpiry.add(Duration(days: durationDays));
+           transaction.set(driverRef, {
+             'subscriptionExpiry': Timestamp.fromDate(newExpiry),
+             'subscriptionPlan': planName,
+           }, SetOptions(merge: true));
+        }
 
         // 2. Record Transaction (Payment received directly)
-        final transactionRef = driverRef
-            .collection('wallet_transactions')
-            .doc();
-        transaction.set(transactionRef, {
-          'amount': price,
-          'type': 'debit', // Conceptually a purchase
-          'createdAt': FieldValue.serverTimestamp(),
-          'description': 'Plan Purchase: $planName',
-          'paymentId': paymentId,
-          'status': 'success',
-          'method': 'cashfree_direct',
-        });
+        if (price > 0) {
+            final transactionRef = driverRef
+                .collection('wallet_transactions')
+                .doc();
+            transaction.set(transactionRef, {
+              'amount': price,
+              'type': 'debit', // Conceptually a purchase
+              'createdAt': FieldValue.serverTimestamp(),
+              'description': 'Plan Purchase: $planName',
+              'paymentId': paymentId,
+              'status': 'success',
+              'method': 'cashfree_direct',
+            });
+        }
       });
 
       // Success Dialog

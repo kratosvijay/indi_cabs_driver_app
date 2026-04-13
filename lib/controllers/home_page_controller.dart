@@ -731,7 +731,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       OverlayService.instance.stopDriverForeground();
     }
 
-    if (status == DriverStatus.goTo && activeRequests.isEmpty) {
+    if (status == DriverStatus.goTo && activeRequests.isEmpty && !_isAcceptingRide) {
       debugPrint("Opening GoToScreen...");
       // Revert if GoTo Is Cancelled
       // logic handles this by checking result
@@ -2493,28 +2493,33 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     final now = DateTime.now();
     _lastBubbleShowTime = now;
 
-    // LOCKDOWN GUARD: If a ride was just rejected/accepted/cleared within 3 seconds,
-    // skip showing the overlay entirely to prevent ghosting during app transitions.
-    if (_lastOverlayActionTime != null && 
-        now.difference(_lastOverlayActionTime!).inMilliseconds < 3000) {
-      debugPrint("showStatusBubble: Overlay Lockdown Active. Skipping...");
-      return;
-    }
-
-    // GUARD: If we are CURRENTLY accepting a ride, DO NOT show any cards
+    // GUARD: Never show anything while mid-acceptance flow.
     if (_isAcceptingRide) {
       debugPrint("showStatusBubble: Skip (isAcceptingRide=true)");
       return;
     }
 
-    // Only show the Large Ride Request Card if strictly in 'online' status
-    // and there are active requests.
+    // LOCKDOWN GUARD: After accept/reject/clear, show bubble only (never the
+    // ride card) to prevent ghost card overlays during app transitions.
+    if (_lastOverlayActionTime != null &&
+        now.difference(_lastOverlayActionTime!).inMilliseconds < 3000) {
+      debugPrint("showStatusBubble: Lockdown active - bubble only");
+      if (driverStatus.value == DriverStatus.online ||
+          driverStatus.value == DriverStatus.goTo) {
+        OverlayService.instance.showFloatingBubble();
+      }
+      return;
+    }
+
+    // Show ride-request card when online with pending requests; otherwise just
+    // show the small bubble so the driver can tap back into the app.
     if (activeRequests.isNotEmpty && driverStatus.value == DriverStatus.online) {
       _showOverlayForRide(activeRequests.first);
-    } else {
-      // If we are in 'goTo' or 'online' with no requests, just show the small bubble
+    } else if (driverStatus.value == DriverStatus.online ||
+        driverStatus.value == DriverStatus.goTo) {
       OverlayService.instance.showFloatingBubble();
     }
+    // offline: show nothing
   }
 
   void hideFloatingBubble() {

@@ -142,7 +142,14 @@ class OverlayService {
     // Permission check
     if (!await ensurePermission()) return;
 
-    // Foreground Service has already been started by the driver going online.
+    // Ensure the foreground service config and service itself are running.
+    // In release builds the config may not have been applied yet if the driver
+    // went online in a previous app session that was killed by the OS.
+    await _initForegroundTask();
+    await _ensureForegroundService(
+      title: "Indi Cabs Online",
+      text: "Ready for rides",
+    );
 
     try {
       await FlutterOverlayWindow.showOverlay(
@@ -233,7 +240,9 @@ class OverlayService {
       return;
     }
 
-    // Cold Start
+    // Cold Start — always (re-)init config before starting the service so that
+    // release builds (where lazy init may have been skipped) work correctly.
+    await _initForegroundTask();
     await _ensureForegroundService(
       title: "New Ride Request",
       text: "Tap to view details",

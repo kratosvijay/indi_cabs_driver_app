@@ -235,6 +235,8 @@ class SettlementScreen extends StatelessWidget {
               }
 
               final canSettle = remaining > 0 && !alreadySettledToday && selectedUpiId.value != null;
+              
+              debugPrint("UI Settle Check: used=$used, remaining=$remaining, alreadySettledToday=$alreadySettledToday, selected=${selectedUpiId.value != null}");
 
               return Column(
                 children: [

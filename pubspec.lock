@@ -498,10 +498,10 @@ packages:
     dependency: "direct main"
     description:
       name: flutter_cashfree_pg_sdk
-      sha256: "05f973fabc59a5721db471279ab447899921651dbf546795a5d7fb3d712b4418"
+      sha256: "9b8ddf59099f52d7bdd9f38ec82f63b32c499e01e8c4f645824f6c2376f635e2"
       url: "https://pub.dev"
     source: hosted
-    version: "2.2.10+48"
+    version: "2.3.3+50"
   flutter_displaymode:
     dependency: "direct main"
     description:

@@ -490,6 +490,20 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
       // Credit Logic
       final amountToCredit = isOnline ? localTotalAmount : (isCashPlusWallet ? walletAmt : 0.0);
 
+      // GST Deduction (5% of Total Fare)
+      try {
+        final gstAmount = double.parse((localTotalAmount * 0.05).toStringAsFixed(2));
+        if (gstAmount > 0) {
+          await WalletController.instance.debitWallet(
+            gstAmount,
+            "gst_$localRideId",
+            description: "5% GST Deduction: $localRideId",
+          );
+        }
+      } catch (e) {
+        debugPrint("Failed to deduct GST: $e");
+      }
+
       if (amountToCredit > 0) {
         try {
           // A. Credit Driver Wallet
@@ -527,8 +541,9 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
           if (isCashPlusWallet) {
             final amountToDeduct = walletAmt;
 
-            await FirebaseFirestore.instance.runTransaction((
-              transaction,
+            if (amountToDeduct > 0) {
+              await FirebaseFirestore.instance.runTransaction((
+                transaction,
             ) async {
               final userRef = FirebaseFirestore.instance
                   .collection('users')
@@ -568,6 +583,7 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
             debugPrint(
               "Deducted $amountToDeduct from customer $localCustomerId wallet.",
             );
+            }
           }
         } catch (e) {
           debugPrint("Failed to process background wallet transactions: $e");

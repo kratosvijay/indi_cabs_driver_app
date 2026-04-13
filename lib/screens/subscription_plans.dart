@@ -65,7 +65,6 @@ class _SubscriptionPlansScreenState extends State<SubscriptionPlansScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Ensure controller is available (dependency fix from previous step)
     final controller = Get.put(WalletController());
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final selectedPlan = plans[_selectedIndex];
@@ -88,270 +87,334 @@ class _SubscriptionPlansScreenState extends State<SubscriptionPlansScreen> {
           const SizedBox(width: 8),
         ],
       ),
-      body: Column(
-        children: [
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // Promotional Banner
-                  Container(
-                    padding: const EdgeInsets.all(20),
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [Colors.orange.shade400, Colors.deepOrange],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
+      body: Obx(() {
+        if (controller.queuedPlanName.value.isNotEmpty) {
+          return _buildQueuedPlanView(context, controller.queuedPlanName.value);
+        }
+        return Column(
+          children: [
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // Promotional Banner
+                    Container(
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [Colors.orange.shade400, Colors.deepOrange],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                        borderRadius: BorderRadius.circular(16),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.orange.withValues(alpha: 0.3),
+                            blurRadius: 10,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
                       ),
-                      borderRadius: BorderRadius.circular(16),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.orange.withValues(alpha: 0.3),
-                          blurRadius: 10,
-                          offset: const Offset(0, 4),
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      children: [
-                        const Icon(Icons.stars, color: Colors.white, size: 40),
-                        const SizedBox(height: 10),
-                        Text(
-                          "unlimitedRidesBanner".tr,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 24,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 5),
-                        Text(
-                          "rechargeBannerMsg".tr,
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: Colors.white.withValues(alpha: 0.9),
-                            fontSize: 14,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-
-                  Text(
-                    "selectPlan".tr,
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-
-                  // Plans List
-                  ListView.builder(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    itemCount: plans.length,
-                    itemBuilder: (context, index) {
-                      final plan = plans[index];
-                      final isSelected = index == _selectedIndex;
-
-                      return FadeInSlide(
-                        delay: 0.1 * index,
-                        child: GestureDetector(
-                          onTap: () {
-                            setState(() {
-                              _selectedIndex = index;
-                            });
-                          },
-                          child: Container(
-                            margin: const EdgeInsets.only(bottom: 12),
-                            decoration: BoxDecoration(
-                              color: isDark
-                                  ? Colors.grey.shade900
-                                  : Colors.white,
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                color: isSelected
-                                    ? AppColors.primary
-                                    : (isDark
-                                          ? Colors.white12
-                                          : Colors.grey.shade200),
-                                width: isSelected ? 2 : 1,
-                              ),
-                              boxShadow: isSelected
-                                  ? [
-                                      BoxShadow(
-                                        color: AppColors.primary.withValues(
-                                          alpha: 0.15,
-                                        ),
-                                        blurRadius: 4,
-                                        offset: const Offset(0, 2),
-                                      ),
-                                    ]
-                                  : [
-                                      BoxShadow(
-                                        color: Colors.black.withValues(
-                                          alpha: 0.03,
-                                        ),
-                                        blurRadius: 2,
-                                        offset: const Offset(0, 1),
-                                      ),
-                                    ],
+                      child: Column(
+                        children: [
+                          const Icon(Icons.stars, color: Colors.white, size: 40),
+                          const SizedBox(height: 10),
+                          Text(
+                            "unlimitedRidesBanner".tr,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold,
                             ),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 12,
+                          ),
+                          const SizedBox(height: 5),
+                          Text(
+                            "rechargeBannerMsg".tr,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.9),
+                              fontSize: 14,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+
+                    Text(
+                      "selectPlan".tr,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      "Note: No refunds are given once a plan is purchased.",
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.red.shade400,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Plans List
+                    ListView.builder(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: plans.length,
+                      itemBuilder: (context, index) {
+                        final plan = plans[index];
+                        final isSelected = index == _selectedIndex;
+
+                        return FadeInSlide(
+                          delay: 0.1 * index,
+                          child: GestureDetector(
+                            onTap: () {
+                              setState(() {
+                                _selectedIndex = index;
+                              });
+                            },
+                            child: Container(
+                              margin: const EdgeInsets.only(bottom: 12),
+                              decoration: BoxDecoration(
+                                color: isDark
+                                    ? Colors.grey.shade900
+                                    : Colors.white,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: isSelected
+                                      ? AppColors.primary
+                                      : (isDark
+                                            ? Colors.white12
+                                            : Colors.grey.shade200),
+                                  width: isSelected ? 2 : 1,
+                                ),
+                                boxShadow: isSelected
+                                    ? [
+                                        BoxShadow(
+                                          color: AppColors.primary.withValues(
+                                            alpha: 0.15,
+                                          ),
+                                          blurRadius: 4,
+                                          offset: const Offset(0, 2),
+                                        ),
+                                      ]
+                                    : [
+                                        BoxShadow(
+                                          color: Colors.black.withValues(
+                                            alpha: 0.03,
+                                          ),
+                                          blurRadius: 2,
+                                          offset: const Offset(0, 1),
+                                        ),
+                                      ],
                               ),
-                              child: Row(
-                                children: [
-                                  // Selection Indicator
-                                  Container(
-                                    width: 20,
-                                    height: 20,
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      border: Border.all(
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 12,
+                                ),
+                                child: Row(
+                                  children: [
+                                    // Selection Indicator
+                                    Container(
+                                      width: 20,
+                                      height: 20,
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        border: Border.all(
+                                          color: isSelected
+                                              ? AppColors.primary
+                                              : Colors.grey,
+                                          width: 2,
+                                        ),
                                         color: isSelected
                                             ? AppColors.primary
-                                            : Colors.grey,
-                                        width: 2,
+                                            : Colors.transparent,
                                       ),
-                                      color: isSelected
-                                          ? AppColors.primary
-                                          : Colors.transparent,
+                                      child: isSelected
+                                          ? const Icon(
+                                              Icons.check,
+                                              size: 14,
+                                              color: Colors.white,
+                                            )
+                                          : null,
                                     ),
-                                    child: isSelected
-                                        ? const Icon(
-                                            Icons.check,
-                                            size: 14,
-                                            color: Colors.white,
-                                          )
-                                        : null,
-                                  ),
-                                  const SizedBox(width: 12),
-                                  // Content
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
+                                    const SizedBox(width: 12),
+                                    // Content
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            plan.durationTitle,
+                                            style: TextStyle(
+                                              fontSize: 16,
+                                              fontWeight: FontWeight.bold,
+                                              color: isDark
+                                                  ? Colors.white
+                                                  : Colors.black87,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 2),
+                                          Text(
+                                            "unlimitedRides".tr,
+                                            style: const TextStyle(
+                                              color: Colors.green,
+                                              fontWeight: FontWeight.w500,
+                                              fontSize: 12,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    // Price
+                                    Column(
+                                      crossAxisAlignment: CrossAxisAlignment.end,
                                       children: [
+                                        if (plan.id == '1_day')
+                                          Text(
+                                            "₹${plan.basePrice.toStringAsFixed(0)}",
+                                            style: TextStyle(
+                                              fontSize: 14,
+                                              decoration:
+                                                  TextDecoration.lineThrough,
+                                              color: isDark
+                                                  ? Colors.grey
+                                                  : Colors.grey,
+                                            ),
+                                          ),
                                         Text(
-                                          plan.durationTitle, // Using dynamic title, assumes "1 Day" etc is handled or we need to localize plan titles too.
+                                          plan.id == '1_day'
+                                              ? "₹0"
+                                              : "₹${plan.basePrice.toStringAsFixed(0)}",
                                           style: TextStyle(
-                                            fontSize: 16,
+                                            fontSize: 18,
                                             fontWeight: FontWeight.bold,
                                             color: isDark
                                                 ? Colors.white
                                                 : Colors.black87,
                                           ),
                                         ),
-                                        const SizedBox(height: 2),
-                                        Text(
-                                          "unlimitedRides".tr,
-                                          style: const TextStyle(
-                                            color: Colors.green,
-                                            fontWeight: FontWeight.w500,
-                                            fontSize: 12,
+                                        if (plan.id == '1_day')
+                                          Text(
+                                            "freeTrial".tr,
+                                            style: const TextStyle(
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.bold,
+                                              color: Colors.green,
+                                            ),
                                           ),
-                                        ),
                                       ],
                                     ),
-                                  ),
-                                  // Price
-                                  Column(
-                                    crossAxisAlignment: CrossAxisAlignment.end,
-                                    children: [
-                                      // Original Price (Struck through)
-                                      if (plan.id == '1_day')
-                                        Text(
-                                          "₹${plan.basePrice.toStringAsFixed(0)}",
-                                          style: TextStyle(
-                                            fontSize: 14,
-                                            decoration:
-                                                TextDecoration.lineThrough,
-                                            color: isDark
-                                                ? Colors.grey
-                                                : Colors.grey,
-                                          ),
-                                        ),
-                                      // New Price
-                                      Text(
-                                        plan.id == '1_day'
-                                            ? "₹0"
-                                            : "₹${plan.basePrice.toStringAsFixed(0)}",
-                                        style: TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.bold,
-                                          color: isDark
-                                              ? Colors.white
-                                              : Colors.black87,
-                                        ),
-                                      ),
-                                      if (plan.id == '1_day')
-                                        Text(
-                                          "freeTrial".tr,
-                                          style: const TextStyle(
-                                            fontSize: 11,
-                                            fontWeight: FontWeight.bold,
-                                            color: Colors.green,
-                                          ),
-                                        ),
-                                    ],
-                                  ),
-                                ],
+                                  ],
+                                ),
                               ),
                             ),
                           ),
+                        );
+                      },
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    // Notes Section
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: isDark
+                            ? Colors.white.withValues(alpha: 0.05)
+                            : Colors.grey.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: isDark ? Colors.white10 : Colors.grey.shade200,
                         ),
-                      );
-                    },
-                  ),
-
-                  const SizedBox(height: 16),
-
-                  // Notes Section
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: isDark
-                          ? Colors.white.withValues(alpha: 0.05)
-                          : Colors.grey.shade50,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: isDark ? Colors.white10 : Colors.grey.shade200,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            "importantNotes".tr,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: isDark
+                                  ? Colors.grey.shade400
+                                  : Colors.grey.shade700,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          _buildBulletPoint(isDark, "gstNote".tr),
+                          _buildBulletPoint(isDark, "unlimitedRidesNote".tr),
+                          _buildBulletPoint(isDark, "autoActivateNote".tr),
+                          _buildBulletPoint(isDark, "No refunds are given once a plan is purchased."),
+                        ],
                       ),
                     ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          "importantNotes".tr,
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                            color: isDark
-                                ? Colors.grey.shade400
-                                : Colors.grey.shade700,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        _buildBulletPoint(isDark, "gstNote".tr),
-                        _buildBulletPoint(isDark, "unlimitedRidesNote".tr),
-                        _buildBulletPoint(isDark, "autoActivateNote".tr),
-                      ],
-                    ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
-          ),
-          // Bottom Summary & Buy Button
-          _buildBottomBar(context, controller, selectedPlan),
-        ],
+            // Bottom Summary & Buy Button
+            _buildBottomBar(context, controller, selectedPlan),
+          ],
+        );
+      }),
+    );
+  }
+
+  Widget _buildQueuedPlanView(BuildContext context, String planName) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                color: isDark ? Colors.blue.shade900.withValues(alpha: 0.2) : Colors.blue.shade50,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(Icons.auto_awesome, size: 64, color: Colors.blue.shade400),
+            ),
+            const SizedBox(height: 24),
+            Text(
+              "Plan Already Queued!",
+              style: TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: isDark ? Colors.white : Colors.black87,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              "You already have \"$planName\" in your queue. It will activate automatically as soon as your current plan expires.\n\nTo ensure fair use, you can only queue one plan at a time.",
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 16,
+                color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+                height: 1.5,
+              ),
+            ),
+            const SizedBox(height: 32),
+            ProButton(
+              text: "Back to Home",
+              onPressed: () => Get.back(),
+            ),
+            const SizedBox(height: 20),
+            Text(
+              "No refunds are given for purchased plans.",
+              style: TextStyle(fontSize: 12, color: Colors.red.shade300),
+            ),
+          ],
+        ),
       ),
     );
   }

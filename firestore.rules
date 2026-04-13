@@ -1,5 +1,4 @@
 rules_version = '2';
-
 service cloud.firestore {
   match /databases/{database}/documents {
     // --- HELPER FUNCTIONS ---
@@ -11,9 +10,6 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
-    // Checks if the caller is the driver who owns a driver document.
-    // driverId in the path is the professional ID (e.g. indi-drv-4), NOT the auth UID.
-    // The driver doc stores the auth UID in the 'uid' field.
     function isDriverOwner(driverId) {
       return isSignedIn() && (
         request.auth.uid == driverId ||
@@ -21,13 +17,15 @@ service cloud.firestore {
       );
     }
 
-    // Checks if the caller is the driver who owns a driver document, using get().
-    // Used for subcollections where 'resource' is the subcollection doc, not the parent.
     function isDriverOwnerByGet(driverId) {
       return isSignedIn() && (
         request.auth.uid == driverId ||
         get(/databases/$(database)/documents/drivers/$(driverId)).data.get('uid', '') == request.auth.uid
       );
+    }
+
+    function isUser() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
     }
 
     // --- DEFAULT DENY ---
@@ -37,7 +35,7 @@ service cloud.firestore {
 
     // --- USERS COLLECTION ---
     match /users/{userId} {
-      allow read: if isOwner(userId);
+      allow read: if isOwner(userId) || isSignedIn(); // Drivers need to read user details for active rides. allow get/list might be better, but we let signed-in users read.
       allow create: if isOwner(userId);
       allow update: if isOwner(userId);
       allow delete: if false;
@@ -49,18 +47,78 @@ service cloud.firestore {
 
     // --- DRIVERS COLLECTION ---
     match /drivers/{driverId} {
-      // Any signed-in user can read driver profiles (for ride tracking, ratings)
       allow get: if isSignedIn();
-      allow list: if isSignedIn();
-      // Create: UID-based docs only (professional ID docs created by Cloud Functions)
-      allow create: if isOwner(driverId);
-      // Update: allow if auth UID matches doc ID (legacy) OR the 'uid' field in the doc
-      allow update: if isDriverOwner(driverId);
+      allow list: if true; // Allows unauthenticated list for phone-number duplicate check during signup.
+
+      allow create: if isSignedIn() && (
+        request.auth.uid == driverId ||
+        request.resource.data.get('uid', '') == request.auth.uid
+      );
+
+      allow update: if isDriverOwner(driverId) || isUser(); // Users rate drivers / update status
       allow delete: if false;
 
-      // Subcollections: only the owning driver can access
       match /{subcollection=**} {
         allow read, write: if isDriverOwnerByGet(driverId);
+      }
+    }
+
+    // --- RIDE REQUESTS ---
+    match /ride_requests/{rideId} {
+      allow get: if isSignedIn() && (
+        request.auth.uid == resource.data.userId || 
+        request.auth.uid == resource.data.driverId || 
+        request.auth.uid == resource.data.driverUid
+      );
+
+      allow list: if isSignedIn();
+      allow create: if isOwner(request.resource.data.userId);
+
+      allow update: if isSignedIn() && (
+        request.auth.uid == resource.data.userId || 
+        request.auth.uid == resource.data.driverId || 
+        request.auth.uid == resource.data.driverUid || 
+        resource.data.status == 'searching' || 
+        resource.data.status == 'cancelled'
+      );
+
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow read, write: if isSignedIn() && (
+          request.auth.uid == get(/databases/$(database)/documents/ride_requests/$(rideId)).data.userId ||
+          request.auth.uid == get(/databases/$(database)/documents/ride_requests/$(rideId)).data.driverUid ||
+          request.auth.uid == get(/databases/$(database)/documents/ride_requests/$(rideId)).data.driverId
+        );
+      }
+    }
+
+    // --- RENTAL REQUESTS ---
+    match /rental_requests/{rideId} {
+      allow get: if isSignedIn() && (
+        request.auth.uid == resource.data.userId || 
+        request.auth.uid == resource.data.driverId || 
+        request.auth.uid == resource.data.driverUid
+      );
+
+      allow list: if isSignedIn();
+      allow create: if isOwner(request.resource.data.userId);
+
+      allow update: if isSignedIn() && (
+        request.auth.uid == resource.data.userId || 
+        request.auth.uid == resource.data.driverId || 
+        request.auth.uid == resource.data.driverUid || 
+        resource.data.status == 'searching' || 
+        resource.data.status == 'cancelled'
+      );
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow read, write: if isSignedIn() && (
+          request.auth.uid == get(/databases/$(database)/documents/rental_requests/$(rideId)).data.userId ||
+          request.auth.uid == get(/databases/$(database)/documents/rental_requests/$(rideId)).data.driverUid ||
+          request.auth.uid == get(/databases/$(database)/documents/rental_requests/$(rideId)).data.driverId
+        );
       }
     }
 
@@ -69,77 +127,55 @@ service cloud.firestore {
       allow read, write: if false; // Cloud Functions only
     }
 
-    // --- RIDE REQUESTS ---
-    match /ride_requests/{rideId} {
-      // GET: users read their own ride, drivers read their assigned ride
-      allow get: if isSignedIn() &&
-                    (request.auth.uid == resource.data.userId ||
-                     request.auth.uid == resource.data.driverUid);
-
-      // LIST: only when querying with driverUid == auth.uid OR userId == auth.uid
-      // This ensures the security rule is provably satisfied for all query results.
-      allow list: if isSignedIn() &&
-                    (request.auth.uid == resource.data.userId ||
-                     request.auth.uid == resource.data.driverUid);
-
-      // Users create rides
-      allow create: if isOwner(request.resource.data.userId);
-
-      // Users and assigned drivers can update
-      allow update: if isSignedIn() &&
-                      (request.auth.uid == resource.data.userId ||
-                       request.auth.uid == resource.data.driverUid);
-
-      allow delete: if false;
-
-      match /messages/{messageId} {
-        allow read, create: if isSignedIn() &&
-          (request.auth.uid == get(/databases/$(database)/documents/ride_requests/$(rideId)).data.userId ||
-           request.auth.uid == get(/databases/$(database)/documents/ride_requests/$(rideId)).data.driverUid);
-        allow update, delete: if false;
-      }
-    }
-
     // --- FLEET OPERATORS ---
     match /fleet_operators/{operatorId} {
       allow get: if isOwner(operatorId);
-      allow list: if isSignedIn();
+      allow list: if true;
       allow create: if isOwner(operatorId);
       allow update: if isOwner(operatorId);
       allow delete: if false;
     }
 
-    // --- EARNINGS (READ ONLY) ---
+    // --- EARNINGS ---
     match /earnings/{earningId} {
       allow read: if isSignedIn() && (
         resource.data.driverUid == request.auth.uid ||
         resource.data.driverId == request.auth.uid
       );
-      allow write: if false; // Cloud Functions only
+      allow create: if isSignedIn();
+      allow update, delete: if false;
     }
 
-    // --- WALLET TRANSACTIONS (READ ONLY) ---
+    // --- WALLET TRANSACTIONS & INVOICES ---
     match /wallet_transactions/{txId} {
       allow read: if isSignedIn();
-      allow write: if false; // Cloud Functions only
+      allow write: if false; // Cloud Functions
+    }
+    match /invoices/{invoiceId} {
+      allow read: if isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        resource.data.driverUid == request.auth.uid ||
+        resource.data.driverId == request.auth.uid
+      );
+      allow write: if false; 
     }
 
-    // --- PRICING RULES (READ ONLY) ---
+    // --- PRICING / GEOS / PACKAGES ---
     match /pricing_rules/{ruleId} {
       allow read: if isSignedIn();
-      allow write: if false; // Admin only
+      allow write: if false;
     }
-
-    // --- RENTAL PACKAGES (READ ONLY) ---
-    match /rental_packages/{packageId} {
-      allow read: if isSignedIn();
-      allow write: if false; // Admin only
-    }
-
-    // --- GEOFENCED ZONES (READ ONLY) ---
     match /geofenced_zones/{zoneId} {
       allow read: if isSignedIn();
-      allow write: if false; // Admin only
+      allow write: if false;
+    }
+    match /rental_packages/{packageId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+    match /demand_zones/{zoneId} {
+      allow read: if isSignedIn();
+      allow write: if false;
     }
 
     // --- AIRPORT QUEUES ---
@@ -153,13 +189,7 @@ service cloud.firestore {
       }
     }
 
-    // --- DEMAND ZONES (READ ONLY) ---
-    match /demand_zones/{zoneId} {
-      allow read: if isSignedIn();
-      allow write: if false; // Admin only
-    }
-
-    // --- REVIEWS (READ + CREATE) ---
+    // --- REVIEWS ---
     match /reviews/{reviewId} {
       allow read: if isSignedIn();
       allow create: if isSignedIn();
@@ -176,28 +206,47 @@ service cloud.firestore {
       allow create, delete: if false;
     }
 
-    // --- RENTAL REQUESTS ---
-    match /rental_requests/{rideId} {
-      // GET: users or assigned driver only
-      allow get: if isSignedIn() &&
-                    (request.auth.uid == resource.data.userId ||
-                     request.auth.uid == resource.data.driverUid);
-
-      // LIST: allow any signed-in user to browse available rentals.
-      // Drivers need to see all status=='searching' rentals to find jobs nearby.
-      allow list: if isSignedIn();
-
-      allow create: if isOwner(request.resource.data.userId);
-      allow update: if isSignedIn() &&
-                      (request.auth.uid == resource.data.userId ||
-                       request.auth.uid == resource.data.driverUid);
-      allow delete: if false;
-    }
-
     // --- COUNTERS ---
     match /counters/{counterId} {
       allow read: if isSignedIn();
-      allow write: if false; // Cloud Functions only
+      allow write: if isSignedIn();
+    }
+
+    // --- METRO BOOKINGS ---
+    match /metro_bookings/{bookingId} {
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // --- SUPPORT TICKETS ---
+    match /support_tickets/{ticketId} {
+      allow create: if isSignedIn();
+      
+      allow read, update: if isSignedIn() && (
+        resource.data.userId == request.auth.uid || 
+        resource.data.driverId == request.auth.uid ||
+        resource.data.driverUid == request.auth.uid ||
+        (request.auth.uid in resource.data.get('admins', [])) ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+      
+      allow list: if isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+      
+      allow update: if isSignedIn() && (
+        (request.auth.uid in resource.data.get('admins', [])) ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      ) && request.resource.data.status == 'closed';
+
+      match /messages/{messageId} {
+        allow read, write: if isSignedIn() && (
+          get(/databases/$(database)/documents/support_tickets/$(ticketId)).data.userId == request.auth.uid ||
+          get(/databases/$(database)/documents/support_tickets/$(ticketId)).data.driverId == request.auth.uid ||
+          get(/databases/$(database)/documents/support_tickets/$(ticketId)).data.driverUid == request.auth.uid ||
+          (request.auth.uid in get(/databases/$(database)/documents/support_tickets/$(ticketId)).data.get('admins', [])) ||
+          exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        );
+      }
     }
   }
 }

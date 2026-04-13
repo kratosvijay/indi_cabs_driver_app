@@ -1,5 +1,6 @@
 {
   "projects": {
-    "default": "projecttaxi-df0d2"
+    "default": "projecttaxi-df0d2",
+    "prod": "indicabs-prod"
   }
 }

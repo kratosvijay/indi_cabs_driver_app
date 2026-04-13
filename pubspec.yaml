@@ -1,7 +1,7 @@
 name: project_taxi_driver_app
 description: "Indi Cabs Partner App."
 publish_to: 'none'
-version: 1.2.7+13
+version: 1.2.8+14
 
 environment:
   sdk: ^3.9.2
@@ -60,7 +60,7 @@ dependencies:
   permission_handler: ^12.0.1
   flutter_overlay_window: ^0.5.0
   upgrader: ^12.5.0
-  flutter_cashfree_pg_sdk: ^2.2.10+48
+  flutter_cashfree_pg_sdk: ^2.3.3+50
   device_info_plus: ^12.3.0
   flutter_displaymode: ^0.7.0
   sms_autofill: ^2.3.0
