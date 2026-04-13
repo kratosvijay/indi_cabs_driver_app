@@ -67,12 +67,15 @@ Future<void> main() async {
     debugPrint("Error setting high refresh rate: $e");
   }
 
-  // Enable edge-to-edge support for Android 15 and above
+  // Enable edge-to-edge support (Handles Android 15/Play Console warning)
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
-      systemNavigationBarColor: Colors.transparent,
       statusBarColor: Colors.transparent,
+      systemNavigationBarColor: Colors.transparent,
+      systemNavigationBarDividerColor: Colors.transparent,
+      systemStatusBarContrastEnforced: false,
+      systemNavigationBarContrastEnforced: false,
     ),
   );
 
