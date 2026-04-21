@@ -1,5 +1,4 @@
 import 'dart:ui'; // For PlatformDispatcher
-import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
@@ -46,10 +45,25 @@ Future<void> main() async {
     return true;
   };
 
+  // Temporarily disable App Check activation in the app to bypass "Too many attempts" errors
+  // while enforcement is turned off in the Firebase Console.
+  /*
   await FirebaseAppCheck.instance.activate(
-    providerAndroid: kDebugMode ? AndroidDebugProvider() : AndroidPlayIntegrityProvider(),
+    providerAndroid: kDebugMode 
+        ? AndroidDebugProvider() // Use a specific token for debugging: 12345678-abcd-1234-abcd-1234567890ab
+        : AndroidPlayIntegrityProvider(),
     providerApple: kDebugMode ? AppleDebugProvider() : AppleAppAttestProvider(),
   );
+
+  debugPrint("--- APP CHECK INITIALIZATION ---");
+  try {
+    final token = await FirebaseAppCheck.instance.getToken();
+    debugPrint("Current App Check Token: $token");
+  } catch (e) {
+    debugPrint("Failed to fetch App Check token: $e");
+  }
+  debugPrint("---------------------------------");
+  */
 
   if (kDebugMode) {
     debugPrint("--------------------------------------------------");

@@ -1073,7 +1073,7 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
           .call({
             'rideId': _rideRequest.rideId,
             'actualDistanceKm': actualDistance,
-            'waitingCharge': totalWaitCharge, // Pass aggregated total to Cloud Function
+            'waitingCharge': 0.0, // Pass 0.0 to ensure Cloud Function only calculates Dynamic Base Fare
             'rideType': rideType,
           });
 
@@ -1097,7 +1097,7 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
         );
         resultData = resultFuture.data as Map<String, dynamic>;
         
-        // The Cloud Function ALREADY includes the waitingCharge in its finalFare calculation
+        // The Cloud Function now returns ONLY the Dynamic Base Fare (since we passed 0.0 waitingCharge)
         finalFare = (resultData['finalFare'] ?? _rideRequest.rideFare).toDouble();
         
         priceUpdated = resultData['priceUpdated'] ?? false;
@@ -1113,7 +1113,8 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
         debugPrint("Dynamic Pricing Error (using Firestore fallback): $e");
         
         // If pricing call fails, we take the original estimate and add the total waiting charge manually
-        finalFare = _rideRequest.rideFare + totalWaitCharge;
+        // If pricing call fails, we use the original estimate (base fare)
+        finalFare = _rideRequest.rideFare;
         
         Get.snackbar(
           'Network Issue',
@@ -1125,12 +1126,15 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
         );
       }
 
+      debugPrint("PRICING_DEBUG: totalWaitCharge=$totalWaitCharge, tollCharge=$tollCharge, baseDynamicFare (finalFare)=$finalFare");
+      debugPrint("PRICING_DEBUG: totalAmountForUser=${finalFare + totalWaitCharge + tollCharge}");
+      
       final Map<String, dynamic> updateData = {
         'status': 'completed',
         'rideFare': finalFare,
         'baseFare': finalFare,
         'waitingCharge': totalWaitCharge,
-        'pickupWaitingCharge': pickupWait, // Store breakdown for transparency
+        'pickupWaitingCharge': pickupWait,
         'stopWaitingCharge': stopWait,
         'priceUpdated': priceUpdated,
         'tollCrossed': tollCrossed,
@@ -1179,7 +1183,7 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
         actualDistance: actualDistance,
         waitingCharge: totalWaitCharge,
         tollPrice: tollCharge,
-        rideFare: finalFare,
+        rideFare: finalFare, // Store dynamic base portion
       );
 
       await _firestore
@@ -1228,7 +1232,7 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
         Get.off(
           () => RidePaymentScreen(
             rideRequest: updatedRequest,
-            totalAmount: finalFare,
+            totalAmount: finalFare + totalWaitCharge + tollCharge,
             priceUpdated: priceUpdated,
             tollCrossed: tollCrossed,
             tollCharge: tollCharge,

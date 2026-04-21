@@ -4,6 +4,8 @@ import 'package:get/get.dart';
 import 'package:project_taxi_driver_app/controllers/wallet_controller.dart';
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
 import 'package:intl/intl.dart';
+import 'package:project_taxi_driver_app/data/models/bank_account.dart';
+import 'package:project_taxi_driver_app/screens/add_bank_account_screen.dart';
 
 class SettlementScreen extends StatelessWidget {
   final User user;
@@ -12,8 +14,8 @@ class SettlementScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final controller = Get.find<WalletController>();
-    // Ensure data is fetched (handle hot reload case)
-    if (controller.savedUpiIds.isEmpty) controller.fetchUpiIds();
+    // Ensure data is fetched
+    if (controller.savedBankAccounts.isEmpty) controller.fetchBankAccounts();
 
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final currencyFormatter = NumberFormat.currency(
@@ -23,7 +25,8 @@ class SettlementScreen extends StatelessWidget {
     );
 
     // Temp selection state
-    final selectedUpiId = RxnString();
+    final selectedBankAccount = Rx<BankAccount?>(null);
+    // final selectedUpiId = Rx<String?>(null); // Commented out per user request (Cashfree UPI disabled)
 
     return Scaffold(
       resizeToAvoidBottomInset: false,
@@ -70,6 +73,106 @@ class SettlementScreen extends StatelessWidget {
             ),
             const SizedBox(height: 30),
 
+            // Saved Bank Accounts
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Text(
+                    "selectBankAccount".tr,
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: isDark ? Colors.white : Colors.black87,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: () => Get.to(() => const AddBankAccountScreen()),
+                  icon: const Icon(Icons.add),
+                  label: Text("addNew".tr),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+
+            Expanded(
+              child: Obx(() {
+                if (controller.savedBankAccounts.isEmpty) {
+                  return Center(
+                    child: Text(
+                      "noBankSaved".tr,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.grey.shade500),
+                    ),
+                  );
+                }
+
+                return ListView.builder(
+                  itemCount: controller.savedBankAccounts.length,
+                  itemBuilder: (context, index) {
+                    final bank = controller.savedBankAccounts[index];
+                    return Obx(() {
+                      final isSelected = selectedBankAccount.value?.id == bank.id;
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 12),
+                        decoration: BoxDecoration(
+                          color: isDark ? Colors.grey.shade900 : Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: isSelected
+                                ? Colors.blue
+                                : (isDark
+                                      ? Colors.grey.shade800
+                                      : Colors.grey.shade200),
+                            width: isSelected ? 2 : 1,
+                          ),
+                        ),
+                        child: ListTile(
+                          onTap: () {
+                            selectedBankAccount.value = bank;
+                            // selectedUpiId.value = null; // Commented out per user request (Cashfree UPI disabled)
+                          },
+                          leading: Icon(
+                            isSelected
+                                ? Icons.radio_button_checked
+                                : Icons.radio_button_off,
+                            color: isSelected ? Colors.blue : Colors.grey,
+                          ),
+                          title: Text("${bank.name}\n${bank.maskedAccountNumber}"),
+                          subtitle: Text("IFSC: ${bank.ifsc}"),
+                          trailing: IconButton(
+                            icon: const Icon(
+                              Icons.delete_outline,
+                              color: Colors.grey,
+                            ),
+                            onPressed: () {
+                              Get.defaultDialog(
+                                title: "Delete Bank Account",
+                                content: const Text("Are you sure you want to remove this bank account?"),
+                                textConfirm: "Delete",
+                                textCancel: "Cancel",
+                                confirmTextColor: Colors.white,
+                                buttonColor: Colors.red,
+                                onConfirm: () {
+                                  controller.deleteBankAccount(bank.id);
+                                  Get.back();
+                                },
+                              );
+                            },
+                          ),
+                          isThreeLine: true,
+                          selected: isSelected,
+                        ),
+                      );
+                    });
+                  },
+                );
+              }),
+            ),
+            /*
+            const SizedBox(height: 20),
             // Saved UPI IDs
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -107,11 +210,13 @@ class SettlementScreen extends StatelessWidget {
                 }
 
                 return ListView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
                   itemCount: controller.savedUpiIds.length,
                   itemBuilder: (context, index) {
-                    final upiId = controller.savedUpiIds[index];
+                    final upi = controller.savedUpiIds[index];
                     return Obx(() {
-                      final isSelected = selectedUpiId.value == upiId;
+                      final isSelected = selectedUpiId.value == upi;
                       return Container(
                         margin: const EdgeInsets.only(bottom: 12),
                         decoration: BoxDecoration(
@@ -121,20 +226,23 @@ class SettlementScreen extends StatelessWidget {
                             color: isSelected
                                 ? Colors.blue
                                 : (isDark
-                                      ? Colors.grey.shade800
-                                      : Colors.grey.shade200),
+                                    ? Colors.grey.shade800
+                                    : Colors.grey.shade200),
                             width: isSelected ? 2 : 1,
                           ),
                         ),
                         child: ListTile(
-                          onTap: () => selectedUpiId.value = upiId,
+                          onTap: () {
+                            selectedUpiId.value = upi;
+                            selectedBankAccount.value = null;
+                          },
                           leading: Icon(
                             isSelected
                                 ? Icons.radio_button_checked
                                 : Icons.radio_button_off,
                             color: isSelected ? Colors.blue : Colors.grey,
                           ),
-                          title: Text(upiId),
+                          title: Text(upi),
                           trailing: IconButton(
                             icon: const Icon(
                               Icons.delete_outline,
@@ -142,14 +250,14 @@ class SettlementScreen extends StatelessWidget {
                             ),
                             onPressed: () {
                               Get.defaultDialog(
-                                title: "deleteUpiTitle".tr,
-                                content: Text("deleteUpiMsg".tr),
-                                textConfirm: "delete".tr,
-                                textCancel: "cancel".tr, // cancel exists
+                                title: "Delete UPI ID",
+                                content: const Text("Are you sure you want to remove this UPI ID?"),
+                                textConfirm: "Delete",
+                                textCancel: "Cancel",
                                 confirmTextColor: Colors.white,
                                 buttonColor: Colors.red,
                                 onConfirm: () {
-                                  controller.deleteUpiId(upiId);
+                                  controller.deleteUpiId(upi);
                                   Get.back();
                                 },
                               );
@@ -163,70 +271,18 @@ class SettlementScreen extends StatelessWidget {
                 );
               }),
             ),
+            */
 
-            const SizedBox(height: 20),
-            // Auto Settlement Switch
-            Container(
-              decoration: BoxDecoration(
-                color: isDark ? Colors.grey.shade900 : Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: isDark ? Colors.grey.shade800 : Colors.grey.shade200,
-                ),
-              ),
-              child: Obx(
-                () => SwitchListTile(
-                  title: Text("autoSettlement".tr),
-                  subtitle: Text("autoSettlementMsg".tr),
-                  value: controller.autoSettleEnabled.value,
-                  onChanged: (val) {
-                    if (controller.savedUpiIds.isEmpty) {
-                      Get.snackbar(
-                        "error".tr,
-                        "Please add a UPI ID first to enable auto-settle", // missed this one, leaving English or using generic error
-                      );
-                      return;
-                    }
-                    if (val && selectedUpiId.value == null) {
-                      // If enabling, ensure a UPI ID is selected or use the first one if one exists?
-                      // Better to require user to select one or just use the current selection.
-                      // Let's use the current selected one, or force them to select.
-                      if (selectedUpiId.value == null) {
-                        Get.snackbar(
-                          "error".tr,
-                          "Please select a UPI ID for auto-settlement", // missed this
-                        );
-                        return;
-                      }
-                    }
-                    if (val) {
-                      // Save the UPI ID to use
-                      controller.updateAutoSettleSettings(
-                        val,
-                        selectedUpiId.value!,
-                      );
-                      Get.snackbar(
-                        "Success", // success?
-                        "${'autoSettlementEnabled'.tr} ${selectedUpiId.value}",
-                      );
-                    } else {
-                      controller.updateAutoSettleSettings(val, "");
-                      Get.snackbar("Success", "autoSettlementDisabled".tr);
-                    }
-                  },
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 10),
 
-            // Settlement Limit Info
+            // Settlement Limit Info (Temporarily increased to 99)
             Obx(() {
               final used = controller.settlementsThisWeek.value;
-              final remaining = 7 - used;
+              final remaining = 99 - used;
               
-              // Daily Limit Check
+              // Daily Limit Check (Disabled temporarily)
               bool alreadySettledToday = false;
-              if (controller.lastSettlementDate.value != null) {
+              if (controller.lastSettlementDate.value != null && used >= 99) {
                 final now = DateTime.now();
                 final last = controller.lastSettlementDate.value!;
                 if (last.year == now.year && last.month == now.month && last.day == now.day) {
@@ -234,27 +290,20 @@ class SettlementScreen extends StatelessWidget {
                 }
               }
 
-              final canSettle = remaining > 0 && !alreadySettledToday && selectedUpiId.value != null;
+              final hasSelection = selectedBankAccount.value != null; // || selectedUpiId.value != null; // Commented out UPI check
+              final canSettle = remaining > 0 && hasSelection;
               
-              debugPrint("UI Settle Check: used=$used, remaining=$remaining, alreadySettledToday=$alreadySettledToday, selected=${selectedUpiId.value != null}");
+              debugPrint("UI Settle Check: used=$used, remaining=$remaining, alreadySettledToday=$alreadySettledToday, hasSelection=$hasSelection");
 
               return Column(
                 children: [
                   Text(
-                    "${'manualSettlementsRemaining'.tr}: ${remaining < 0 ? 0 : remaining}/7",
+                    "${'manualSettlementsRemaining'.tr}: ${remaining < 0 ? 0 : remaining}/99",
                     style: TextStyle(
                       color: remaining <= 0 ? Colors.red : Colors.grey,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  if (alreadySettledToday)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8.0),
-                      child: Text(
-                        "Only 1 settlement per day is allowed.",
-                        style: TextStyle(color: Colors.orange.shade700, fontSize: 12),
-                      ),
-                    ),
                   const SizedBox(height: 10),
                   ProButton(
                     text: "settleFullAmount".tr,
@@ -262,7 +311,10 @@ class SettlementScreen extends StatelessWidget {
                     onPressed: !canSettle
                         ? null
                         : () {
-                            controller.settleBalance(selectedUpiId.value!);
+                            controller.settleBalance(
+                              bankAccount: selectedBankAccount.value,
+                              // upiId: selectedUpiId.value, // Commented out UPI parameter
+                            );
                           },
                     backgroundColor: !canSettle
                         ? Colors.grey
@@ -277,62 +329,45 @@ class SettlementScreen extends StatelessWidget {
     );
   }
 
+  /*
   void _showAddUpiDialog(BuildContext context, WalletController controller) {
     final upiController = TextEditingController();
-    final nameController = TextEditingController(); // Name at bank
+    final nameController = TextEditingController();
 
     Get.defaultDialog(
       title: "addUpiTitle".tr,
-      content: SingleChildScrollView(
-        child: Column(
-          children: [
-            ProTextField(
-              hintText: "enterUpiHint".tr,
-              icon: Icons.account_balance,
-              controller: upiController,
-            ),
-            const SizedBox(height: 10),
-            ProTextField(
-              hintText: "accountHolderName".tr,
-              icon: Icons.person,
-              controller: nameController,
-            ),
-            const SizedBox(height: 10),
-            Obx(() {
-              if (controller.isLoading.value) {
-                return const CircularProgressIndicator();
-              }
-              return const SizedBox.shrink();
-            }),
-          ],
-        ),
+      content: Column(
+        children: [
+          ProTextField(
+            hintText: "UPI ID (e.g. name@bank)",
+            icon: Icons.account_balance_wallet,
+            controller: upiController,
+          ),
+          const SizedBox(height: 10),
+          ProTextField(
+            hintText: "Full Name (as per Bank)",
+            icon: Icons.person,
+            controller: nameController,
+          ),
+        ],
       ),
-      textConfirm: "verifyAndSave".tr,
+      textConfirm: "verifyAndAdd".tr,
       textCancel: "cancel".tr,
       confirmTextColor: Colors.white,
       onConfirm: () {
-        if (upiController.text.isNotEmpty &&
-            upiController.text.contains('@') &&
-            nameController.text.isNotEmpty) {
-          // Don't close dialog immediately, controller handles it
-          // But Get.defaultDialog auto-closes onConfirm unless we override navigating back?
-          // Actually, Get.defaultDialog usually closes. logic in controller calls Get.back().
-          // If we want to show loading IN dialog, we need to prevent auto close.
-          // Standard Get.defaultDialog closes.
-          // Let's call the controller method. Use `willPopScope` or similar if we wanted to prevent close,
-          // but for simplicity, we let it close or we just use a custom dialog if we want persistent loading.
-          // However, the controller `verifyAndAddUpi` calls `Get.back()` at start to close dialog.
-          // Let's stick to that flow -> Close dialog, show loading overlay/snackbar or global loading.
-          // Controller sets isLoading = true.
-
-          controller.verifyAndAddUpi(
-            upiController.text.trim(),
-            nameController.text.trim(),
-          );
-        } else {
-          Get.snackbar("error".tr, "invalidUpiError".tr);
+        final upi = upiController.text.trim();
+        final name = nameController.text.trim();
+        if (upi.isEmpty || name.isEmpty) {
+          Get.snackbar("error".tr, "allFieldsRequired".tr);
+          return;
         }
+        if (!upi.contains("@")) {
+          Get.snackbar("error".tr, "invalidUpiId".tr);
+          return;
+        }
+        controller.verifyAndAddUpi(upi, name);
       },
     );
   }
+  */
 }

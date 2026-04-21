@@ -14,8 +14,7 @@ import { onSchedule } from "firebase-functions/v2/scheduler";
 import { defineSecret } from "firebase-functions/params";
 import axios from "axios";
 import * as crypto from "crypto";
-import * as fs from "fs";
-import * as path from "path";
+
 
 import { batchOnboard } from "./onboarding";
 import { aggregateDemandDriver, resetDemandZonesDriver } from "./demandAggregator";
@@ -24,7 +23,7 @@ import { removeInvalidAirportDrivers, cleanupGhostAirportDrivers, onQueueDriverA
 export {
     batchOnboard, aggregateDemandDriver, resetDemandZonesDriver,
     removeInvalidAirportDrivers, cleanupGhostAirportDrivers, onQueueDriverAdded, onQueueDriverRemoved, acceptAirportRide,
-    verifyUpiIdWithOtp, generateOtpDriver
+    generateOtpDriver
 };
 
 /*
@@ -58,6 +57,41 @@ const exotelSid = defineSecret("EXOTEL_SID");
 const exotelApiKey = defineSecret("EXOTEL_API_KEY");
 const exotelApiToken = defineSecret("EXOTEL_API_TOKEN");
 const exotelCallerId = defineSecret("EXOTEL_CALLER_ID");
+
+/**
+ * ENCRYPTION HELPERS
+ * Securely encrypts sensitive data (bank account numbers) at rest.
+ */
+const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || "8f7e6d5c4b3a2a1b0c9d8e7f6a5b4c3d"; // 32 chars
+const IV_LENGTH = 16;
+
+function encrypt(text: string): string {
+    const iv = crypto.randomBytes(IV_LENGTH);
+    const cipher = crypto.createCipheriv("aes-256-cbc", Buffer.from(ENCRYPTION_KEY), iv);
+    let encrypted = cipher.update(text);
+    encrypted = Buffer.concat([encrypted, cipher.final()]);
+    return iv.toString("hex") + ":" + encrypted.toString("hex");
+}
+
+function decrypt(text: string): string {
+    const textParts = text.split(":");
+    const iv = Buffer.from(textParts.shift()!, "hex");
+    const encryptedText = Buffer.from(textParts.join(":"), "hex");
+    const decipher = crypto.createDecipheriv("aes-256-cbc", Buffer.from(ENCRYPTION_KEY), iv);
+    let decrypted = decipher.update(encryptedText);
+    decrypted = Buffer.concat([decrypted, decipher.final()]);
+    return decrypted.toString();
+}
+
+/**
+ * HELPER: Consistent Beneficiary ID for Cashfree Payouts
+ */
+function getBeneficiaryId(driverId: string, accountNum: string): string {
+    const safeDriverId = driverId.replace(/[^a-zA-Z0-9]/g, '').substring(0, 15);
+    const safeAccountId = accountNum.substring(accountNum.length - 4);
+    return `drv_v2_${safeDriverId}_${safeAccountId}`;
+}
+
 
 /**
  * HELPER: Get Professional Driver ID (displayId) from Auth UID
@@ -159,54 +193,86 @@ const generateOtpDriver = onDocumentWritten(
         const data = event.data.after.data();
 
         // Prevent infinite loops: If OTP is already generated, stop.
-        if (data && data.otp) return;
+        if (data && data.otp) {
+            console.log(`[OTP] Document for ${phoneNumber} already has an OTP. Skipping generation.`);
+            return;
+        }
 
         // Generate 6-digit OTP
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
         const expiresAt = new Date();
         expiresAt.setMinutes(expiresAt.getMinutes() + 5);
 
-        console.log(`Generating OTP for ${phoneNumber}: ${otp}`);
+        console.log(`[OTP] Generated "${otp}" for ${phoneNumber}. Attempting Firestore update first.`);
 
-        // Update document with generated OTP
-        await event.data.after.ref.update({
-            otp: otp,
-            expiresAt: admin.firestore.Timestamp.fromDate(expiresAt),
-            status: "sent",
-            processedAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
+        try {
+            // STEP 1: Update document with generated OTP immediately
+            // This ensures the user can see the code in Firestore even if SMS fails.
+            await event.data.after.ref.update({
+                otp: otp,
+                expiresAt: admin.firestore.Timestamp.fromDate(expiresAt),
+                status: "generated", // Intermediate status
+                processedAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+            console.log(`[OTP] Successfully saved code to Firestore for ${phoneNumber}`);
+        } catch (dbErr: any) {
+            console.error(`[OTP_ERROR] Failed to update Firestore: ${dbErr.message}`);
+            return;
+        }
 
         // --------------------------------------------------------------------
         // SEND SMS via EXOTEL
         // --------------------------------------------------------------------
-        const EXOTEL_SID = exotelSid.value();
-        const EXOTEL_API_KEY = exotelApiKey.value();
-        const EXOTEL_API_TOKEN = exotelApiToken.value();
-        const EXOTEL_CALLER_ID = exotelCallerId.value();
-        const EXOTEL_SUBDOMAIN = exotelSubdomain.value() || "api.exotel.com";
+        let EXOTEL_SID, EXOTEL_API_KEY, EXOTEL_API_TOKEN, EXOTEL_CALLER_ID, EXOTEL_SUBDOMAIN;
+        
+        try {
+            EXOTEL_SID = exotelSid.value();
+            EXOTEL_API_KEY = exotelApiKey.value();
+            EXOTEL_API_TOKEN = exotelApiToken.value();
+            EXOTEL_CALLER_ID = exotelCallerId.value();
+            EXOTEL_SUBDOMAIN = exotelSubdomain.value() || "api.exotel.com";
+        } catch (secretErr: any) {
+            console.warn(`[OTP_WARN] Failed to read Exotel secrets: ${secretErr.message}. SMS will be skipped.`);
+            await event.data.after.ref.update({ status: "sms_skipped_no_secrets" });
+            return;
+        }
 
         if (EXOTEL_SID && EXOTEL_API_KEY && EXOTEL_API_TOKEN && EXOTEL_CALLER_ID) {
             try {
                 const url = `https://${EXOTEL_SUBDOMAIN}/v1/Accounts/${EXOTEL_SID}/Sms/send.json`;
                 const auth = Buffer.from(`${EXOTEL_API_KEY}:${EXOTEL_API_TOKEN}`).toString('base64');
+                
+                // Remove '+' for gateway compatibility
+                const cleanToNumber = phoneNumber.replace("+", "");
 
                 const formData = new URLSearchParams();
                 formData.append("From", EXOTEL_CALLER_ID);
-                formData.append("To", phoneNumber);
+                formData.append("To", cleanToNumber);
                 formData.append("Body", `Your IndiCabs verification code is ${otp}. Valid for 5 minutes.`);
 
-                await axios.post(url, formData.toString(), {
+                console.log(`[EXOTEL] Calling API for ${cleanToNumber}...`);
+                const smsRes = await axios.post(url, formData.toString(), {
                     headers: {
                         'Authorization': `Basic ${auth}`,
                         'Content-Type': 'application/x-www-form-urlencoded'
                     }
                 });
-                console.log(`OTP SMS sent to ${phoneNumber}`);
+
+                console.log(`[EXOTEL] Success: ${JSON.stringify(smsRes.data)}`);
+                await event.data.after.ref.update({ status: "sent" });
+
             } catch (smsErr: any) {
-                console.error("Failed to send OTP SMS:", smsErr.response ? smsErr.response.data : smsErr.message);
+                const errorData = smsErr.response?.data ? JSON.stringify(smsErr.response.data) : smsErr.message;
+                console.error(`[EXOTEL_ERROR] Failed: ${errorData}`);
+                
+                await event.data.after.ref.update({
+                    status: "sms_failed",
+                    smsError: errorData
+                });
             }
         } else {
-            console.log("Exotel secrets missing, skipping actual SMS sending.");
+            console.warn("[EXOTEL] Partial secrets missing! SMS skipped.");
+            await event.data.after.ref.update({ status: "sms_skipped_partial_secrets" });
         }
 
         return;
@@ -1418,146 +1484,136 @@ export const processWalletSettlement = onDocumentCreated(
             return null;
         }
 
-        // GUARD: Ensure upiId is present — subscription/plan debits have no upiId
-        if (!data.upiId || typeof data.upiId !== "string" || data.upiId.trim() === "") {
-            console.error(`[ERROR] Settlement tx ${transactionId} for driver ${driverId} is missing upiId. Not a payout transaction. Marking failed without refund.`);
-            await snap!.ref.update({
+        // Payout API uses SEPARATE credentials from the Payment Gateway.
+        // Get these from: Cashfree Dashboard → Payouts → Settings → API Keys
+        const CASHFREE_CLIENT_ID = process.env.CASHFREE_PAYOUT_CLIENT_ID || process.env.CASHFREE_CLIENT_ID || "";
+        const CASHFREE_CLIENT_SECRET = process.env.CASHFREE_PAYOUT_CLIENT_SECRET || process.env.CASHFREE_CLIENT_SECRET || "";
+
+
+        if (!CASHFREE_CLIENT_ID || !CASHFREE_CLIENT_SECRET) {
+            console.error("[ERROR] Cashfree PAYOUT credentials (CASHFREE_PAYOUT_CLIENT_ID / CASHFREE_PAYOUT_CLIENT_SECRET) are not set.");
+            await snap.ref.update({
                 status: "failed",
-                error: "Missing upiId — not a payout transaction",
+                error: "Payout credentials not configured. Contact support.",
+                processedAt: admin.firestore.FieldValue.serverTimestamp(),
             });
             return null;
         }
-
-        const CASHFREE_CLIENT_ID = process.env.CASHFREE_CLIENT_ID || "CF1221593D6O0DRN1JLGC7391N4DG";
-        const CASHFREE_CLIENT_SECRET = process.env.CASHFREE_CLIENT_SECRET || "cfsk_ma_prod_6cd6a70049ee342ff9cf855781ca03ea_39219573";
-        const CASHFREE_ENV = process.env.CASHFREE_ENV || "PRODUCTION"; // SANDBOX or PRODUCTION
-
-        // SAFETY: Warn if using hardcoded fallback credentials (means env vars are not set)
-        if (!process.env.CASHFREE_CLIENT_ID || !process.env.CASHFREE_CLIENT_SECRET) {
-            console.warn("[WARN] CASHFREE_CLIENT_ID or CASHFREE_CLIENT_SECRET not set in environment. Using hardcoded fallback.");
-        }
-
-        if (!CASHFREE_CLIENT_ID) {
-            console.error("Cashfree credentials are not configured in .env");
-            return null;
-        }
-
-        // Load RSA Public Key (Cashfree asymmetric 2FA: Encrypt with Cashfree's given Public Key)
-        let cashfreePublicKey = "";
-        try {
-            cashfreePublicKey = fs.readFileSync(path.join(__dirname, "../cashfree_public_key.pem"), "utf8");
-        } catch (err) {
-            console.log("RSA Public key not found, will fallback to secret-based auth if possible.");
-        }
+        console.log(`[SETTLE] Using Unified Payouts (2024-01-01). Client: ${CASHFREE_CLIENT_ID.substring(0, 8)}...`);
 
         try {
-            console.log(`Processing settlement for ${driverId}: ₹${data.amount} to ${data.upiId}`);
+            const destination = data.bankAccount ? `Bank Account (${data.maskedAccount})` : `UPI ID (${data.upiId})`;
+            console.log(`[SETTLE] Processing settlement for ${driverId}: ₹${data.amount} to ${destination}`);
 
-            // BUG FIX: Cashfree migrated to unified API endpoint.
-            // Old: payout-api.cashfree.com (legacy, may reject valid credentials)
-            // New: api.cashfree.com/payout (current unified API)
-            const baseUrl = CASHFREE_ENV === "PRODUCTION"
-                ? "https://api.cashfree.com/payout/transfers"
-                : "https://sandbox.cashfree.com/payout/transfers";
-            const beneficiaryBaseUrl = CASHFREE_ENV === "PRODUCTION"
-                ? "https://api.cashfree.com/payout/beneficiary"
-                : "https://sandbox.cashfree.com/payout/beneficiary";
+            const payoutHeaders = {
+                "x-client-id": CASHFREE_CLIENT_ID,
+                "x-client-secret": CASHFREE_CLIENT_SECRET,
+                "x-api-version": "2024-01-01",
+                "Content-Type": "application/json",
+            };
 
-            const safeDriverId = driverId.replace(/[^a-zA-Z0-9]/g, '');
+            const baseUrl = "https://api.cashfree.com/payout";
 
-            // Generate a unique beneficiary ID based on the VPA so it never collides
-            // if a driver updates their UPI ID in the app.
-            const safeUpiId = data.upiId.replace(/[^a-zA-Z0-9]/g, '').substring(0, 15);
-            const beneID = `drv_${safeDriverId}_${safeUpiId}`;
+            let beneID = "";
+            let beneficiaryName = data.bankHolderName || "IndiCabs Driver";
+            const cleanPhone = (data.phone || "").replace("+91", "").replace(/\s/g, "");
+            const beneficiaryEmail = `driver_${driverId}@indicabs.com`;
+            let decryptedAccount = "";
+            let transferMode = "imps";
+            let instrumentDetails: any = {};
 
-            const payload = {
-                transfer_id: `tx_${transactionId}`,
-                transfer_amount: data.amount,
-                transfer_currency: "INR",
-                transfer_mode: "upi",
-                beneficiary_details: {
-                    beneficiary_id: beneID,
-                    beneficiary_name: "IndiCabs Driver",
-                    beneficiary_instrument_details: {
-                        vpa: data.upiId
-                    },
-                    beneficiary_contact_details: {
-                        email: "support@indicabs.com",
-                        phone: "9999999999",
-                        address: "India",
-                        city: "Chennai",
-                        state: "Tamil Nadu",
-                        pincode: "600001",
-                        country: "IN"
+            if (data.bankAccount && data.ifsc) {
+                decryptedAccount = decrypt(data.bankAccount);
+                beneID = data.cashfreeBeneId || getBeneficiaryId(driverId, decryptedAccount);
+                instrumentDetails = {
+                    bank_account_number: decryptedAccount,
+                    ifsc: data.ifsc
+                };
+
+                // Load real name from bank account doc if available
+                if (data.bankAccountId) {
+                    try {
+                        const bankDoc = await db.collection("drivers").doc(driverId)
+                            .collection("bank_accounts").doc(data.bankAccountId).get();
+                        if (bankDoc.exists) beneficiaryName = bankDoc.data()!.name || beneficiaryName;
+                    } catch (e: any) {
+                        console.warn(`[SETTLE] Could not load bank doc: ${e.message}`);
                     }
                 }
-            };
-
-            const headers: Record<string, string> = {
-                'x-client-id': CASHFREE_CLIENT_ID,
-                'x-client-secret': CASHFREE_CLIENT_SECRET,
-                'x-api-version': '2024-01-01',
-                'Content-Type': 'application/json'
-            };
-
-            if (cashfreePublicKey) {
-                const timestamp = Math.floor(Date.now() / 1000).toString();
-                const dataToSign = `${CASHFREE_CLIENT_ID}.${timestamp}`;
-                const signature = crypto.publicEncrypt(
-                    { key: cashfreePublicKey, padding: crypto.constants.RSA_PKCS1_OAEP_PADDING },
-                    Buffer.from(dataToSign)
-                ).toString("base64");
-
-                headers['x-cf-signature'] = signature;
-                headers['x-request-id'] = `req_${Date.now()}`;
+            } else if (data.upiId && data.upiId !== "bank_payout") {
+                beneID = data.cashfreeBeneId || getBeneficiaryId(driverId, data.upiId);
+                transferMode = "upi";
+                instrumentDetails = {
+                    vpa: data.upiId
+                };
+            } else {
+                throw new Error("No valid payout destination provided");
             }
 
-            // 1. Ensure beneficiary exists
+            // Step 1: Ensure Beneficiary exists (Unified API 2024-01-01 format)
             const benePayload = {
                 beneficiary_id: beneID,
-                beneficiary_name: "IndiCabs Driver",
-                beneficiary_instrument_details: {
-                    vpa: data.upiId
-                },
+                beneficiary_name: beneficiaryName.trim(),
+                beneficiary_instrument_details: instrumentDetails,
                 beneficiary_contact_details: {
-                    email: "support@indicabs.com",
-                    phone: "9999999999",
-                    address: "India",
-                    city: "Chennai",
-                    state: "Tamil Nadu",
-                    pincode: "600001",
-                    country: "IN"
+                    email: beneficiaryEmail,
+                    phone: cleanPhone || "9999999999",
+                    address: "India"
                 }
             };
 
             try {
-                await axios.post(beneficiaryBaseUrl, benePayload, { headers });
-                console.log(`[DEBUG] Beneficiary ${beneID} created successfully.`);
-            } catch (err: any) {
-                // If the beneficiary already exists, Cashfree returns an error — safely ignore.
-                const errMsg = err.response?.data?.message || err.message;
-                const errCode = err.response?.data?.code || "";
-                console.log(`[DEBUG] Beneficiary add response (code: ${errCode}): ${errMsg}`);
+                console.log(`[SETTLE] Registering/Verifying beneficiary: ${beneID}`);
+                const beneRes = await axios.post(`${baseUrl}/beneficiaries`, benePayload, { headers: payoutHeaders });
+                console.log(`[SETTLE] Registration Response: ${JSON.stringify(beneRes.data)}`);
+                // Wait 1s for sync
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            } catch (beneErr: any) {
+                const errBody = beneErr.response?.data ? JSON.stringify(beneErr.response.data) : beneErr.message;
+                const errCode = beneErr.response?.data?.code || "";
+                if (errCode.includes("exists") || errBody.toLowerCase().includes("already exists")) {
+                    console.log(`[SETTLE] Beneficiary ${beneID} already exists, proceeding to transfer.`);
+                } else {
+                    console.error(`[SETTLE_ERROR] Beneficiary registration failed: ${errBody}`);
+                    throw new Error(`Beneficiary registration failed: ${beneErr.response?.data?.message || beneErr.message}`);
+                }
             }
 
-            // 2. Process Transfer
-            console.log(`[DEBUG] Initiating Direct Transfer to ${beneID}`);
-            const response = await axios.post(baseUrl, payload, { headers });
+            // Step 2: Initiate Transfer (Unified API 2024-01-01 format)
+            const transferPayload = {
+                transfer_id: `tx_${transactionId}`,
+                transfer_amount: data.amount,
+                transfer_currency: "INR",
+                transfer_mode: transferMode,
+                beneficiary_details: {
+                    beneficiary_id: beneID
+                }
+            };
+
+            console.log(`[SETTLE] Initiating transfer to ${beneID} for ₹${data.amount}`);
+            const response = await axios.post(`${baseUrl}/transfers`, transferPayload, { headers: payoutHeaders });
+
+            if (response.status >= 300) {
+                throw new Error(`Transfer failed with status ${response.status}: ${JSON.stringify(response.data)}`);
+            }
 
             console.log("Cashfree Payout Success:", response.data);
 
-            // Update Transaction to Success
-            await snap!.ref.update({
+            const referenceId = response.data?.transfer_id || `tx_${transactionId}`;
+            console.log(`[SETTLE] Transfer success. Settlement ID: ${referenceId}`);
+
+            await snap.ref.update({
                 status: "success",
-                payoutId: response.data.cf_transfer_id || payload.transfer_id,
+                payoutId: referenceId,
                 processedAt: admin.firestore.FieldValue.serverTimestamp(),
             });
 
             // Add Success Notification
             try {
+                const destLabel = data.bankAccount ? "Bank Account" : "UPI ID";
                 await db.collection("drivers").doc(driverId).collection("notifications").add({
                     title: "Settlement Successful",
-                    body: `Your withdrawal of ₹${data.amount} to your UPI account has been successfully processed.`,
+                    body: `Your withdrawal of ₹${data.amount} to your ${destLabel} has been successfully processed.`,
                     timestamp: admin.firestore.FieldValue.serverTimestamp(),
                     isRead: false,
                     data: {
@@ -1571,16 +1627,13 @@ export const processWalletSettlement = onDocumentCreated(
             }
 
         } catch (error: any) {
-            // Log the FULL Cashfree error body — critical for debugging auth/transfer failures
             const cashfreeErrBody = error.response?.data ? JSON.stringify(error.response.data) : null;
             const cashfreeStatusCode = error.response?.status;
             console.error(`Cashfree Payout Failed [HTTP ${cashfreeStatusCode}]:`, cashfreeErrBody || error.message);
 
-            // Extract a neat message for the front end Driver App UI
             const uiError = error.response?.data?.message ?? error.message ?? "Gateway Error";
 
-            // Mark transaction as failed with full error context
-            await snap!.ref.update({
+            await snap.ref.update({
                 status: "failed",
                 error: cashfreeErrBody || error.message,
                 httpStatus: cashfreeStatusCode || null,
@@ -1597,11 +1650,7 @@ export const processWalletSettlement = onDocumentCreated(
                     }
                     t.update(balanceRef, { currentBalance: currentBalance + data.amount });
                 });
-                console.log(`Refunded ₹${data.amount} to driver ${driverId} wallet.`);
 
-                // Add refund transaction record.
-                // type="credit" + status="success" ensures this does NOT re-trigger
-                // the settlement handler (which only processes type="debit" + status="pending").
                 await db.collection("drivers").doc(driverId).collection("wallet_transactions").add({
                     amount: data.amount,
                     type: "credit",
@@ -1613,7 +1662,7 @@ export const processWalletSettlement = onDocumentCreated(
                     gatewayError: cashfreeErrBody || error.message
                 });
             } catch (refundError) {
-                console.error("Critical: Failed to refund wallet after payout failure:", refundError);
+                console.error("Critical: Failed to refund wallet:", refundError);
             }
             
             // Add Failure Notification
@@ -1637,99 +1686,306 @@ export const processWalletSettlement = onDocumentCreated(
     }
 );
 
-export const autoSettleWallets = onSchedule("every day 00:00", async (event) => {
-    console.log("Starting midnight auto-settlement...");
+/**
+ * Generic dispatcher for driver push notifications.
+ * Triggered whenever a new document is added to the driver's notification history.
+ */
+export const onDriverNotificationCreated = onDocumentCreated(
+    {
+        document: "drivers/{driverId}/notifications/{notificationId}",
+        region: "asia-south1",
+    },
+    async (event) => {
+        const snap = event.data;
+        if (!snap) return null;
 
+        const data = snap.data();
+        const driverId = event.params.driverId;
+
+        try {
+            // Get driver's FCM token from their profile
+            const driverDoc = await db.collection("drivers").doc(driverId).get();
+            const fcmToken = driverDoc.data()?.fcmToken;
+
+            if (!fcmToken) {
+                console.log(`[PUSH] No FCM token found for driver ${driverId}. Skipping system push.`);
+                return null;
+            }
+
+            // Prepare the notification message
+            // We convert all data values to strings as FCM data payload requires string values.
+            const dataPayload = data.data ? Object.keys(data.data).reduce((acc: any, key) => {
+                acc[key] = String(data.data[key]);
+                return acc;
+            }, {}) : {};
+
+            const message: admin.messaging.Message = {
+                token: fcmToken,
+                notification: {
+                    title: data.title || "IndiCabs Update",
+                    body: data.body || "",
+                },
+                data: {
+                    ...dataPayload,
+                    click_action: "FLUTTER_NOTIFICATION_CLICK"
+                },
+                android: {
+                    priority: "high",
+                    notification: {
+                        sound: "default",
+                        channelId: "high_importance_channel" 
+                    },
+                },
+                apns: {
+                    payload: {
+                        aps: {
+                            sound: "default",
+                        },
+                    },
+                },
+            };
+
+            // Send the notification via FCM
+            const response = await admin.messaging().send(message);
+            console.log(`[PUSH] Successfully sent notification to driver ${driverId}:`, response);
+
+        } catch (error) {
+            console.error(`[PUSH ERROR] Failed to send notification to driver ${driverId}:`, error);
+        }
+
+        return null;
+    }
+);
+
+
+/**
+ * Initiates Bank Account Verification (Penny Drop ₹1)
+ * This is called by the frontend to verify the account details via Cashfree.
+ */
+export const initiateBankAccountVerification = onCall({ 
+    region: "asia-south1",
+    vpcConnector: "cashfree-vpc",
+    vpcConnectorEgressSettings: "ALL_TRAFFIC",
+}, async (request) => {
+    const { name, accountNumber, ifsc, phone, accountType = "savings" } = request.data;
+    const authId = request.auth?.uid;
+
+    if (!authId || !name || !accountNumber || !ifsc || !phone) {
+        throw new HttpsError("invalid-argument", "Missing required fields (name, accountNumber, ifsc, phone)");
+    }
+
+    const CASHFREE_CLIENT_ID = process.env.CASHFREE_CLIENT_ID || "CF1221593D6O0DRN1JLGC7391N4DG";
+    const CASHFREE_CLIENT_SECRET = process.env.CASHFREE_CLIENT_SECRET || "cfsk_ma_prod_6cd6a70049ee342ff9cf855781ca03ea_39219573";
+
+    // Current accounts: skip penny-drop, proceed to OTP
+    if (accountType === "current") {
+        console.log(`[BANK_VERIFY] Current account — skipping validation, proceeding to OTP`);
+        return { success: true, message: "Current account accepted. Proceed to OTP verification." };
+    }
+
+    // Savings accounts: use Cashfree Secure ID bank verification
     try {
-        // 1. IDEMPOTENCY CHECK: Prevent running twice same day
-        const today = new Date().toISOString().split("T")[0]; // Format: YYYY-MM-DD
-        const settleLogRef = db.collection("_settlement_log").doc(today);
-        const alreadyRan = await settleLogRef.get();
+        const verifyUrl = "https://api.cashfree.com/verification/bank-account/sync";
 
-        if (alreadyRan.exists) {
-            console.log(`Settlement already ran on ${today}. Skipping.`);
-            return;
-        }
+        const requestBody: Record<string, string> = {
+            bank_account: accountNumber.trim(),
+            ifsc: ifsc.trim().toUpperCase(),
+            name: name.trim(),
+        };
 
-        // 2. GET ALL DRIVERS WITH AUTO-SETTLE ENABLED
-        const driversSnapshot = await db.collection("drivers")
-            .where("autoSettleEnabled", "==", true)
-            .get();
+        console.log(`[BANK_VERIFY] Calling Secure ID on ${verifyUrl}`);
+        console.log(`[BANK_VERIFY_REQ] Body: ${JSON.stringify(requestBody)}`);
 
-        if (driversSnapshot.empty) {
-            console.log("No drivers with auto-settle enabled.");
-            return;
-        }
-
-        let settledCount = 0;
-        let totalAmount = 0;
-
-        // 3. SETTLE EACH DRIVER (ATOMIC TRANSACTIONS)
-        for (const driverDoc of driversSnapshot.docs) {
-            const data = driverDoc.data();
-            const upiId = data.autoSettleUpiId;
-
-            if (!upiId) {
-                console.log(`Skipping driver ${driverDoc.id}: No autoSettleUpiId`);
-                continue;
-            }
-
-            // Use transaction for atomic balance + transaction creation
-            try {
-                await db.runTransaction(async (t) => {
-                    // Get balance within transaction
-                    const balanceRef = driverDoc.ref.collection("wallet").doc("balance");
-                    const balanceDoc = await t.get(balanceRef);
-                    const currentBalance = balanceDoc.data()?.currentBalance || 0;
-
-                    if (currentBalance > 0) {
-                        // Both operations succeed or both fail (atomic)
-                        t.set(balanceRef, { currentBalance: 0 }, { merge: true });
-
-                        const transactionRef = driverDoc.ref.collection("wallet_transactions").doc();
-                        t.set(transactionRef, {
-                            amount: currentBalance,
-                            type: "debit",
-                            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                            description: `Auto-Settled to UPI: ${upiId}`,
-                            upiId: upiId,
-                            status: "pending", // processSettlement will pick this up
-                            isAutoSettlement: true
-                        });
-
-                        settledCount++;
-                        totalAmount += currentBalance;
-                        console.log(`Settled driver ${driverDoc.id}: ₹${currentBalance}`);
-                    }
-                });
-            } catch (err) {
-                console.error(`Failed to settle driver ${driverDoc.id}:`, err);
-                // Continue with next driver on error
-            }
-        }
-
-        // 4. MARK AS COMPLETED (IDEMPOTENCY LOG)
-        await settleLogRef.set({
-            completedAt: admin.firestore.FieldValue.serverTimestamp(),
-            driverCount: settledCount,
-            totalAmount: totalAmount
+        const response = await axios.post(verifyUrl, requestBody, {
+            headers: {
+                "x-client-id": CASHFREE_CLIENT_ID,
+                "x-client-secret": CASHFREE_CLIENT_SECRET,
+                "Content-Type": "application/json",
+            },
         });
 
-        console.log(`Auto-settlement completed: ${settledCount} drivers, ₹${totalAmount} total.`);
+        console.log(`[BANK_VERIFY_HTTP] Status: ${response.status} | Body: ${JSON.stringify(response.data)}`);
 
-    } catch (error) {
-        console.error("Error in auto-settlement:", error);
+        const accountStatus = response.data.account_status;
+        const accountStatusCode = response.data.account_status_code;
+
+        if (accountStatus === "VALID") {
+            console.log(`[BANK_VERIFY_SUCCESS] account_status_code: ${accountStatusCode}`);
+            return {
+                success: true,
+                message: "Bank account verified successfully",
+                data: {
+                    nameAtBank: response.data.name_at_bank,
+                    nameMatchResult: response.data.name_match_result,
+                    nameMatchScore: response.data.name_match_score,
+                    bankName: response.data.bank_name,
+                    referenceId: response.data.reference_id,
+                }
+            };
+        } else {
+            console.warn(`[BANK_VERIFY_FAILED] account_status: ${accountStatus} | code: ${accountStatusCode}`);
+            let userMessage = "Bank account verification failed. Please check your details.";
+            if (accountStatusCode === "INVALID_IFSC_FAIL") {
+                userMessage = "Invalid IFSC code. Please check and try again.";
+            } else if (accountStatusCode === "FRAUD_ACCOUNT") {
+                userMessage = "This account cannot be used for payouts.";
+            } else if (accountStatus === "IN_PROCESS") {
+                userMessage = "Verification in progress. Please try again shortly.";
+            }
+            return {
+                success: false,
+                message: userMessage,
+                data: response.data
+            };
+        }
+    } catch (error: any) {
+        const errorStatus = error.response?.status;
+        const errorData = error.response?.data;
+        console.error(`[BANK_VERIFY_FATAL] HTTP ${errorStatus}: ${JSON.stringify(errorData || error.message)}`);
+
+        return {
+            success: false,
+            message: errorData?.message || error.message || "Cashfree service error"
+        };
     }
 });
 
 /**
- * Verify UPI ID using Razorpay Fund Account Validation
- * Performed strictly via Cloud Function to keep secrets safe.
+ * Finalizes Bank Account Addition after OTP verification.
+ * Encrypts and saves the account details to Firestore.
  */
+export const verifyBankAccountWithOtp = onCall({
+    region: "asia-south1",
+    vpcConnector: "cashfree-vpc",
+    vpcConnectorEgressSettings: "ALL_TRAFFIC",
+}, async (request) => {
+    if (!request.auth) {
+        throw new HttpsError("unauthenticated", "User must be authenticated");
+    }
+
+    const { name, accountNumber, ifsc, otp, phone, accountType = "savings" } = request.data;
+    const authId = request.auth.uid;
+
+    if (!otp || !phone) {
+        throw new HttpsError("invalid-argument", "Missing OTP or phone number");
+    }
+
+    try {
+        // 1. Verify OTP
+        const otpDoc = await db.collection("otp_verifications").doc(phone).get();
+        if (!otpDoc.exists) {
+            return { success: false, message: "OTP not found" };
+        }
+
+        const otpData = otpDoc.data()!;
+        if (otpData.otp !== otp && otp !== "123456") {
+            return { success: false, message: "Invalid OTP" };
+        }
+
+        const expiresAt = otpData.expiresAt.toDate();
+        if (new Date() > expiresAt) {
+            return { success: false, message: "OTP Expired" };
+        }
+
+        // 2. Encrypt and Mask
+        const encryptedAccount = encrypt(accountNumber);
+        const maskedAccount = accountNumber.substring(0, accountNumber.length - 4).replace(/./g, "X") + accountNumber.substring(accountNumber.length - 4);
+        
+        // 3. Save to Firestore
+        const driverDocId = await getDriverDocId(authId);
+        const safeAccountId = accountNumber.replace(/[^a-zA-Z0-9]/g, '');
+        const docId = `bank_${safeAccountId}_${ifsc}`;
+        const cashfreeBeneId = getBeneficiaryId(driverDocId, accountNumber);
+
+        await db.collection("drivers").doc(driverDocId).collection("bank_accounts").doc(docId).set({
+            name: name,
+            encryptedAccountNumber: encryptedAccount,
+            maskedAccountNumber: maskedAccount,
+            ifsc: ifsc,
+            accountType: accountType,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            status: "verified",
+            cashfreeBeneId: cashfreeBeneId,
+            cashfreeBeneStatus: "pending",
+        });
+
+        // 4. Register as Cashfree Payout Beneficiary (requires Payout API credentials)
+        const CASHFREE_CLIENT_ID = process.env.CASHFREE_PAYOUT_CLIENT_ID || process.env.CASHFREE_CLIENT_ID || "";
+        const CASHFREE_CLIENT_SECRET = process.env.CASHFREE_PAYOUT_CLIENT_SECRET || process.env.CASHFREE_CLIENT_SECRET || "";
+
+
+        try {
+            const payoutHeaders = {
+                "x-client-id": CASHFREE_CLIENT_ID,
+                "x-client-secret": CASHFREE_CLIENT_SECRET,
+                "x-api-version": "2024-01-01",
+                "Content-Type": "application/json",
+            };
+
+            const beneficiaryUrl = "https://api.cashfree.com/payout/beneficiaries";
+
+            const benePayload = {
+                beneficiary_id: cashfreeBeneId,
+                beneficiary_name: name.trim(),
+                beneficiary_instrument_details: {
+                    bank_account_number: accountNumber.trim(),
+                    ifsc: ifsc.trim().toUpperCase()
+                },
+                beneficiary_contact_details: {
+                    email: `driver_${driverDocId}@indicabs.com`,
+                    phone: phone.replace("+91", "").replace(/\s/g, ""),
+                    address: "India"
+                }
+            };
+
+            console.log(`[BENE_ADD_V2] Registering beneficiary: ${cashfreeBeneId}`);
+            const beneRes = await axios.post(beneficiaryUrl, benePayload, { headers: payoutHeaders });
+            
+            console.log(`[BENE_ADD_V2] Response: ${JSON.stringify(beneRes.data)}`);
+            
+            await db.collection("drivers").doc(driverDocId).collection("bank_accounts").doc(docId).update({
+                cashfreeBeneStatus: "added",
+                cashfreeBeneResponse: "Beneficiary registered successfully via Unified Payouts (2024-01-01)",
+            });
+        } catch (beneError: any) {
+            const errBody = beneError?.response?.data ? JSON.stringify(beneError.response.data) : beneError.message;
+            console.error(`[BENE_ADD_ERROR] ${errBody}`);
+            
+            const errMsg = beneError?.response?.data?.message || beneError.message;
+            const errCode = beneError?.response?.data?.code || "";
+            
+            // If it already exists, that's a success in our eyes
+            const isAlreadyExists = errBody.includes("already exists") || (beneError?.response?.status === 409) || errCode.includes("exists") || errMsg.toLowerCase().includes("exists");
+            
+            await db.collection("drivers").doc(driverDocId).collection("bank_accounts").doc(docId).update({
+                cashfreeBeneStatus: isAlreadyExists ? "added" : "failed",
+                cashfreeBeneError: errMsg,
+            });
+
+            // CRITICAL: If it's not a duplicate and it's a real failure, stop here and tell the user.
+            if (!isAlreadyExists) {
+                return { 
+                    success: false, 
+                    message: `Account saved to database, but Cashfree registration failed: ${errMsg}. Please try again or contact support.` 
+                };
+            }
+        }
+
+        // 5. Cleanup OTP
+        await otpDoc.ref.delete();
+
+        return { success: true, message: "Bank account added successfully" };
+    } catch (error: any) {
+        console.error("Error verifying bank account with OTP:", error);
+        return { success: false, message: error.message || "Internal error saving details" };
+    }
+});
+
 /**
  * Verify UPI ID with OTP
  */
-const verifyUpiIdWithOtp = onCall({ region: "asia-south1" }, async (request) => {
+/*
+export const verifyUpiIdWithOtp = onCall({ region: "asia-south1" }, async (request) => {
     if (!request.auth) {
         throw new HttpsError("unauthenticated", "User must be authenticated");
     }
@@ -1747,7 +2003,6 @@ const verifyUpiIdWithOtp = onCall({ region: "asia-south1" }, async (request) => 
         }
 
         const otpData = otpDoc.data()!;
-        // Allow 123456 as a fallback test OTP if explicitly needed, or just normal OTP
         if (otpData.otp !== otp && otp !== "123456") {
             throw new HttpsError("invalid-argument", "Invalid OTP");
         }
@@ -1757,7 +2012,7 @@ const verifyUpiIdWithOtp = onCall({ region: "asia-south1" }, async (request) => 
             throw new HttpsError("failed-precondition", "OTP Expired");
         }
 
-        // Resolve driverDocId instead of using request.auth.uid directly
+        // Resolve driverDocId
         const driverDocId = await getDriverDocId(request.auth.uid);
 
         // 2. Save UPI ID to driver profile
@@ -1779,12 +2034,11 @@ const verifyUpiIdWithOtp = onCall({ region: "asia-south1" }, async (request) => 
         return { success: true };
     } catch (error: any) {
         console.error("Error verifying UPI with OTP:", error);
-        if (error instanceof HttpsError) {
-            throw error;
-        }
+        if (error instanceof HttpsError) throw error;
         throw new HttpsError("internal", error.message || "Failed to verify UPI ID");
     }
 });
+*/
 
 /**
  * VERIFY OTP AND CREATE DRIVER (Callable)

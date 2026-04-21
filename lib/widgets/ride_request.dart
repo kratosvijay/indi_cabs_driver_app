@@ -398,7 +398,19 @@ class RideRequest {
       return parts.length > 1 ? parts[1].trim() : address;
     }
 
-    // Strategy: Find "Chennai" (City) and take the part before it.
+    // Fallback strategy: Handle addresses starting with house numbers (e.g. "636, Balaji Dental...")
+    String p1 = filteredParts[0].trim();
+    final startsWithDigit = RegExp(r'^\d').hasMatch(p1);
+
+    if (startsWithDigit && filteredParts.length > 1) {
+      String p2 = filteredParts[1].trim();
+      // If the second part contains alphabetic characters, it's likely the landmark/building name
+      if (RegExp(r'[a-zA-Z]').hasMatch(p2)) {
+        return p2;
+      }
+    }
+
+    // Secondary Strategy: Find "Chennai" (City) and take the part before it.
     // SEARCH BACKWARDS to find the true City component (e.g. "Chennai", "Chennai - 600...")
     int cityIndex = -1;
     for (int i = filteredParts.length - 1; i >= 0; i--) {
@@ -419,21 +431,7 @@ class RideRequest {
       }
     }
 
-    // Fallback: Skip first part if it's digits or Plus Code
-    String candidate = filteredParts[0].trim();
-    final startsWithDigit = RegExp(r'^\d').hasMatch(candidate);
-
-    if ((startsWithDigit || isPlusCode(candidate)) &&
-        filteredParts.length > 1) {
-      return filteredParts[1].trim();
-    }
-
-    // Fallback for Airport case: if first part contains 'Airport', try second part
-    if (candidate.contains('Airport') && filteredParts.length > 1) {
-      return filteredParts[1].trim();
-    }
-
-    return candidate;
+    return p1;
   }
 }
 
@@ -620,14 +618,36 @@ class _RideRequestCardState extends State<RideRequestCard> {
                 ),
                 _isTranslating
                     ? _buildShimmerRow()
-                    : _buildDetailRow(
-                        Icons.flag,
-                        _translatedDropoffTitle ??
-                            widget.rideRequest.dropoffPlaceName ?? // **NEW**
-                            widget.rideRequest.dropoffTitle,
-                        _translatedDropoffAddress ??
-                            widget.rideRequest.dropoffFullAddress,
-                        "${widget.rideRequest.rideDistance.toStringAsFixed(1)} ${'kmRide'.tr}${(widget.rideRequest.rideDuration != null) ? " (~${widget.rideRequest.rideDuration!.toStringAsFixed(0)} ${'mins'.tr})" : ""}",
+                    : Builder(
+                        builder: (context) {
+                          final pendingStop = widget.rideRequest.stops
+                                  .where((s) => s.isPending)
+                                  .isNotEmpty
+                              ? widget.rideRequest.stops
+                                  .firstWhere((s) => s.isPending)
+                              : null;
+
+                          String title = "";
+                          String address = "";
+
+                          if (pendingStop != null) {
+                            title = pendingStop.title;
+                            address = pendingStop.fullAddress;
+                          } else {
+                            title = _translatedDropoffTitle ??
+                                widget.rideRequest.dropoffPlaceName ??
+                                widget.rideRequest.dropoffTitle;
+                            address = _translatedDropoffAddress ??
+                                widget.rideRequest.dropoffFullAddress;
+                          }
+
+                          return _buildDestinationRow(
+                            Icons.flag,
+                            title,
+                            address,
+                            "${widget.rideRequest.rideDistance.toStringAsFixed(1)} ${'kmRide'.tr}${(widget.rideRequest.rideDuration != null) ? " (~${widget.rideRequest.rideDuration!.toStringAsFixed(0)} ${'mins'.tr})" : ""}",
+                          );
+                        },
                       ),
                 if (widget.rideRequest.stops.isNotEmpty) ...[
                   const SizedBox(height: 12),
@@ -906,6 +926,66 @@ class _RideRequestCardState extends State<RideRequestCard> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildDestinationRow(
+    IconData icon,
+    String title,
+    String fullAddress,
+    String distanceInfo,
+  ) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(
+          color: Colors.white.withValues(alpha: 0.2),
+          width: 1,
+        ),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: Colors.white, size: 28),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                    fontSize: 22,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  fullAddress,
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.8),
+                    fontSize: 14,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  distanceInfo,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 

@@ -51,17 +51,36 @@ class AuthController extends GetxController {
       // Check Driver Collection by Querying UID field
       // This is necessary because document IDs will now be human-readable (indi-drv-X)
       // but Auth provides the randomized Firebase UID.
-      QuerySnapshot driverQuery = await _db
+      QuerySnapshot<Map<String, dynamic>> driverQuery = await _db
           .collection('drivers')
           .where('uid', isEqualTo: user.uid)
           .limit(1)
           .get(const GetOptions(source: Source.server))
           .timeout(const Duration(seconds: 10));
 
+      // --- FALLBACK: If UID search fails, search by Phone Number ---
+      if (driverQuery.docs.isEmpty && user.phoneNumber != null) {
+        debugPrint(
+          "Auth: UID match failed. Attempting PhoneNumber fallback for Drivers...",
+        );
+        final rawPhone = user.phoneNumber!.replaceFirst('+91', '');
+        driverQuery = await _db
+            .collection('drivers')
+            .where('phoneNumber', whereIn: [user.phoneNumber, rawPhone])
+            .limit(1)
+            .get(const GetOptions(source: Source.server));
+
+        if (driverQuery.docs.isNotEmpty) {
+          final docId = driverQuery.docs.first.id;
+          debugPrint("Auth: Found driver by phone ($docId). Updating UID link.");
+          await _db.collection('drivers').doc(docId).update({'uid': user.uid});
+        }
+      }
+
       if (driverQuery.docs.isNotEmpty) {
         final driverDoc = driverQuery.docs.first;
         final driverDocId = driverDoc.id; // Correct Document ID (e.g. indi-drv-1)
-        final data = driverDoc.data() as Map<String, dynamic>;
+        final data = driverDoc.data();
 
         // Persist the Document ID for use in other screens
         final prefs = await SharedPreferences.getInstance();
@@ -69,7 +88,7 @@ class AuthController extends GetxController {
 
         // --- NEW: Check for Active Rides to Restore State ---
         try {
-          var activeRidesSnapshot = await _db
+          QuerySnapshot<Map<String, dynamic>> activeRidesSnapshot = await _db
               .collection('ride_requests')
               .where('driverId', isEqualTo: driverDocId) // Use professional ID
               .where('driverUid', isEqualTo: user.uid) // Required for security rules
@@ -135,9 +154,10 @@ class AuthController extends GetxController {
             } else if (status == 'completed') {
               // Skip restoration if the ride was completed more than 2 hours ago
               bool isStale = false;
-              final completedAt = rideDoc.data()['completedAt'] ??
-                  rideDoc.data()['updatedAt'] ??
-                  rideDoc.data()['createdAt'];
+              final doneRideData = rideDoc.data();
+              final completedAt = doneRideData['completedAt'] ??
+                  doneRideData['updatedAt'] ??
+                  doneRideData['createdAt'];
               if (completedAt is Timestamp) {
                 final age = DateTime.now().difference(completedAt.toDate());
                 if (age.inHours >= 2) {
@@ -221,7 +241,7 @@ class AuthController extends GetxController {
         if (phoneNumber != null && phoneNumber.isNotEmpty) {
           final rawPhone = phoneNumber.replaceFirst('+91', '');
           // Check both formatted (+91) and raw number
-          final pendingFleetDocs = await _db
+          final QuerySnapshot<Map<String, dynamic>> pendingFleetDocs = await _db
               .collection('drivers')
               .where('phoneNumber', whereIn: [user.phoneNumber, rawPhone])
               .where('role', isEqualTo: 'fleet_driver')
@@ -287,6 +307,36 @@ class AuthController extends GetxController {
           .get()
           .timeout(const Duration(seconds: 10));
 
+      // --- FALLBACK: If UID search fails, search by Phone Number ---
+      if (!fleetDoc.exists && user.phoneNumber != null) {
+        debugPrint(
+          "Auth: Fleet Operator UID match failed. Attempting PhoneNumber fallback...",
+        );
+        final rawPhone = user.phoneNumber!.replaceFirst('+91', '');
+        final QuerySnapshot<Map<String, dynamic>> fleetQuery = await _db
+            .collection('fleet_operators')
+            .where('phoneNumber', whereIn: [user.phoneNumber, rawPhone])
+            .limit(1)
+            .get();
+
+        if (fleetQuery.docs.isNotEmpty) {
+          final oldDoc = fleetQuery.docs.first;
+          debugPrint(
+            "Auth: Found fleet operator by phone (${oldDoc.id}). Migrating to new UID...",
+          );
+
+          // Migrate document to new UID key
+          final data = oldDoc.data();
+          data['uid'] = user.uid; // Ensure UID is updated in data
+
+          await _db.collection('fleet_operators').doc(user.uid).set(data);
+          await _db.collection('fleet_operators').doc(oldDoc.id).delete();
+
+          // Refresh fleetDoc for subsequent logic
+          fleetDoc = await _db.collection('fleet_operators').doc(user.uid).get();
+        }
+      }
+
       if (fleetDoc.exists) {
         Get.offAll(() => FleetDashboardScreen(user: user));
         return;
@@ -295,7 +345,7 @@ class AuthController extends GetxController {
       // --- NEW: Check for Pending Fleet Invite for NEW Users (No Driver Doc yet) ---
       if (user.phoneNumber != null) {
         final rawPhone = user.phoneNumber!.replaceFirst('+91', '');
-        final pendingFleetDocs = await _db
+        final QuerySnapshot<Map<String, dynamic>> pendingFleetDocs = await _db
             .collection('drivers')
             .where('phoneNumber', whereIn: [user.phoneNumber, rawPhone])
             .where('role', isEqualTo: 'fleet_driver')

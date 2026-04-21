@@ -24,6 +24,7 @@ import 'package:project_taxi_driver_app/widgets/status_slider.dart';
 import 'package:project_taxi_driver_app/widgets/airport_queue_bar.dart';
 import 'package:project_taxi_driver_app/screens/subscription_plans.dart';
 import 'package:project_taxi_driver_app/screens/demand_areas_screen.dart';
+import 'package:project_taxi_driver_app/screens/post_ride_screen.dart';
 
 class DriverHomePage extends StatefulWidget {
   final User user;
@@ -614,6 +615,27 @@ class _DriverHomePageState extends State<DriverHomePage>
                     Get.to(() => DutySettingsScreen(user: widget.user));
                   },
                 ),
+                Obx(() {
+                  final String vClass = controller.driverVehicleClass.value.toLowerCase();
+                  final String role = controller.driverRole.value.toLowerCase();
+                  
+                  // Hide for fleet drivers and auto
+                  if (role == 'fleet_driver' || vClass == 'auto') {
+                    return const SizedBox.shrink();
+                  }
+                  
+                  return _buildMenuItem(
+                    icon: Icons.people_outline,
+                    title: "Post a Ride",
+                    onTap: () {
+                      Get.back();
+                      Get.to(() => PostRideScreen(
+                        user: widget.user, 
+                        vehicleClass: controller.driverVehicleClass.value,
+                      ));
+                    },
+                  );
+                }),
                 _buildMenuItem(
                   icon: Icons.map_outlined,
                   title: "nearbyDemandAreas".tr,

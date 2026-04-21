@@ -1,32 +1,31 @@
 // ignore_for_file: unused_field
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:ui' as ui;
-import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_polyline_points/flutter_polyline_points.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:get/get.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:project_taxi_driver_app/screens/homepage.dart';
-import 'package:project_taxi_driver_app/widgets/ride_request.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:flutter_tts/flutter_tts.dart';
-
-import 'package:wakelock_plus/wakelock_plus.dart';
-
-import 'package:project_taxi_driver_app/widgets/ride_status_slider.dart';
-
+import 'package:google_navigation_flutter/google_navigation_flutter.dart' as nav;
+import 'package:http/http.dart' as http;
 import 'package:project_taxi_driver_app/screens/chat_screen.dart';
+import 'package:project_taxi_driver_app/screens/homepage.dart';
 import 'package:project_taxi_driver_app/screens/navigation_screen.dart';
-import 'package:google_navigation_flutter/google_navigation_flutter.dart'
-    as nav;
-import 'package:url_launcher/url_launcher.dart';
 import 'package:project_taxi_driver_app/screens/ride_start_otp_screen.dart';
+import 'package:project_taxi_driver_app/widgets/ride_request.dart';
+import 'package:project_taxi_driver_app/widgets/ride_status_slider.dart';
+import 'package:project_taxi_driver_app/widgets/status_slider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 class RideAcceptedScreen extends StatefulWidget {
   final RideRequest rideRequest;
@@ -82,6 +81,7 @@ class _RideAcceptedScreenState extends State<RideAcceptedScreen> {
   String? _translatedDropoffTitle;
   String? _translatedDropoffAddress;
   final bool _isTranslatingAddresses = true;
+  String _fetchedAddress = ''; // Store locally fetched address
 
   // Wakelock Timer
   Timer? _wakelockTimer;
@@ -102,6 +102,9 @@ class _RideAcceptedScreenState extends State<RideAcceptedScreen> {
     _initializeRide();
     _fetchCustomerDetails();
     _listenToMessages();
+
+    // Check if we need to resolve address
+    _checkAndResolveAddress();
   }
 
   Future<void> _loadMarkerIcons() async {
@@ -390,9 +393,7 @@ class _RideAcceptedScreenState extends State<RideAcceptedScreen> {
   Future<void> _getCurrentLocation() async {
     try {
       Position position = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-        ),
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
       );
       if (mounted) {
         setState(() {
@@ -400,10 +401,96 @@ class _RideAcceptedScreenState extends State<RideAcceptedScreen> {
           _updateMarkers();
         });
         _moveCamera(_driverLocation!);
+
+        // Added from ride_started.dart patch logic
+        if (!_isAddressResolved) {
+          _checkAndResolveAddress();
+        }
       }
     } catch (e) {
       debugPrint("Error getting location: $e");
     }
+  }
+
+  bool _isAddressResolved = false;
+
+  Future<void> _checkAndResolveAddress() async {
+    String addressToCheck = "";
+    LatLng locationToResolve;
+
+    // Check if there are stops and we should show the next stop or final dest
+    if (widget.rideRequest.stops.isNotEmpty) {
+      // Find first pending stop
+      final pendingStop = widget.rideRequest.stops.firstWhere(
+        (s) => s.isPending,
+        orElse: () => widget.rideRequest.stops.last,
+      );
+      addressToCheck = pendingStop.fullAddress;
+      locationToResolve = pendingStop.location;
+    } else {
+      addressToCheck = widget.rideRequest.dropoffFullAddress;
+      locationToResolve = widget.rideRequest.dropoffLocation;
+    }
+
+    if (addressToCheck.isEmpty ||
+        addressToCheck.toLowerCase().contains("getting address")) {
+      // Safeguard: Check if locationToResolve is suspiciously close to pickup (implies fallback)
+      bool isFallback = false;
+      try {
+        final dist = Geolocator.distanceBetween(
+          locationToResolve.latitude,
+          locationToResolve.longitude,
+          widget.rideRequest.pickupLocation.latitude,
+          widget.rideRequest.pickupLocation.longitude,
+        );
+        if (dist < 50 && widget.rideRequest.rideType != 'rental') {
+          isFallback = true;
+        }
+      } catch (e) {
+        // ignore
+      }
+
+      if (isFallback) {
+        if (mounted) {
+          setState(() {
+            _fetchedAddress = "Drop-off Location";
+            _isAddressResolved = true;
+          });
+        }
+      } else if (locationToResolve.latitude != 0) {
+        final addr = await _getAddressFromLatLng(locationToResolve);
+        if (addr != null && mounted) {
+          setState(() {
+            _fetchedAddress = addr;
+            _isAddressResolved = true;
+          });
+        }
+      }
+    } else {
+      _isAddressResolved = true;
+    }
+  }
+
+  Future<String?> _getAddressFromLatLng(LatLng position) async {
+    try {
+      final apiKey = dotenv.env['GOOGLE_MAPS_API_KEY'];
+      if (apiKey == null) return null;
+
+      final url = Uri.parse(
+        'https://maps.googleapis.com/maps/api/geocode/json?latlng=${position.latitude},${position.longitude}&key=$apiKey',
+      );
+      final response = await http.get(url);
+
+      if (response.statusCode == 200) {
+        final parsed = json.decode(response.body);
+        if (parsed['status'] == 'OK' && parsed['results'].isNotEmpty) {
+          return parsed['results'][0]['formatted_address'];
+        }
+      }
+    } catch (e) {
+      debugPrint("Error resolving address: $e");
+    }
+    return null;
   }
 
   void _startLocationUpdates() {
@@ -638,7 +725,10 @@ class _RideAcceptedScreenState extends State<RideAcceptedScreen> {
       if (mounted) {
         final user = FirebaseAuth.instance.currentUser;
         if (user != null) {
-          Get.offAll(() => DriverHomePage(user: user));
+          Get.offAll(() => DriverHomePage(
+                user: user,
+                initialStatus: DriverStatus.online,
+              ));
         }
         Get.snackbar(
           'Cancelled',
@@ -1081,42 +1171,79 @@ class _RideAcceptedScreenState extends State<RideAcceptedScreen> {
                             const Divider(height: 24),
                           ],
 
+                          // Destination Info
                           Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               const Icon(Icons.flag, color: Colors.red),
                               const SizedBox(width: 8),
                               Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      widget.rideRequest.dropoffPlaceName ??
-                                          widget.rideRequest.dropoffTitle,
-                                      style: TextStyle(
-                                        color: Theme.of(context).brightness ==
-                                                Brightness.dark
-                                            ? Colors.white70
-                                            : Colors.grey,
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      widget.rideRequest.dropoffFullAddress,
-                                      style: TextStyle(
-                                        color: Theme.of(context).brightness ==
-                                                Brightness.dark
-                                            ? Colors.white
-                                            : Colors.black,
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ],
+                                child: Builder(
+                                  builder: (context) {
+                                    final pendingStop = widget.rideRequest.stops
+                                            .where((s) => s.isPending)
+                                            .isNotEmpty
+                                        ? widget.rideRequest.stops.firstWhere(
+                                            (s) => s.isPending,
+                                          )
+                                        : null;
+
+                                    String title = "";
+                                    String address = "";
+
+                                    if (pendingStop != null) {
+                                      title = pendingStop.title;
+                                      address = pendingStop.fullAddress;
+                                    } else {
+                                      // Use Translated version if available (User request)
+                                      title = _translatedDropoffTitle ??
+                                          widget.rideRequest.dropoffPlaceName ??
+                                          widget.rideRequest.dropoffTitle;
+                                      address = _translatedDropoffAddress ??
+                                          widget.rideRequest.dropoffFullAddress;
+                                    }
+
+                                    // Fallback if address is empty but we have fetched one
+                                    if (address.isEmpty &&
+                                        _fetchedAddress.isNotEmpty) {
+                                      address = _fetchedAddress;
+                                    }
+
+                                    return Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        if (title.isNotEmpty)
+                                          Text(
+                                            title,
+                                            style: TextStyle(
+                                              color: Theme.of(context)
+                                                          .brightness ==
+                                                      Brightness.dark
+                                                  ? Colors.white70
+                                                  : Colors.grey,
+                                              fontSize: 13,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          address,
+                                          style: TextStyle(
+                                            color: Theme.of(context)
+                                                        .brightness ==
+                                                    Brightness.dark
+                                                ? Colors.white
+                                                : Colors.black,
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ],
+                                    );
+                                  },
                                 ),
                               ),
                             ],

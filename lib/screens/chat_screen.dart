@@ -7,12 +7,14 @@ class ChatScreen extends StatefulWidget {
   final String rideId;
   final String currentUserId; // Driver's ID
   final String otherUserName; // Customer's Name
+  final String chatCollection; // e.g. 'ride_requests' or 'shared_rides'
 
   const ChatScreen({
     super.key,
     required this.rideId,
     required this.currentUserId,
     required this.otherUserName,
+    this.chatCollection = 'ride_requests',
   });
 
   @override
@@ -50,7 +52,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_messageController.text.trim().isEmpty) return;
 
     _firestore
-        .collection('ride_requests')
+        .collection(widget.chatCollection)
         .doc(widget.rideId)
         .collection('messages')
         .add({
@@ -65,7 +67,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _sendQuickMessage(String message) {
     _firestore
-        .collection('ride_requests')
+        .collection(widget.chatCollection)
         .doc(widget.rideId)
         .collection('messages')
         .add({
@@ -88,7 +90,7 @@ class _ChatScreenState extends State<ChatScreen> {
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
               stream: _firestore
-                  .collection('ride_requests')
+                  .collection(widget.chatCollection)
                   .doc(widget.rideId)
                   .collection('messages')
                   .orderBy('timestamp', descending: true)

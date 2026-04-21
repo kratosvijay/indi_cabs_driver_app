@@ -1,14 +1,1 @@
-{
-  "rules": {
-    "driver_locations": {
-      ".read": "auth != null",
-      "$driverId": {
-        ".write": "auth != null"
-      }
-    },
-    "$other": {
-      ".read": "auth != null",
-      ".write": "auth != null"
-    }
-  }
-}
+../indi_cabs_user_app/database.rules.json

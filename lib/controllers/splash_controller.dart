@@ -95,21 +95,42 @@ class SplashController extends GetxController {
 
       if (user != null) {
         try {
-          final doc = await FirebaseFirestore.instance
+          // 1. Try Local Persistence FIRST for immediate response
+          final prefs = await SharedPreferences.getInstance();
+          final String? lastStatusStr = prefs.getString('lastDriverStatus');
+          if (lastStatusStr != null) {
+            try {
+              initialStatus = DriverStatus.values.byName(lastStatusStr);
+              debugPrint("Splash: Driver status restored from local: $lastStatusStr");
+            } catch (e) {
+              debugPrint("Splash: Invalid local status ignored: $lastStatusStr");
+            }
+          }
+
+          // 2. Verify/Update from DB
+          // (Ensures professional IDs like indi-drv-X are correctly matched)
+          final QuerySnapshot<Map<String, dynamic>> driverQuery = await FirebaseFirestore.instance
               .collection('drivers')
-              .doc(user.uid)
+              .where('uid', isEqualTo: user.uid)
+              .limit(1)
               .get();
 
-          if (doc.exists) {
-            final data = doc.data();
-            final isOnline = data?['isOnline'] ?? false;
+          if (driverQuery.docs.isNotEmpty) {
+            final data = driverQuery.docs.first.data();
+            final isOnline = data['isOnline'] ?? false;
+            
+            // If the database has a definitive status, you can choose to sync it.
+            // For now, if DB says Online and we thought Offline, we follow DB.
             if (isOnline) {
               initialStatus = DriverStatus.online;
-              debugPrint("Splash: Driver found ONLINE.");
+              debugPrint("Splash: Driver status synced from DB (Online).");
+            } else if (initialStatus != DriverStatus.offline) {
+              initialStatus = DriverStatus.offline;
+              debugPrint("Splash: Driver status synced from DB (Offline).");
             }
           }
         } catch (e) {
-          debugPrint("Splash: Error fetching driver status: $e");
+          debugPrint("Splash: Error checking driver status: $e");
         }
       }
 

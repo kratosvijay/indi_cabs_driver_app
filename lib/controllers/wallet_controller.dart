@@ -11,6 +11,7 @@ import 'package:flutter_cashfree_pg_sdk/api/cfpayment/cfwebcheckoutpayment.dart'
 import 'package:flutter_cashfree_pg_sdk/api/cfpaymentgateway/cfpaymentgatewayservice.dart';
 import 'package:flutter_cashfree_pg_sdk/api/cfsession/cfsession.dart';
 import 'package:flutter_cashfree_pg_sdk/utils/cfenums.dart';
+import 'package:project_taxi_driver_app/data/models/bank_account.dart';
 
 class WalletTransaction {
   final String id;
@@ -18,6 +19,7 @@ class WalletTransaction {
   final String type; // 'credit' or 'debit'
   final DateTime createdAt;
   final String description;
+  final String status; // 'pending', 'success', 'failed'
 
   WalletTransaction({
     required this.id,
@@ -25,6 +27,7 @@ class WalletTransaction {
     required this.type,
     required this.createdAt,
     required this.description,
+    this.status = 'success',
   });
 
   factory WalletTransaction.fromFirestore(DocumentSnapshot doc) {
@@ -33,8 +36,11 @@ class WalletTransaction {
       id: doc.id,
       amount: (data['amount'] ?? 0.0).toDouble(),
       type: data['type'] ?? 'credit',
-      createdAt: (data['createdAt'] as Timestamp).toDate(),
+      createdAt: (data['createdAt'] is Timestamp)
+          ? (data['createdAt'] as Timestamp).toDate()
+          : DateTime.now(),
       description: data['description'] ?? '',
+      status: data['status'] ?? 'success',
     );
   }
 }
@@ -50,11 +56,11 @@ class WalletController extends GetxController {
   RxBool isLoading = false.obs;
   
   final List<StreamSubscription> _subscriptions = [];
-  RxList<String> savedUpiIds = <String>[].obs;
+  final Map<String, String> _lastKnownStatuses = {};
+  // RxList<String> savedUpiIds = <String>[].obs; // Commented out per user request (Cashfree UPI disabled)
+  RxList<BankAccount> savedBankAccounts = <BankAccount>[].obs;
 
   // Settlement Features
-  RxBool autoSettleEnabled = false.obs;
-  RxString autoSettleUpiId = "".obs;
   RxInt settlementsThisWeek = 0.obs;
   Rx<DateTime?> lastSettlementReset = Rx<DateTime?>(null);
   Rx<DateTime?> lastSettlementDate = Rx<DateTime?>(null);
@@ -78,6 +84,8 @@ class WalletController extends GetxController {
     }
   }
 
+  String? get userPhoneNumber => _auth.currentUser?.phoneNumber;
+
   @override
   void onInit() {
     super.onInit();
@@ -86,7 +94,8 @@ class WalletController extends GetxController {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await _loadDocId();
       fetchWalletData();
-      fetchUpiIds();
+      // fetchUpiIds(); // Commented out per user request (Cashfree UPI disabled)
+      fetchBankAccounts();
     });
     _initCashfree();
   }
@@ -136,6 +145,7 @@ class WalletController extends GetxController {
     super.onClose();
   }
 
+  /*
   Future<void> fetchUpiIds() async {
     final user = _auth.currentUser;
     if (user == null) return;
@@ -155,7 +165,189 @@ class WalletController extends GetxController {
       debugPrint("Error fetching UPI IDs: $e");
     }
   }
+  */
 
+  void fetchBankAccounts() {
+    final user = _auth.currentUser;
+    if (user == null) return;
+
+    try {
+      _subscriptions.add(_db
+          .collection('drivers')
+          .doc(_id)
+          .collection('bank_accounts')
+          .orderBy('createdAt', descending: true)
+          .snapshots()
+          .listen((snapshot) {
+            debugPrint("Bank accounts update: ${snapshot.docs.length} found");
+            savedBankAccounts.value = snapshot.docs
+                .map((doc) => BankAccount.fromFirestore(doc))
+                .toList();
+          }, onError: (e) => debugPrint("Bank accounts stream error: $e")));
+    } catch (e) {
+      debugPrint("Error fetching bank accounts: $e");
+    }
+  }
+
+  Future<bool> initiateBankAccountVerification({
+    required String name,
+    required String accountNumber,
+    required String ifsc,
+    String accountType = 'savings',
+    bool showOtpDialog = true,
+  }) async {
+    final user = _auth.currentUser;
+    if (user == null || user.phoneNumber == null) {
+      Get.snackbar("Error", "User phone number not found");
+      return false;
+    }
+
+    try {
+      isLoading.value = true;
+
+      // 1. Penny Drop Verification (Bank Account exists check)
+      final verifyCallable = FirebaseFunctions.instanceFor(region: 'asia-south1')
+          .httpsCallable('initiateBankAccountVerification');
+      
+      final verifyResult = await verifyCallable.call({
+          'driverId': _id,
+          'name': name,
+          'accountNumber': accountNumber,
+          'ifsc': ifsc,
+          'accountType': accountType,
+          'phone': user.phoneNumber,
+          'upiId': "", // Satisfy backend validation
+          'method': 'bank',
+      });
+
+      if (verifyResult.data['success'] != true) {
+        isLoading.value = false;
+        debugPrint("[BANK_VERIFY] Penny Drop Failed: ${verifyResult.data['message']}");
+        Get.snackbar("Verification Failed", verifyResult.data['message'] ?? "Could not verify bank details");
+        return false;
+      }
+
+      debugPrint("[BANK_VERIFY] Penny Drop Success. Initiating OTP for: ${user.phoneNumber}");
+
+      // 2. Trigger OTP for security
+      try {
+        await _db.collection('otp_verifications').doc(user.phoneNumber).set({
+          'requestedAt': FieldValue.serverTimestamp(),
+          'status': 'pending',
+        });
+        debugPrint("[BANK_VERIFY] OTP Firestore document created successfully.");
+      } catch (dbError) {
+        debugPrint("[BANK_VERIFY] ERROR writing to otp_verifications: $dbError");
+        isLoading.value = false;
+        Get.snackbar("Error", "Could not initiate OTP verification. Please contact support.");
+        return false;
+      }
+
+      isLoading.value = false;
+
+      if (showOtpDialog) {
+        // 3. Show OTP Dialog using Pinput
+        final otpController = TextEditingController();
+        Get.dialog(
+          AlertDialog(
+            title: const Text("Verify Account Addition"),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text("Account Verified! Enter OTP sent to ${user.phoneNumber} to save."),
+                const SizedBox(height: 20),
+                Pinput(
+                  controller: otpController,
+                  length: 6,
+                  onCompleted: (pin) async {
+                    Get.back(); // Close OTP dialog
+                    await finalizeBankAccountAddition(
+                      name: name,
+                      accountNumber: accountNumber,
+                      ifsc: ifsc,
+                      otp: pin,
+                      phone: user.phoneNumber!,
+                    );
+                  },
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Get.back(),
+                child: const Text("Cancel"),
+              ),
+            ],
+          ),
+        );
+      }
+      return true;
+    } catch (e) {
+      isLoading.value = false;
+      Get.snackbar("Error", "Failed to initiate verification: $e");
+      return false;
+    }
+  }
+
+  Future<bool> finalizeBankAccountAddition({
+    required String name,
+    required String accountNumber,
+    required String ifsc,
+    required String otp,
+    required String phone,
+    String accountType = 'savings',
+  }) async {
+    try {
+      isLoading.value = true;
+      final callable = FirebaseFunctions.instanceFor(region: 'asia-south1')
+          .httpsCallable('verifyBankAccountWithOtp');
+
+      final result = await callable.call({
+        'name': name,
+        'accountNumber': accountNumber,
+        'ifsc': ifsc,
+        'otp': otp,
+        'phone': phone,
+        'accountType': accountType,
+        'upiId': "", // Satisfy backend validation
+        'method': 'bank',
+      });
+
+      isLoading.value = false;
+      if (result.data['success'] == true) {
+        Get.snackbar("Success", "Bank Account Added Successfully");
+        fetchBankAccounts(); // Refresh the list
+        return true;
+      } else {
+        Get.snackbar("Error", result.data['message'] ?? "Verification failed");
+        return false;
+      }
+    } catch (e) {
+      isLoading.value = false;
+      Get.snackbar("Error", "Failed to finalize addition: $e");
+      return false;
+    }
+  }
+
+  Future<void> deleteBankAccount(String accountId) async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+
+    try {
+      if (_driverDocId == null) await _loadDocId();
+      await _db
+          .collection('drivers')
+          .doc(_id)
+          .collection('bank_accounts')
+          .doc(accountId)
+          .delete();
+      Get.snackbar("Success", "Bank account removed");
+    } catch (e) {
+      Get.snackbar("Error", "Failed to delete bank account: $e");
+    }
+  }
+
+  /*
   Future<void> verifyAndAddUpi(String upiId, String name) async {
     final user = _auth.currentUser;
     if (user == null || user.phoneNumber == null) {
@@ -254,6 +446,7 @@ class WalletController extends GetxController {
       Get.snackbar("Error", "Failed to delete UPI ID: $e");
     }
   }
+  */
 
   String get _id => _driverDocId ?? _auth.currentUser?.uid ?? "";
 
@@ -285,7 +478,7 @@ class WalletController extends GetxController {
         }
       }, onError: (e) => debugPrint("Balance stream error: $e")));
 
-      _listenToAutoSettleSettings(user);
+      _listenToWalletMetadata(user);
 
       // Listen to transactions
       _subscriptions.add(_db
@@ -295,21 +488,56 @@ class WalletController extends GetxController {
           .orderBy('createdAt', descending: true)
           .snapshots()
           .listen((snapshot) {
-            transactions.value = snapshot.docs
+            final newList = snapshot.docs
                 .map((doc) => WalletTransaction.fromFirestore(doc))
                 .toList();
+
+            // Notify on status changes (e.g., pending -> success/failed)
+            for (var tx in newList) {
+              if (_lastKnownStatuses.containsKey(tx.id)) {
+                final oldStatus = _lastKnownStatuses[tx.id];
+                if (oldStatus == 'pending' && tx.status != 'pending') {
+                  _notifyStatusChange(tx);
+                }
+              }
+              _lastKnownStatuses[tx.id] = tx.status;
+            }
+
+            transactions.value = newList;
           }, onError: (e) => debugPrint("Transactions stream error: $e")));
     } catch (e) {
       Get.snackbar("Error", "Failed to fetch wallet data: $e");
     }
   }
 
-  void _listenToAutoSettleSettings(User user) {
+  void _notifyStatusChange(WalletTransaction tx) {
+    if (tx.status == 'success') {
+      Get.snackbar(
+        "Settlement Successful",
+        "₹${tx.amount.toStringAsFixed(2)} has been successfully transferred to your account.",
+        snackPosition: SnackPosition.TOP,
+        backgroundColor: Colors.green,
+        colorText: Colors.white,
+        duration: const Duration(seconds: 5),
+        icon: const Icon(Icons.check_circle, color: Colors.white),
+      );
+    } else if (tx.status == 'failed') {
+      Get.snackbar(
+        "Settlement Failed",
+        "The payout of ₹${tx.amount.toStringAsFixed(2)} was unsuccessful. Please check your bank details.",
+        snackPosition: SnackPosition.TOP,
+        backgroundColor: Colors.redAccent,
+        colorText: Colors.white,
+        duration: const Duration(seconds: 6),
+        icon: const Icon(Icons.error, color: Colors.white),
+      );
+    }
+  }
+
+  void _listenToWalletMetadata(User user) {
     _subscriptions.add(_db.collection('drivers').doc(_id).snapshots().listen((snapshot) async {
       if (snapshot.exists) {
         final data = snapshot.data();
-        autoSettleEnabled.value = data?['autoSettleEnabled'] ?? false;
-        autoSettleUpiId.value = data?['autoSettleUpiId'] ?? "";
         queuedPlanName.value = data?['queuedPlanName'] ?? "";
         queuedPlanDurationDays.value = data?['queuedPlanDurationDays'] ?? 0;
 
@@ -354,9 +582,6 @@ class WalletController extends GetxController {
             if (settlementTimestamp is Timestamp) {
               lastSettlementDate.value = settlementTimestamp.toDate();
             }
-            debugPrint("WALLET METADATA SYNCED: count=${settlementsThisWeek.value}, lastDate=${lastSettlementDate.value}");
-          } else {
-            debugPrint("WALLET METADATA: Document does not exist yet at pilots/$_id/wallet/metadata");
           }
         }, onError: (e) => debugPrint("Wallet metadata stream error: $e")));
   }
@@ -372,7 +597,7 @@ class WalletController extends GetxController {
            final queuedName = data['queuedPlanName'];
            final queuedDays = data['queuedPlanDurationDays'] ?? 0;
 
-           if (queuedName == null || queuedName == "") return; // already processed
+           if (queuedName == null || queuedName == "") return;
 
            final newExpiry = DateTime.now().add(Duration(days: queuedDays));
 
@@ -387,21 +612,6 @@ class WalletController extends GetxController {
       } catch (e) {
         debugPrint("Failed to promote queued plan: $e");
       }
-  }
-
-
-  Future<void> updateAutoSettleSettings(bool enabled, String upiId) async {
-    final user = _auth.currentUser;
-    if (user == null) return;
-
-    try {
-      await _db.collection('drivers').doc(_driverDocId ?? user.uid).set({
-        'autoSettleEnabled': enabled,
-        'autoSettleUpiId': upiId,
-      }, SetOptions(merge: true));
-    } catch (e) {
-      Get.snackbar("Error", "Failed to update settings: $e");
-    }
   }
 
   Future<void> creditWallet(
@@ -538,7 +748,7 @@ class WalletController extends GetxController {
     }
   }
 
-  Future<void> settleBalance(String upiId) async {
+  Future<void> settleBalance({String? upiId, BankAccount? bankAccount}) async {
     final user = _auth.currentUser;
     if (user == null) return;
 
@@ -558,8 +768,12 @@ class WalletController extends GetxController {
       debugPrint("Settlement initiated for driver: $_id");
       Get.back(); // Close dialog
 
-      // Simulate bank processing delay
-      await Future.delayed(const Duration(seconds: 2));
+      debugPrint("Settlement initiated for driver: $_id");
+      Get.back(); // Close dialog
+
+      // Note: We no longer call a Cloud Function directly. 
+      // Saving the transaction as 'pending' to Firestore triggers 
+      // the 'processWalletSettlement' background function automatically.
 
       await _db.runTransaction((transaction) async {
         final balanceRef = _db
@@ -577,7 +791,6 @@ class WalletController extends GetxController {
 
         if (currentBalance <= 0) throw Exception("Insufficient balance");
 
-        // Check and update settlement limits
         final metadataRef = _db
             .collection('drivers')
             .doc(_id)
@@ -594,9 +807,7 @@ class WalletController extends GetxController {
           if (ts is Timestamp) lastReset = ts.toDate();
         }
 
-        // Logic to reset count if it's a new week (Sunday)
         final now = DateTime.now();
-        // Calculate the most recent Sunday midnight
         final lastSunday = now.subtract(Duration(days: now.weekday % 7));
         final startOfLastSunday = DateTime(
           lastSunday.year,
@@ -605,64 +816,65 @@ class WalletController extends GetxController {
         );
 
         if (lastReset == null || lastReset.isBefore(startOfLastSunday)) {
-          // New week started, reset count
           currentCount = 0;
-          lastReset = startOfLastSunday; // Mark reset time
+          lastReset = startOfLastSunday;
         }
 
-        // 1/Day Limit Check
-        final lastDate = metadataDoc.data()?['lastSettlementDate'];
-        if (lastDate is Timestamp) {
-          final lastSettle = lastDate.toDate();
-          debugPrint("Last settlement date found: $lastSettle");
-          if (lastSettle.year == now.year &&
-              lastSettle.month == now.month &&
-              lastSettle.day == now.day) {
-            debugPrint("DENIED: Already settled today.");
-            throw Exception("Only 1 settlement per day is allowed. Next reset: Midnight.");
-          }
+        if (currentCount >= 99) {
+          throw Exception("Weekly settlement limit reached.");
         }
 
-        debugPrint("Weekly count: $currentCount/7");
-        if (currentCount >= 7) {
-          debugPrint("DENIED: Weekly limit reached.");
-          throw Exception("Weekly settlement limit (7) reached.");
-        }
-
-        // Update limit metadata
         transaction.set(metadataRef, {
           'settlementsThisWeek': currentCount + 1,
           'lastSettlementReset': Timestamp.fromDate(lastReset),
           'lastSettlementDate': FieldValue.serverTimestamp(),
         }, SetOptions(merge: true));
 
-        // Debit the full amount
         transaction.set(balanceRef, {
           'currentBalance': 0.0,
         }, SetOptions(merge: true));
 
-        // Add Transaction Record
         final transactionRef = _db
             .collection('drivers')
             .doc(_driverDocId ?? user.uid)
             .collection('wallet_transactions')
             .doc();
-        transaction.set(transactionRef, {
+
+        final Map<String, dynamic> txData = {
           'amount': currentBalance,
           'type': 'debit',
           'createdAt': FieldValue.serverTimestamp(),
-          'description': 'Settled to UPI: $upiId',
-          'upiId': upiId,
           'status': 'pending',
-        });
+          'phone': user.phoneNumber, // Include real phone for Cashfree registration
+          'upiId': "bank_payout", // Sentinel value to bypass backend validation (cannot be empty)
+        };
+
+        if (bankAccount != null) {
+          txData['description'] = "Settlement requested to Bank: ${bankAccount.maskedAccountNumber}";
+          txData['bankAccount'] = bankAccount.encryptedAccountNumber;
+          txData['ifsc'] = bankAccount.ifsc;
+          txData['maskedAccount'] = bankAccount.maskedAccountNumber;
+          txData['bankAccountId'] = bankAccount.id; // Firestore doc ID for bene lookup
+          txData['cashfreeBeneId'] = bankAccount.cashfreeBeneId; // Pre-computed bene ID
+          txData['bankHolderName'] = bankAccount.name; // Real driver name for re-registration
+        } else if (upiId != null) {
+          txData['description'] = "Settlement requested to UPI: $upiId";
+          txData['upiId'] = upiId;
+        } else {
+          throw Exception("No payout destination selected");
+        }
+
+        transaction.set(transactionRef, txData);
       });
 
       Get.snackbar(
-        "Processing",
-        "Settlement initiated! Funds will be transferred shortly.",
+        "Settlement Initiated",
+        "Your payout is being processed in the background. You will receive a notification once the bank completes it.",
+        backgroundColor: Colors.green,
+        colorText: Colors.white,
       );
     } catch (e) {
-      Get.snackbar("Error", "Failed to settle balance: $e");
+      Get.snackbar("Settlement Error", "Failed to initiate settlement: $e");
     } finally {
       isLoading.value = false;
     }

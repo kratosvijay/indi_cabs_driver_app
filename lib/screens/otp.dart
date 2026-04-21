@@ -339,9 +339,11 @@ class _OtpScreenState extends State<OtpScreen> with CodeAutoFill {
     if (widget.imageFile != null) {
       photoUrl = await _uploadProfilePicture(user.uid, widget.imageFile!);
     }
+
+    final fullName = '${widget.userData['firstName']} ${widget.userData['lastName']}'.trim();
+
     await user.updateProfile(
-      displayName:
-          '${widget.userData['firstName']} ${widget.userData['lastName']}',
+      displayName: fullName,
       photoURL: photoUrl,
     );
 
@@ -353,8 +355,8 @@ class _OtpScreenState extends State<OtpScreen> with CodeAutoFill {
       ...widget.userData,
       'uid': user.uid,
       'displayId': displayId,
-      'displayName':
-          '${widget.userData['firstName']} ${widget.userData['lastName']}',
+      'name': fullName, // Standardized field for dashboards
+      'displayName': fullName,
       'photoUrl': photoUrl,
       'createdAt': FieldValue.serverTimestamp(),
       'isOnline': false,
@@ -391,10 +393,12 @@ class _OtpScreenState extends State<OtpScreen> with CodeAutoFill {
   }
 
   Future<void> _createFleetOperator(User user) async {
-    await user.updateProfile(displayName: widget.userData['companyName']);
+    final companyName = widget.userData['companyName'];
+    await user.updateProfile(displayName: companyName);
     await _firestore.collection('fleet_operators').doc(user.uid).set({
       ...widget.userData,
       'uid': user.uid,
+      'name': companyName, // Added for consistency
       'createdAt': FieldValue.serverTimestamp(),
     });
   }

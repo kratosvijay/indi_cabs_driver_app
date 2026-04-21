@@ -57,9 +57,16 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   final Rxn<Map<String, dynamic>> goToDestination = Rxn<Map<String, dynamic>>();
   final RxString selectedLanguageCode = 'en'.obs;
   final RxBool isLoading = true.obs;
+  final RxString driverId = ''.obs;
   final Rxn<LatLng> currentPosition = Rxn<LatLng>();
   final RxDouble sheetExtent = 0.1.obs;
   final RxSet<Polygon> polygons = <Polygon>{}.obs;
+
+  // Driver Profile State
+  final RxString driverVehicleClass = ''.obs;
+  final RxString driverVehicleType = ''.obs;
+  final RxString driverName = ''.obs;
+  final RxString driverRole = ''.obs;
 
   // Ride Request State
   // CHANGED: List of requests instead of single request
@@ -84,6 +91,8 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   final Map<String, DateTime> _ignoredRides = {};
   final Set<String> _processingRideIds = <String>{};
   final Set<String> _recentlyClearedRideIds = <String>{}; // Fixed: One-last-time bug
+  SharedPreferences? _prefs;
+  final RxSet<String> _ignoredPersistentRides = <String>{}.obs;
 
   // Subscriptions and Timers
   StreamSubscription? rideRequestSubscription;
@@ -207,7 +216,32 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
   Future<void> _loadAndInitialize() async {
     await _loadDocId();
+    
+    // Fetch initial driver profile for matching logic
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('drivers')
+          .doc(_driverDocId ?? user.uid)
+          .get();
+      if (doc.exists) {
+        final data = doc.data();
+        driverVehicleClass.value = data?['vehicleClass'] ?? '';
+        driverVehicleType.value = data?['vehicleType'] ?? '';
+        driverName.value = data?['displayName'] ?? data?['name'] ?? '';
+        driverRole.value = data?['role'] ?? '';
+        debugPrint("HomePageController: Profile loaded. Class: ${driverVehicleClass.value}, Role: ${driverRole.value}");
+      }
+    } catch (e) {
+      debugPrint("HomePageController: Error loading driver profile: $e");
+    }
+
     _init(); // Existing map init
+    
+    // Pre-load SharedPreferences
+    _prefs = await SharedPreferences.getInstance();
+    final ignoredList = _prefs?.getStringList('ignored_rides') ?? [];
+    _ignoredPersistentRides.assignAll(ignoredList);
+    debugPrint("HomePageController: Pre-loaded ${_ignoredPersistentRides.length} ignored rides.");
 
     // Listen for Polygon Updates from QueueService
     ever(QueueService().airportPolygon, (List<LatLng> points) {
@@ -607,6 +641,15 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
   Future<void> handleStatusChange(DriverStatus status) async {
     debugPrint("handleStatusChange called with status: $status");
 
+    // Persist status locally for faster restoration on next app start
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('lastDriverStatus', status.name);
+      debugPrint("Status persisted locally: ${status.name}");
+    } catch (e) {
+      debugPrint("Error persisting status: $e");
+    }
+
     // Blocked and Off-road Checks
     if (status == DriverStatus.online) {
       // 1. Blocked Status Check
@@ -824,7 +867,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         final callable = FirebaseFunctions.instanceFor(region: 'asia-south1')
             .httpsCallable('setDriverStatus');
         final result = await callable.call({
-          'isOnline': status == DriverStatus.online,
+          'isOnline': status == DriverStatus.online || status == DriverStatus.goTo,
           if (correctedVehicleType != null) 'vehicleType': correctedVehicleType,
         });
         debugPrint("Cloud Function setDriverStatus success: ${result.data}");
@@ -833,7 +876,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         // Fallback to direct Firestore write
         try {
           final Map<String, dynamic> updateData = {
-            'isOnline': status == DriverStatus.online,
+            'isOnline': status == DriverStatus.online || status == DriverStatus.goTo,
             'goToDestination': null,
           };
           if (status == DriverStatus.online) {
@@ -1083,12 +1126,11 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     debugPrint("DEBUG: Driver doc exists. Setting up query...");
     debugPrint("DEBUG: Querying ride_requests WHERE driverUid == '${user.uid}' AND status == 'searching'");
 
-    // 2. Listener for Assigned Rides (Direct Assignments)
-    // Query by driverUid (auth UID) + status. The security rule checks driverUid,
-    // so Firestore can prove the rule is satisfied for all query results.
+    // 2. Listener for All Searching Rides (Unassigned Area Broadcast)
+    // Since automated assignment logic was removed from the backend, drivers must 
+    // listen to all locally searching rides and filter by distance.
     Query query = FirebaseFirestore.instance
         .collection('ride_requests')
-        .where('driverUid', isEqualTo: user.uid)
         .where('status', isEqualTo: 'searching')
         .orderBy('createdAt', descending: true);
 
@@ -1103,53 +1145,137 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
     rideRequestSubscription = query.snapshots().listen(
       (snapshot) async {
+        debugPrint("DEBUG: Received ride_requests snapshot with ${snapshot.docs.length} docs");
         _lastSnapshot = snapshot; // Cache it
         _processSnapshot(snapshot);
       },
       onError: (e) {
-        debugPrint("Error listening for rides: $e");
-        if (e.toString().contains('failed-precondition')) {
+        debugPrint("CRITICAL: Error listening for rides: $e");
+        if (e.toString().contains('failed-precondition') || e.toString().contains('index')) {
           Get.snackbar(
-            "Config Error",
-            "Missing Database Index. Check logs for link.",
-            duration: const Duration(seconds: 10),
+            "Database Index Missing",
+            "Broadcasting query requires a new index. Please deploy firestore.indexes.json via Firebase CLI or check logs for the auto-generation link.",
+            duration: const Duration(seconds: 15),
             backgroundColor: Colors.red,
             colorText: Colors.white,
+            snackPosition: SnackPosition.TOP,
           );
+          debugPrint("INDEX ERROR: To fix this, open the following link OR run 'firebase deploy --only firestore:indexes':");
+          debugPrint(e.toString());
         }
       },
     );
   }
 
-  Future<void> _processSnapshot(QuerySnapshot snapshot) async {
-    debugPrint("Assigned Rides Snapshot: ${snapshot.docs.length} docs");
+  int _getVehicleClassRank(String? className) {
+    if (className == null) return 0;
+    switch (className.toLowerCase()) {
+      case 'suv':
+        return 3;
+      case 'sedan':
+        return 2;
+      case 'hatchback':
+      case 'mini':
+        return 1;
+      default:
+        return 0;
+    }
+  }
 
-    // Load persisted ignored rides
-    final prefs = await SharedPreferences.getInstance();
-    final ignoredList = prefs.getStringList('ignored_rides') ?? [];
-    final ignoredSet = ignoredList.toSet();
+  bool _isCar(String? className) {
+    if (className == null) return false;
+    final normalized = className.toLowerCase();
+    return normalized == 'suv' || normalized == 'sedan' || normalized == 'hatchback' || normalized == 'mini';
+  }
+
+  Future<void> _processSnapshot(QuerySnapshot snapshot) async {
+    debugPrint("----------------------------------------------------------------");
+    debugPrint("PROD [${DateTime.now().toIso8601String()}]: Processing Ride Snapshot - ${snapshot.docs.length} total ride(s)");
 
     for (var doc in snapshot.docs) {
+      final data = doc.data() as Map<String, dynamic>?;
+
       // 1. Instant check against recently cleared rides
       if (_recentlyClearedRideIds.contains(doc.id)) {
+        debugPrint("Ride ${doc.id} SKIPPED: Recently cleared");
         continue;
       }
 
       // 2. Instant check against persisted ignored rides (survives Get.offAll)
-      if (ignoredSet.contains(doc.id)) {
+      if (_ignoredPersistentRides.contains(doc.id)) {
+        debugPrint("Ride ${doc.id} SKIPPED: Persisted in ignored list");
         continue;
       }
 
-      final data = doc.data() as Map<String, dynamic>?;
-
-      // Client-side vehicle type check
-      final vType = data?['vehicleType'] ?? data?['vehicleClass'] ?? 'Unknown';
-      if (!isActingDriver && vType == 'ActingDriver') {
-        debugPrint(
-          "Ignored ActingDriver request ${doc.id} as this is a Regular Driver",
-        );
+      if (currentPosition.value == null) {
+        debugPrint("Skipping ride check (Driver Location is NULL)");
         continue;
       }
+
+      // Geo Filter (Radius Check) - e.g. 50km
+      final pickupReq = data?['pickupLocation'];
+      double? reqLat;
+      double? reqLng;
+
+      if (pickupReq is GeoPoint) {
+        reqLat = pickupReq.latitude;
+        reqLng = pickupReq.longitude;
+      } else if (pickupReq is Map) {
+        reqLat = (pickupReq['lat'] as num?)?.toDouble() ??
+            (pickupReq['latitude'] as num?)?.toDouble();
+        reqLng = (pickupReq['lng'] as num?)?.toDouble() ??
+            (pickupReq['longitude'] as num?)?.toDouble();
+      }
+
+      if (reqLat != null && reqLng != null) {
+        double dist = Geolocator.distanceBetween(
+              currentPosition.value!.latitude,
+              currentPosition.value!.longitude,
+              reqLat,
+              reqLng,
+            ) /
+            1000; // in km
+
+        if (dist > 50) {
+          debugPrint("Ride ${doc.id} SKIPPED: Too far (${dist.toStringAsFixed(1)}km > 50km)");
+          continue;
+        }
+      }
+
+      // Client-side matching logic
+      final rideVehicleClass = data?['vehicleClass'];
+      final rideVehicleType = data?['vehicleType'];
+
+      if (!isActingDriver) {
+        // Regular drivers shouldn't see Acting Driver rides
+        if (rideVehicleType == 'ActingDriver' || rideVehicleClass == 'ActingDriver') {
+          debugPrint("Ride ${doc.id} SKIPPED: ActingDriver filter");
+          continue;
+        }
+
+        // Tier-based matching logic for Cars:
+        // A driver can see any ride of their class OR any LOWER class (e.g. Sedan sees Hatchback).
+        if (driverVehicleClass.isNotEmpty && rideVehicleClass != null) {
+          final int driverRank = _getVehicleClassRank(driverVehicleClass.value);
+          final int rideRank = _getVehicleClassRank(rideVehicleClass);
+
+          // Only apply rank-based matching if both are Cars
+          if (_isCar(driverVehicleClass.value) && _isCar(rideVehicleClass)) {
+            if (driverRank < rideRank) {
+              debugPrint("Ride ${doc.id} SKIPPED: Insufficient Vehicle Rank (Driver: ${driverVehicleClass.value}[$driverRank], Ride: $rideVehicleClass[$rideRank])");
+              continue;
+            }
+          } else {
+            // Non-car categories (Auto, Bike, etc.) still require exact match to prevent incorrect cross-category matching
+            if (rideVehicleClass != driverVehicleClass.value) {
+              debugPrint("Ride ${doc.id} SKIPPED: Category Mismatch (Driver: ${driverVehicleClass.value}, Ride: $rideVehicleClass)");
+              continue;
+            }
+          }
+        }
+      }
+
+      debugPrint("Ride ${doc.id} MATCH: Processing for local acceptance...");
 
       // If we already have this ride active locally, don't re-process
       if (activeRequests.any((r) => r.rideId == doc.id)) {
@@ -1314,8 +1440,9 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
     rentalRequestSubscription = query.snapshots().listen(
       (snapshot) async {
+        debugPrint("----------------------------------------------------------------");
         debugPrint(
-          "Rental Requests Listener Loop: Found ${snapshot.docs.length} docs.",
+          "PROD [${DateTime.now().toIso8601String()}]: Processing Rental Snapshot - ${snapshot.docs.length} total rental(s)",
         );
 
         if (snapshot.docs.isEmpty) {
@@ -1367,10 +1494,24 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
             debugPrint(
               "Rental ${doc.id} MATCH: Distance is ${dist.toStringAsFixed(1)}km",
             );
-          } else {
-            debugPrint(
-              "Rental ${doc.id} WARNING: Could not parse pickupLocation: $pickupReq",
-            );
+          }
+          // Client-side matching logic
+          final rideVehicleClass = data['vehicleClass'];
+          final rideVehicleType = data['vehicleType'];
+
+          if (!isActingDriver) {
+            // Regular drivers shouldn't see Acting Driver rentals
+            if (rideVehicleType == 'ActingDriver' || rideVehicleClass == 'ActingDriver') {
+              continue;
+            }
+
+            // Broad matching: If driver has a class, only show rides for that class OR rides with no specified class
+            if (driverVehicleClass.isNotEmpty && rideVehicleClass != null) {
+              if (rideVehicleClass != driverVehicleClass.value) {
+                debugPrint("Rental ${doc.id} SKIPPED: Vehicle Class Mismatch (Driver: ${driverVehicleClass.value}, Ride: $rideVehicleClass)");
+                continue;
+              }
+            }
           }
 
           // Process the Rental Request
@@ -1403,7 +1544,19 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         }
       },
       onError: (e) {
-        debugPrint("Error listening for rentals: $e");
+        debugPrint("CRITICAL: Error listening for rentals: $e");
+        if (e.toString().contains('failed-precondition') || e.toString().contains('index')) {
+          Get.snackbar(
+            "Rental Index Missing",
+            "Broadcast rental query requires a new index in indicabs-prod. Please deploy firestore.indexes.json.",
+            duration: const Duration(seconds: 15),
+            backgroundColor: Colors.red,
+            colorText: Colors.white,
+            snackPosition: SnackPosition.TOP,
+          );
+          debugPrint("INDEX ERROR (RENTAL): To fix this, open the following link OR run 'firebase deploy --only firestore:indexes -P prod':");
+          debugPrint(e.toString());
+        }
       },
     );
   }
@@ -1459,65 +1612,78 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
     // Calculate distances
     debugPrint("Calculating route details...");
-    Map<String, dynamic>? driverRouteDetails;
+    double driverDist = 0.0;
+    double rideDist = (data['rideDistance'] ?? data['totalDistance'] ?? data['distance'] ?? 0.0).toDouble();
 
-    // Check if we have a valid current position before calculating driver route
+    // 1. Optimized Driver-to-Pickup Distance
+    // We use straight-line distance initially to prevent UI delay, or await if data is missing
     if (currentPosition.value != null) {
-      driverRouteDetails = await getRouteDetails(
-        currentPosition.value!,
-        pickupLocation,
-      );
-    } else {
-      debugPrint(
-        "Warning: Skipping driver route calculation (Current position null)",
-      );
+      if (data.containsKey('driverDistance') && data['driverDistance'] != null) {
+        driverDist = (data['driverDistance'] as num).toDouble();
+      } else {
+        // Use fast Haversine distance for instant response
+        driverDist = Geolocator.distanceBetween(
+          currentPosition.value!.latitude,
+          currentPosition.value!.longitude,
+          pickupLocation.latitude,
+          pickupLocation.longitude,
+        ) / 1000;
+        
+        // Optionally update with road distance asynchronously (not blocking)
+        getRouteDetails(currentPosition.value!, pickupLocation).then((details) {
+          if (details != null && details['distance'] != null) {
+            final double roadDist = (details['distance'] as num).toDouble();
+            final existing = activeRequests.firstWhereOrNull((r) => r.rideId == doc.id);
+            if (existing != null) {
+              final idx = activeRequests.indexOf(existing);
+              activeRequests[idx] = existing.copyWith(driverDistance: roadDist);
+              activeRequests.refresh();
+            }
+          }
+        });
+      }
     }
 
-    Map<String, dynamic>? rideRouteDetails;
-    // Only calculate ride route if we actually had a distinct destination provided
-    if (destinationLocation != null) {
-      rideRouteDetails = await getRouteDetails(
+    // 2. Optimized Ride Distance (Pickup to Dropoff)
+    // Only calculate if not provided by User app
+    if (rideDist == 0 && destinationLocation != null) {
+      final rideRouteDetails = await getRouteDetails(
         pickupLocation,
         finalDestination,
       );
-    }
-
-    // Use defaults if route calculation fails
-    // Use defaults if route calculation fails
-    // Use defaults if route calculation fails
-    final driverDist = driverRouteDetails?['distance'] ?? 0.0;
-    // final driverDuration = driverRouteDetails?['duration'] ?? 0.0; // Unused
-    final rideDist = rideRouteDetails?['distance'] ?? 0.0;
-
-    if (driverRouteDetails == null) {
-      debugPrint("Warning: Driver route details failed. Using defaults.");
+      rideDist = (rideRouteDetails?['distance'] ?? 0.0).toDouble();
     }
 
     debugPrint(
-      "Route Details Fetched. DriverDist: $driverDist, RideDist: $rideDist",
+      "Route Details Prepared. DriverDist: $driverDist, RideDist: $rideDist",
     );
 
-    final pickupDetails = await getParsedAddressFromLatLng(pickupLocation);
-    Map<String, String> dropoffDetails = {
-      'area': 'Rental',
-      'fullAddress': 'Package Ride',
-    };
-    if (destinationLocation != null) {
-      dropoffDetails = await getParsedAddressFromLatLng(finalDestination);
+    final String? dataPickup = data['pickupAddress'];
+    final String? dataDropoff = data['destinationAddress'] ?? data['dropoffAddress'];
+
+    String pickupFull = dataPickup ?? 'Unknown Location';
+    String pickupTitle = data['pickupPlaceName'] ?? 
+                        data['pickupTitle'] ?? 
+                        (dataPickup != null ? RideRequest.extractTitle(dataPickup) : 'Unknown Area');
+
+    String dropoffFull = dataDropoff ?? (destinationLocation != null ? 'Dropoff Location' : 'Package Ride');
+    String dropoffTitle = data['destinationPlaceName'] ?? 
+                         data['dropoffPlaceName'] ?? 
+                         data['dropoffTitle'] ??
+                         (dataDropoff != null ? RideRequest.extractTitle(dataDropoff) : (destinationLocation != null ? 'Dropoff' : 'Rental'));
+
+    // Only geocode IF addresses are missing from Firestore
+    if (dataPickup == null) {
+      final pickupDetails = await getParsedAddressFromLatLng(pickupLocation);
+      pickupFull = pickupDetails['fullAddress'] ?? pickupFull;
+      pickupTitle = pickupDetails['area'] ?? pickupTitle;
     }
 
-    final String pickupFull =
-        data['pickupAddress'] ?? pickupDetails['fullAddress'] ?? 'Unknown Location';
-    // Extract simple title from full address if needed, or use formatted area
-    final String pickupTitle = data['pickupAddress'] != null
-        ? RideRequest.extractTitle(data['pickupAddress'])
-        : (pickupDetails['area'] ?? 'Unknown Area');
-
-    final String dropoffFull =
-        data['destinationAddress'] ?? dropoffDetails['fullAddress']!;
-    final String dropoffTitle = data['destinationAddress'] != null
-        ? RideRequest.extractTitle(data['destinationAddress'])
-        : dropoffDetails['area']!;
+    if (dataDropoff == null && destinationLocation != null) {
+      final dropoffDetails = await getParsedAddressFromLatLng(finalDestination);
+      dropoffFull = dropoffDetails['fullAddress'] ?? dropoffFull;
+      dropoffTitle = dropoffDetails['area'] ?? dropoffTitle;
+    }
 
     // Extract common fields
     final rideId = doc.id;
@@ -2112,9 +2278,9 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         });
       });
 
-      // 2. Set Driver Status to Busy/Offline locally
-      driverStatus.value = DriverStatus.goTo;
-      handleStatusChange(DriverStatus.goTo);
+      // 2. Set Driver Status to Online locally (so they return to duty after ride)
+      driverStatus.value = DriverStatus.online;
+      handleStatusChange(DriverStatus.online);
 
       // Preserve ONLY the accepted ride so we don't re-process it
       activeRequests.removeWhere((r) => r.rideId != rideId);
@@ -2142,7 +2308,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
             // This driver already accepted it — navigate to ride screen
             debugPrint("Accept: Ride already accepted by this driver. Navigating...");
             OverlayService.instance.clearRideQueue();
-            handleStatusChange(DriverStatus.goTo);
+            handleStatusChange(DriverStatus.online);
             _isAcceptingRide = false;
             isRideAcceptanceInProgress.value = false;
             Get.offAll(() => RideAcceptedScreen(rideRequest: request));
@@ -2168,12 +2334,15 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
   void ignoreRide(String rideId) {
     _ignoredRides[rideId] = DateTime.now();
+    activeRequests.removeWhere((r) => r.rideId == rideId);
     _persistIgnoredRide(rideId);
   }
 
   Future<void> _persistIgnoredRide(String rideId) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = _prefs ?? await SharedPreferences.getInstance();
+      _prefs ??= prefs;
+
       List<String> ignoredList = prefs.getStringList('ignored_rides') ?? [];
       if (!ignoredList.contains(rideId)) {
         ignoredList.add(rideId);
@@ -2182,6 +2351,8 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
           ignoredList = ignoredList.sublist(ignoredList.length - 50);
         }
         await prefs.setStringList('ignored_rides', ignoredList);
+        _ignoredPersistentRides.assignAll(ignoredList);
+        debugPrint("HomePageController: Persisted ignored ride $rideId. Total: ${ignoredList.length}");
       }
     } catch (e) {
       debugPrint("Error persisting ignored ride: $e");
@@ -2195,11 +2366,15 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
   Future<void> _removePersistedIgnoredRide(String rideId) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = _prefs ?? await SharedPreferences.getInstance();
+      _prefs ??= prefs;
+
       List<String> ignoredList = prefs.getStringList('ignored_rides') ?? [];
       if (ignoredList.contains(rideId)) {
         ignoredList.remove(rideId);
         await prefs.setStringList('ignored_rides', ignoredList);
+        _ignoredPersistentRides.assignAll(ignoredList);
+        debugPrint("HomePageController: Removed $rideId from persisted ignored list.");
       }
     } catch (e) {
       debugPrint("Error removing persisted ignored ride: $e");

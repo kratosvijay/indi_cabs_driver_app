@@ -452,12 +452,17 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
   }
 
   Future<void> _finishRide(double driverProvidedRating) async {
+    // Ensure WalletController is available for GST deduction
+    if (!Get.isRegistered<WalletController>()) {
+      Get.put(WalletController());
+    }
+    final WalletController walletController = WalletController.instance;
+
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
       // 1. Capture Data Locally (Safety against widget disposal)
       final localTotalAmount = widget.totalAmount;
       final localRideId = _rideRequest.rideId;
-      final localRideFare = _rideRequest.rideFare;
       final localRideDistance = _rideRequest.rideDistance;
       final localRideType = _rideRequest.rideType;
       final localWaitingCharge = _rideRequest.waitingCharge;
@@ -493,15 +498,21 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
       // GST Deduction (5% of Total Fare)
       try {
         final gstAmount = double.parse((localTotalAmount * 0.05).toStringAsFixed(2));
+        debugPrint("[GST] Ride ID: $localRideId, Total Amount: $localTotalAmount, Calculated GST: $gstAmount");
+        
         if (gstAmount > 0) {
-          await WalletController.instance.debitWallet(
+          // Use the localized controller instance
+          await walletController.debitWallet(
             gstAmount,
             "gst_$localRideId",
             description: "5% GST Deduction: $localRideId",
           );
+          debugPrint("[GST] Successfully triggered debit for $gstAmount");
+        } else {
+          debugPrint("[GST] Skipping deduction - Amount is 0");
         }
       } catch (e) {
-        debugPrint("Failed to deduct GST: $e");
+        debugPrint("[GST] Failed to deduct GST: $e");
       }
 
       if (amountToCredit > 0) {
@@ -522,10 +533,11 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                   'amount': localTotalAmount,
                   'createdAt': FieldValue.serverTimestamp(),
                   'details': {
-                    'baseFare': localRideFare,
+                    'baseFare': (localTotalAmount - localWaitingCharge - widget.tollCharge),
                     'distance': localRideDistance,
                     'rideType': localRideType,
                     'waitingCharge': localWaitingCharge,
+                    'tollCharge': widget.tollCharge,
                   },
                   'driverId': localUserId,
                   'rideId': localRideId,
@@ -670,53 +682,65 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                 padding: const EdgeInsets.all(16.0),
                                 child: Column(
                                   children: [
-                                    // Breakdown (Only if waiting charge exists)
-                                    if (_rideRequest.waitingCharge > 0) ...[
-                                      Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.spaceBetween,
+                                    // Breakdown (Informational)
+                                    Builder(builder: (context) {
+                                      // Logic: totalAmount = Base/Package + Extras + Waiting + Tolls
+                                      // We want to show the components separately.
+                                      
+                                      final isRental = _rideRequest.rideType == 'rental';
+                                      final double baseFare = isRental 
+                                          ? (_rideRequest.rideFare) // Package Price
+                                          : (widget.totalAmount - _rideRequest.waitingCharge - widget.tollCharge);
+                                      
+                                      return Column(
                                         children: [
-                                          Text(
-                                            'estimatedBill'.tr,
-                                            style: TextStyle(
-                                              fontSize: 16,
-                                              color: Theme.of(context).brightness == Brightness.dark ? Colors.grey[400] : Colors.grey[600],
-                                            ),
+                                          Row(
+                                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                            children: [
+                                              Text(
+                                                isRental ? '${'packageBaseFare'.tr} (${_rideRequest.packageName})' : 'rideFare'.tr,
+                                                style: TextStyle(
+                                                  fontSize: 16,
+                                                  color: Theme.of(context).brightness == Brightness.dark ? Colors.grey[400] : Colors.grey[600],
+                                                ),
+                                              ),
+                                              Text(
+                                                '₹${baseFare.toStringAsFixed(2)}',
+                                                style: TextStyle(
+                                                  fontSize: 16,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Theme.of(context).textTheme.bodyLarge?.color,
+                                                ),
+                                              ),
+                                            ],
                                           ),
-                                          Text(
-                                            '₹${(widget.totalAmount - _rideRequest.waitingCharge).toStringAsFixed(2)}',
-                                            style: TextStyle(
-                                              fontSize: 16,
-                                              fontWeight: FontWeight.bold,
-                                              color: Theme.of(context).textTheme.bodyLarge?.color,
+                                          if (_rideRequest.waitingCharge > 0) ...[
+                                            const SizedBox(height: 8),
+                                            Row(
+                                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                              children: [
+                                                Text(
+                                                  'waitingCharges'.tr,
+                                                  style: TextStyle(
+                                                    fontSize: 16,
+                                                    color: Theme.of(context).brightness == Brightness.dark ? Colors.grey[400] : Colors.grey[600],
+                                                  ),
+                                                ),
+                                                Text(
+                                                  '+ ₹${_rideRequest.waitingCharge.toStringAsFixed(2)}',
+                                                  style: const TextStyle(
+                                                    fontSize: 16,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: Colors.redAccent,
+                                                  ),
+                                                ),
+                                              ],
                                             ),
-                                          ),
+                                          ],
+                                          const Divider(height: 20),
                                         ],
-                                      ),
-                                      const SizedBox(height: 8),
-                                      Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.spaceBetween,
-                                        children: [
-                                          Text(
-                                            'waitingCharges'.tr,
-                                            style: TextStyle(
-                                              fontSize: 16,
-                                              color: Theme.of(context).brightness == Brightness.dark ? Colors.grey[400] : Colors.grey[600],
-                                            ),
-                                          ),
-                                          Text(
-                                            '+ ₹${_rideRequest.waitingCharge.toStringAsFixed(2)}',
-                                            style: const TextStyle(
-                                              fontSize: 16,
-                                              fontWeight: FontWeight.bold,
-                                              color: Colors.redAccent,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      const Divider(height: 20),
-                                    ],
+                                      );
+                                    }),
 
                                     // Toll Information (if applicable)
                                     if (widget.tollCharge > 0) ...[
@@ -848,75 +872,69 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                                 children: [
                                                   Text(
                                                     '${'baseFare'.tr} (${_rideRequest.packageName})',
-                                                    style: TextStyle(
-                                                      fontSize: 16,
-                                                      color: Theme.of(context).brightness == Brightness.dark ? Colors.grey[400] : Colors.grey[600],
+                                                    style: const TextStyle(
+                                                      fontSize: 0, // Hidden here because we show it in the top breakdown now
+                                                      color: Colors.transparent,
                                                     ),
                                                   ),
-                                                  Text(
-                                                    '₹${_rideRequest.rideFare.toStringAsFixed(2)}',
-                                                    style: TextStyle(
-                                                      fontSize: 16,
-                                                      fontWeight: FontWeight.bold,
-                                                      color: Theme.of(context).textTheme.bodyLarge?.color,
-                                                    ),
-                                                  ),
+                                                  const SizedBox.shrink(),
                                                 ],
                                               ),
-                                              const SizedBox(height: 8),
-                                              if (extraDistance > 0) ...[
-                                                Row(
-                                                  mainAxisAlignment:
-                                                      MainAxisAlignment
-                                                          .spaceBetween,
-                                                  children: [
-                                                    Text(
-                                                      '${'extraDistance'.tr} (${extraDistance.toStringAsFixed(1)} km)',
-                                                      style: TextStyle(
-                                                        fontSize: 16,
-                                                        color: Theme.of(context).brightness == Brightness.dark ? Colors.grey[400] : Colors.grey[600],
+                                              if (extraDistance > 0 || extraDuration > 0) ...[
+                                                const Divider(height: 20),
+                                                if (extraDistance > 0) ...[
+                                                  Row(
+                                                    mainAxisAlignment:
+                                                        MainAxisAlignment
+                                                            .spaceBetween,
+                                                    children: [
+                                                      Text(
+                                                        '${'extraDistance'.tr} (${extraDistance.toStringAsFixed(1)} km)',
+                                                        style: TextStyle(
+                                                          fontSize: 16,
+                                                          color: Theme.of(context).brightness == Brightness.dark ? Colors.grey[400] : Colors.grey[600],
+                                                        ),
                                                       ),
-                                                    ),
-                                                    Text(
-                                                      '+ ₹${extraDistanceCost.toStringAsFixed(2)}',
-                                                      style: const TextStyle(
-                                                        fontSize: 16,
-                                                        fontWeight:
-                                                            FontWeight.bold,
-                                                        color: Colors.redAccent,
+                                                      Text(
+                                                        '+ ₹${extraDistanceCost.toStringAsFixed(2)}',
+                                                        style: const TextStyle(
+                                                          fontSize: 16,
+                                                          fontWeight:
+                                                              FontWeight.bold,
+                                                          color: Colors.redAccent,
+                                                        ),
                                                       ),
-                                                    ),
-                                                  ],
-                                                ),
-                                                const SizedBox(height: 8),
+                                                    ],
+                                                  ),
+                                                  const SizedBox(height: 8),
+                                                ],
+                                                if (extraDuration > 0) ...[
+                                                  Row(
+                                                    mainAxisAlignment:
+                                                        MainAxisAlignment
+                                                            .spaceBetween,
+                                                    children: [
+                                                      Text(
+                                                        '${'extraTime'.tr} (${extraDuration.toStringAsFixed(0)} ${'mins'.tr})',
+                                                        style: TextStyle(
+                                                          fontSize: 16,
+                                                          color: Theme.of(context).brightness == Brightness.dark ? Colors.grey[400] : Colors.grey[600],
+                                                        ),
+                                                      ),
+                                                      Text(
+                                                        '+ ₹${extraDurationCost.toStringAsFixed(2)}',
+                                                        style: const TextStyle(
+                                                          fontSize: 16,
+                                                          fontWeight:
+                                                              FontWeight.bold,
+                                                          color: Colors.redAccent,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ],
                                               ],
-                                              if (extraDuration > 0) ...[
-                                                Row(
-                                                  mainAxisAlignment:
-                                                      MainAxisAlignment
-                                                          .spaceBetween,
-                                                  children: [
-                                                    Text(
-                                                      '${'extraTime'.tr} (${extraDuration.toStringAsFixed(0)} ${'mins'.tr})',
-                                                      style: TextStyle(
-                                                        fontSize: 16,
-                                                        color: Theme.of(context).brightness == Brightness.dark ? Colors.grey[400] : Colors.grey[600],
-                                                      ),
-                                                    ),
-                                                    Text(
-                                                      '+ ₹${extraDurationCost.toStringAsFixed(2)}',
-                                                      style: const TextStyle(
-                                                        fontSize: 16,
-                                                        fontWeight:
-                                                            FontWeight.bold,
-                                                        color: Colors.redAccent,
-                                                      ),
-                                                    ),
-                                                  ],
-                                                ),
-                                                const SizedBox(height: 8),
-                                              ],
-                                              const Divider(height: 20),
+                                              const Divider(height: 24),
                                             ],
                                           );
                                         },

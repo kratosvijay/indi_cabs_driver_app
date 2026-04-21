@@ -115,18 +115,29 @@ class _RideEndOtpScreenState extends State<RideEndOtpScreen> {
         actualDuration: actualDuration,
       );
 
-      // Update destination if driver location is available (optional local update, usually backend handles it or we do it here)
+      // Update Firestore with final status and data
+      final Map<String, dynamic> updateData = {
+        'status': 'completed',
+        'rideFare': totalFare, // For rentals, this includes package price + extras
+        'baseFare': totalFare,
+        'actualDistance': actualDistanceKm,
+        'actualDuration': actualDuration,
+        'completedAt': FieldValue.serverTimestamp(),
+      };
+
       if (widget.driverLocation != null) {
-        await FirebaseFirestore.instance
-            .collection(collectionPath)
-            .doc(widget.rideRequest.rideId)
-            .update({
-              'destinationLocation': GeoPoint(
-                widget.driverLocation!.latitude,
-                widget.driverLocation!.longitude,
-              ),
-            });
+        updateData['destinationLocation'] = GeoPoint(
+          widget.driverLocation!.latitude,
+          widget.driverLocation!.longitude,
+        );
       }
+
+      await FirebaseFirestore.instance
+          .collection(collectionPath)
+          .doc(widget.rideRequest.rideId)
+          .update(updateData);
+
+      debugPrint("Rental Ride ${widget.rideRequest.rideId} marked as COMPLETED in Firestore");
 
       if (mounted) {
         Get.off(
