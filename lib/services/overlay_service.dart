@@ -30,6 +30,7 @@ class OverlayService {
   final Queue<Map<String, dynamic>> _rideQueue = Queue();
   ReceivePort? _overlayActionPort;
   bool _requestShowing = false;
+  bool _isInBubbleMode = true;
   Timer? _stopServiceTimer;
 
   void _registerOverlayActionPort() {
@@ -74,8 +75,9 @@ class OverlayService {
     final controller = _controllerOrNull;
 
     if (action == 'REJECT') {
+      // Fire passRide in the background so the queue pops immediately
       if (controller != null && rideId != null && rideId.isNotEmpty) {
-        await controller.passRide(rideId);
+        unawaited(controller.passRide(rideId));
       }
       await onRideRejected();
       return;
@@ -116,35 +118,32 @@ class OverlayService {
   Future<void> showFloatingBubble() async {
     _cancelStopService();
 
-    // If overlay is already active, just resize and update it
     if (await _isOverlayActive()) {
-      log("OverlayService: Overlay active. Switching to Bubble Mode.");
-
-      // 1. Send Data First (so UI knows to switch)
-      await FlutterOverlayWindow.shareData({
-        "type": "SHOW_BUBBLE",
-        "overlayWidth": 80,
-        "overlayHeight": 80,
-      });
-
-      // 2. Resize
-      await _resizeOverlay(80, 80, enableDrag: true);
-
-
-      _requestShowing = false;
-      return;
+      if (_isInBubbleMode) {
+        // Already in bubble mode — just refresh state without repositioning
+        log("OverlayService: Already in bubble mode. Refreshing.");
+        await FlutterOverlayWindow.shareData({
+          "type": "SHOW_BUBBLE",
+          "overlayWidth": 80,
+          "overlayHeight": 80,
+        });
+        await _resizeOverlay(80, 80, enableDrag: true);
+        _requestShowing = false;
+        return;
+      }
+      // Transitioning from request → bubble: close first to reset window position
+      log("OverlayService: Closing request overlay to reopen bubble at correct position.");
+      try {
+        await FlutterOverlayWindow.closeOverlay();
+      } catch (_) {}
+      await Future.delayed(const Duration(milliseconds: 100));
     }
 
-    // Cold Start
-    // DELAY FIX: Wait for previous overlay close/service stop interactions to settle
-    await Future.delayed(const Duration(milliseconds: 500));
+    _isInBubbleMode = true;
 
-    // Permission check
+    // Cold Start (or fresh after close)
     if (!await ensurePermission()) return;
 
-    // Ensure the foreground service config and service itself are running.
-    // In release builds the config may not have been applied yet if the driver
-    // went online in a previous app session that was killed by the OS.
     await _initForegroundTask();
     await _ensureForegroundService(
       title: "Indi Cabs Online",
@@ -161,7 +160,7 @@ class OverlayService {
         positionGravity: PositionGravity.auto,
       );
 
-      log("OverlayService: Bubble overlay created (Cold Start).");
+      log("OverlayService: Bubble overlay created.");
       _requestShowing = false;
 
       await Future.delayed(const Duration(milliseconds: 100));
@@ -172,7 +171,6 @@ class OverlayService {
       });
     } catch (e) {
       debugPrint("CRITICAL: Failed to show bubble overlay: $e");
-
     }
   }
 
@@ -217,31 +215,34 @@ class OverlayService {
     _requestShowing = true;
     final requestSize = _requestOverlaySizeDp();
 
-    // If overlay is already active, just resize and update it
     if (await _isOverlayActive()) {
-      log("OverlayService: Overlay active. Switching to Request Mode.");
-
-      // 1. Push Data
-      await FlutterOverlayWindow.shareData({
-        "type": "SHOW_REQUEST",
-        "ride": _rideQueue.first,
-        "overlayWidth": requestSize.width.round(),
-        "overlayHeight": requestSize.height.round(),
-      });
-
-      // 2. Resize
-      await _resizeOverlay(
-        requestSize.width.round(),
-        requestSize.height.round(),
-        enableDrag: false,
-      );
-
-
-      return;
+      if (!_isInBubbleMode) {
+        // Already in request mode — cycle to next card without repositioning
+        log("OverlayService: Cycling to next request in place.");
+        await FlutterOverlayWindow.shareData({
+          "type": "SHOW_REQUEST",
+          "ride": _rideQueue.first,
+          "overlayWidth": requestSize.width.round(),
+          "overlayHeight": requestSize.height.round(),
+        });
+        await _resizeOverlay(
+          requestSize.width.round(),
+          requestSize.height.round(),
+          enableDrag: false,
+        );
+        return;
+      }
+      // Transitioning from bubble → request: close first to reset window position
+      log("OverlayService: Closing bubble to reopen request at top-center.");
+      try {
+        await FlutterOverlayWindow.closeOverlay();
+      } catch (_) {}
+      await Future.delayed(const Duration(milliseconds: 80));
     }
 
-    // Cold Start — always (re-)init config before starting the service so that
-    // release builds (where lazy init may have been skipped) work correctly.
+    _isInBubbleMode = false;
+
+    // Always (re-)init config before starting the service so release builds work correctly.
     await _initForegroundTask();
     await _ensureForegroundService(
       title: "New Ride Request",
@@ -254,17 +255,16 @@ class OverlayService {
         height: requestSize.height.round(),
         width: requestSize.width.round(),
         enableDrag: false,
-        alignment: OverlayAlignment.center,
+        alignment: OverlayAlignment.topCenter,
         flag: OverlayFlag.defaultFlag,
       );
-      log("OverlayService: Request overlay created (Cold Start).");
+      log("OverlayService: Request overlay created at top-center.");
 
       await Future.delayed(const Duration(milliseconds: 120));
 
       await _pushCurrentRequest();
     } catch (e) {
       debugPrint("CRITICAL: Failed to show request overlay: $e");
-
     }
   }
 

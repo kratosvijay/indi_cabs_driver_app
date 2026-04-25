@@ -2196,31 +2196,43 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     _activeRideSubscriptions.clear();
 
     // --- Subscription Auto-Activation Check ---
+    // Activates a free 1-day trial only when driver accepts a ride with no active plan.
+    // Uses _driverDocId (professional ID) so drivers with indi-drv-X docs are read correctly.
     try {
+      final docId = _driverDocId ?? user.uid;
       final driverDoc = await FirebaseFirestore.instance
           .collection('drivers')
-          .doc(user.uid)
+          .doc(docId)
           .get();
       DateTime? expiry;
-      if (driverDoc.exists &&
-          driverDoc.data()!.containsKey('subscriptionExpiry')) {
-        final val = driverDoc.data()!['subscriptionExpiry'];
-        if (val is Timestamp) expiry = val.toDate();
+      String? queuedPlan;
+      if (driverDoc.exists) {
+        final data = driverDoc.data()!;
+        if (data.containsKey('subscriptionExpiry')) {
+          final val = data['subscriptionExpiry'];
+          if (val is Timestamp) expiry = val.toDate();
+        }
+        queuedPlan = data['queuedPlanName'] as String?;
       }
 
-      if (expiry == null || expiry.isBefore(DateTime.now())) {
-        // Only trigger if no active plan for > 5 minutes to avoid race conditions during acceptance
-        if (expiry == null ||
-            expiry.add(const Duration(minutes: 5)).isBefore(DateTime.now())) {
-          debugPrint("No active plan found. Attemping silent auto-activation.");
+      final bool hasActivePlan = expiry != null && expiry.isAfter(DateTime.now());
+      final bool hasQueuedPlan = queuedPlan != null && queuedPlan.isNotEmpty;
+
+      // Only auto-activate if no active plan AND no plan already queued.
+      // This prevents the free trial from being stacked on top of paid queued plans.
+      if (!hasActivePlan && !hasQueuedPlan) {
+        debugPrint("[Sub] No active plan and no queued plan. Auto-activating free trial on ride acceptance.");
+        if (Get.isRegistered<WalletController>()) {
           await Get.find<WalletController>().activateFreeTrialPlan(
             "1 Day Auto (Trial)",
             1,
           );
         }
+      } else {
+        debugPrint("[Sub] Skipping auto-activation. hasActivePlan=$hasActivePlan, hasQueuedPlan=$hasQueuedPlan");
       }
     } catch (e) {
-      debugPrint("Subscription Check Error: $e");
+      debugPrint("[Sub] Subscription Check Error: $e");
     }
 
     try {

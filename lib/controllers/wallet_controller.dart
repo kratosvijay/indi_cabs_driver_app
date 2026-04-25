@@ -45,7 +45,7 @@ class WalletTransaction {
   }
 }
 
-class WalletController extends GetxController {
+class WalletController extends GetxController with WidgetsBindingObserver {
   static WalletController get instance => Get.find();
 
   final _db = FirebaseFirestore.instance;
@@ -54,6 +54,9 @@ class WalletController extends GetxController {
   RxDouble balance = 0.0.obs;
   RxList<WalletTransaction> transactions = <WalletTransaction>[].obs;
   RxBool isLoading = false.obs;
+
+  // Tracks when Cashfree was opened so we can detect a dismiss on app resume.
+  DateTime? _cashfreeOpenedAt;
   
   final List<StreamSubscription> _subscriptions = [];
   final Map<String, String> _lastKnownStatuses = {};
@@ -89,6 +92,7 @@ class WalletController extends GetxController {
   @override
   void onInit() {
     super.onInit();
+    WidgetsBinding.instance.addObserver(this);
     // Delay heavy data fetching until after the first frame
     // This allows the screen transition animation to run smoothly
     WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -100,16 +104,48 @@ class WalletController extends GetxController {
     _initCashfree();
   }
 
+  /// Called when the app returns to foreground (e.g. after Cashfree is dismissed).
+  /// The Cashfree web checkout does not always fire [onError] when the user simply
+  /// closes the sheet, so we detect the resume here and clean up loading state.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed &&
+        _pendingSubscription != null &&
+        isLoading.value) {
+      // Give the SDK ~1 second to fire its callback naturally before we intervene.
+      // Also ensure Cashfree was actually opened (not just any foreground event).
+      Future.delayed(const Duration(seconds: 1), () {
+        final opened = _cashfreeOpenedAt;
+        final cashfreeWasOpened = opened != null &&
+            DateTime.now().difference(opened).inSeconds >= 1;
+        if (_pendingSubscription != null && isLoading.value && cashfreeWasOpened) {
+          debugPrint("[Cashfree] App resumed with pending payment — treating as cancelled.");
+          _pendingSubscription = null;
+          _cashfreeOpenedAt = null;
+          isLoading.value = false;
+          Get.defaultDialog(
+            title: "Transaction Cancelled",
+            middleText: "Payment was cancelled. Please try again.",
+            textConfirm: "OK",
+            confirmTextColor: Colors.white,
+            onConfirm: () => Get.back(),
+          );
+        }
+      });
+    }
+  }
+
   void _initCashfree() {
     _cashfree.setCallback(verifyPayment, onError);
   }
 
   void verifyPayment(String orderId) {
     debugPrint("Cashfree Payment Success for Order: $orderId");
+    _cashfreeOpenedAt = null;
     try {
       if (_pendingSubscription != null) {
         _finalizeSubscriptionPurchase(
-          orderId, // Use orderId as reference
+          orderId,
           _pendingSubscription!,
         );
         _pendingSubscription = null;
@@ -121,6 +157,8 @@ class WalletController extends GetxController {
 
   void onError(CFErrorResponse error, String orderId) {
     debugPrint("Cashfree Payment Error: ${error.getMessage()}");
+    _cashfreeOpenedAt = null;
+    isLoading.value = false;
     if (_pendingSubscription != null) {
       _pendingSubscription = null;
       Get.defaultDialog(
@@ -133,11 +171,11 @@ class WalletController extends GetxController {
     } else {
       Get.snackbar("Error", "Payment Failed: ${error.getMessage()}");
     }
-    isLoading.value = false;
   }
 
   @override
   void onClose() {
+    WidgetsBinding.instance.removeObserver(this);
     for (var sub in _subscriptions) {
       sub.cancel();
     }
@@ -905,22 +943,20 @@ class WalletController extends GetxController {
         }
 
         if (hasActivePlan) {
-          final existingQueue = driverDoc.data()?['queuedPlanName'];
-          if (existingQueue != null && existingQueue != "") {
-             throw Exception("You already have a plan ($existingQueue) queued. Please wait for it to activate.");
-          }
-          // Queue the trial plan
-          transaction.set(driverRef, {
-            'queuedPlanName': planName,
-            'queuedPlanDurationDays': durationDays,
-          }, SetOptions(merge: true));
-          debugPrint("Trial Plan Queued: $planName");
+          // Free trial should never be queued on top of an active plan.
+          // Queuing is reserved for user-purchased paid plans only.
+          debugPrint("Trial Plan skipped - driver already has an active plan.");
+          return;
         } else {
-          // Activate immediately
+          // Activate immediately and clear any stale queuedPlanName that may have
+          // accumulated from previous bugs, which could cause the subscription page
+          // to auto-promote the trial without user action.
           final newExpiry = currentExpiry.add(Duration(days: durationDays));
           transaction.set(driverRef, {
             'subscriptionExpiry': Timestamp.fromDate(newExpiry),
             'subscriptionPlan': planName,
+            'queuedPlanName': FieldValue.delete(),
+            'queuedPlanDurationDays': FieldValue.delete(),
           }, SetOptions(merge: true));
           debugPrint("Trial Plan Activated Immediately: $planName");
         }
@@ -1078,12 +1114,15 @@ class WalletController extends GetxController {
             .setSession(session)
             .build();
 
+        _cashfreeOpenedAt = DateTime.now();
         _cashfree.doPayment(cfWebCheckoutPayment);
+        // isLoading stays true until verifyPayment / onError / didChangeAppLifecycleState resets it.
       } else {
         throw Exception("Failed to create Cashfree order");
       }
     } catch (e) {
       _pendingSubscription = null;
+      _cashfreeOpenedAt = null;
       isLoading.value = false;
       String errorMsg = e.toString();
       if (e is FirebaseFunctionsException) {

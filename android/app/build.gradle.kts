@@ -18,7 +18,8 @@ android {
 
     namespace = "com.example.project_taxi_driver_app"
     compileSdk = 36
-    ndkVersion = flutter.ndkVersion
+    buildToolsVersion = "36.0.0"
+    // ndkVersion is omitted to allow Gradle to select the appropriate default for SDK 36
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11

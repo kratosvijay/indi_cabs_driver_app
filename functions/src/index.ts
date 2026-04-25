@@ -1021,36 +1021,36 @@ export const calculateDynamicPricing = onCall({ region: "asia-south1" }, async (
         }
 
         // --- SURGE / PEAK LOGIC (Matched with User App) ---
+        // Peak rate is locked to BOOKING TIME (createdAt) so that:
+        //   - A ride booked during peak hours always pays peak rate regardless of when it ends.
+        //   - A ride booked during off-peak hours always pays off-peak rate regardless of when it ends.
         let surgeMultiplier = 1.0;
+
+        // Use createdAt (booking time) as the reference for all time-based charges.
+        // Fall back to startedAt then now only if createdAt is missing.
+        const bookingRefTime = rideData.createdAt
+            ? rideData.createdAt.toDate()
+            : (rideData.startedAt ? rideData.startedAt.toDate() : new Date());
+
+        const istFormatter = new Intl.DateTimeFormat("en-US", {
+            timeZone: "Asia/Kolkata",
+            hour: "2-digit",
+            hour12: false,
+            weekday: "short",
+        });
+        const parts = istFormatter.formatToParts(bookingRefTime);
+        let currentHour = 0;
+        let currentDayString = "";
+        for (const part of parts) {
+            if (part.type === "hour") currentHour = parseInt(part.value) % 24;
+            if (part.type === "weekday") currentDayString = part.value;
+        }
 
         // 1. Check DB Override
         if (pricingRules.isSurgeActive && pricingRules.surgeMultiplier) {
             surgeMultiplier = pricingRules.surgeMultiplier;
         } else {
-            // 2. Time-based Logic (User App Fallback)
-            // Use current time for "End Ride" calculation? 
-            // OR should we use `startedAt`? User App uses `now` in estimate (obviously).
-            // For final billing, we should probably use the time the ride took place.
-            // Let's use `startedAt` if available, else `createdAt`, else `now`.
-            const refTime = rideData.startedAt ? rideData.startedAt.toDate() : (rideData.createdAt ? rideData.createdAt.toDate() : new Date());
-
-            // Format to IST (User App uses logic based on Chennai/Kolkata time)
-            // We can just use getHours() if the server is in correct timezone OR adjust.
-            // Cloud Functions run in UTC usually. User App code did:
-            const istFormatter = new Intl.DateTimeFormat("en-US", {
-                timeZone: "Asia/Kolkata",
-                hour: "2-digit",
-                hour12: false,
-                weekday: "short",
-            });
-            const parts = istFormatter.formatToParts(refTime);
-            let currentHour = 0;
-            let currentDayString = "";
-            for (const part of parts) {
-                if (part.type === "hour") currentHour = parseInt(part.value) % 24;
-                if (part.type === "weekday") currentDayString = part.value;
-            }
-
+            // 2. Time-based Logic using booking time
             const isWeekend = currentDayString === "Sat" || currentDayString === "Sun";
 
             if (isWeekend) {
@@ -1062,24 +1062,9 @@ export const calculateDynamicPricing = onCall({ region: "asia-south1" }, async (
             }
         }
 
-        // --- NIGHT CHARGE (User App logic) ---
-        // User App uses `now` (at estimation time). We use `refTime`.
-        // Logic: 10PM to 6AM
-        // We need `currentHour` from above.
+        // --- NIGHT CHARGE (based on booking time, same rationale as peak) ---
         let nightCharge = 0.0;
-        // Re-calculate currentHour if needed, but we have it properly scoped if we structure right.
-        // Let's assume we pulled the IST logic up or duplicate it slightly for safety.
-        // (Copying logic for scope safety)
-        const refTimeForNight = rideData.startedAt ? rideData.startedAt.toDate() : new Date();
-        const istFormatterN = new Intl.DateTimeFormat("en-US", {
-            timeZone: "Asia/Kolkata",
-            hour: "2-digit",
-            hour12: false,
-        });
-        const hourPart = istFormatterN.formatToParts(refTimeForNight).find(p => p.type === 'hour');
-        const currentHourN = hourPart ? (parseInt(hourPart.value) % 24) : 0;
-
-        if (currentHourN >= 22 || currentHourN < 6) {
+        if (currentHour >= 22 || currentHour < 6) {
             nightCharge = 30.0;
         }
 
@@ -1252,55 +1237,59 @@ export const calculateDynamicPricing = onCall({ region: "asia-south1" }, async (
         let finalFare = Math.round(calculatedFare);
 
 
-        // --- LOGIC: WHEN TO UPDATE? ---
-        // The User App logic calculates the *expected* fare.
-        // We want to update the *actual* fare based on *actual* distance/time.
-        // Always update? Or only if tolerance exceeded?
-        // User complained about "Discrepancy".
-        // If we strictly follow the formula, we should result in the correct amount.
-        // The discrepancy likely came from the OLD Driver App logic being too simple (ignoring tiers, night, etc).
-        // So we should ALWAYS use this calculated value as the new truth, 
-        // PROVIDED it meets the "Recalculation" criteria (distance difference).
-
-        // HOWEVER, "Locked Fare" is a strong concept. 
-        // If the user agreed to ₹300, and we calculate ₹305 because of 1 minute traffic, user gets mad.
-        // So stick to Tolerance Logic:
-        // If (Distance_Actual ~= Distance_Est) -> Keep Locked Fare (+ Waiting).
-        // If (Distance_Actual >> Distance_Est) -> Use New Calculated Fare.
-
+        // distanceDiff > 0  → driver travelled more than estimated (detour / wrong route)
+        // distanceDiff < 0  → driver took a shortcut
         const distanceDiff = actualDistanceKm - estimatedDistanceKm;
         let priceUpdated = false;
         let reason = "Fare matched estimate";
 
-        const isPeak = surgeMultiplier > 1.0; // Derived for update
+        const isPeak = surgeMultiplier > 1.0;
 
-        if (distanceDiff <= 1.5 && distanceDiff >= -5.0) {
-            // Within tolerance: Use original estimate + waiting charge + geofence surcharge
-            finalFare = parseFloat(rideData.rideFare || finalFare); // Use Locked, ensure number
-            finalFare += providedWaitingCharge;
-            finalFare += geofenceSurcharge;
+        // Tolerance window: actual distance is within ±1.5 km above or 5 km below estimate.
+        // WITHIN tolerance  → driver took the correct route → apply dynamic pricing at booking-time rates.
+        // OUTSIDE tolerance → driver deviated significantly → protect the customer by using the
+        //                     original fare they were quoted (read from Firestore rideFare).
+        const withinTolerance = distanceDiff <= 1.5 && distanceDiff >= -5.0;
 
-            // Toll handling for daily rides within tolerance:
-            // - If toll was crossed: use actual calculated toll amount
-            // - If toll was NOT crossed but was charged by user app: deduct it
+        if (withinTolerance) {
+            // Dynamic pricing at booking-time rates (already fully calculated as finalFare above).
+            // geofenceSurcharge is already included in finalFare via calculatedFare — do NOT add again.
+
+            // Toll handling:
+            // - If toll was crossed: the toll amount is already included in calculatedFare above.
+            // - If toll was NOT crossed but was charged by user app: deduct it.
             if (actualTollCrossed && totalTollAmount > 0) {
-                // Toll crossed - use actual calculated amount (may differ from user app estimate)
-                finalFare += totalTollAmount;
-                console.log(`[Within Tolerance] Toll crossed: Adding ₹${totalTollAmount} charge`);
+                console.log(`[Within Tolerance] Toll crossed: ₹${totalTollAmount} already in fare`);
             } else if (!actualTollCrossed && rideData.tollPrice) {
-                // Toll NOT crossed but was charged - DEDUCT it
                 finalFare -= rideData.tollPrice;
-                console.log(`[Within Tolerance] Toll NOT crossed: Deducting ₹${rideData.tollPrice} from bill`);
+                console.log(`[Within Tolerance] Toll NOT crossed: Deducting ₹${rideData.tollPrice}`);
                 priceUpdated = true;
-                reason = `Distance within tolerance, but toll deducted (not crossed). Base: ${rideData.rideFare}`;
+                reason = `Fare recalculated at booking-time rates; toll deducted (not crossed).`;
+            }
+
+            priceUpdated = true;
+            if (!reason || reason === "Fare matched estimate") {
+                reason = `Fare recalculated at booking-time rates (${isPeak ? "peak" : "off-peak"}).`;
             }
 
         } else {
-            // Outside tolerance: Use recalculated fare
-            priceUpdated = true;
-            reason = "Distance/Route changed - Recalculated";
-            // finalFare is already calculated above using comprehensive User App logic
-            // Toll is already included in totalTollAmount calculation above
+            // Outside tolerance: driver took a significantly different route.
+            // Use the original Firestore fare to protect the customer from paying for driver detours.
+            finalFare = parseFloat(rideData.rideFare || finalFare);
+            finalFare += providedWaitingCharge;
+            finalFare += geofenceSurcharge;
+
+            if (actualTollCrossed && totalTollAmount > 0) {
+                finalFare += totalTollAmount;
+                console.log(`[Outside Tolerance] Toll crossed: Adding ₹${totalTollAmount}`);
+            } else if (!actualTollCrossed && rideData.tollPrice) {
+                finalFare -= rideData.tollPrice;
+                console.log(`[Outside Tolerance] Toll NOT crossed: Deducting ₹${rideData.tollPrice}`);
+            }
+
+            priceUpdated = false;
+            reason = `Route deviated (diff: ${distanceDiff.toFixed(2)} km). Using original quoted fare.`;
+            console.log(`[Outside Tolerance] Using original fare: ${rideData.rideFare}`);
         }
 
 

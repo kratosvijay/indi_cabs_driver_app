@@ -277,7 +277,7 @@ class _OverlayRootState extends State<OverlayRoot> {
           alignment: Alignment.topCenter,
           child: SafeArea(
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 48, 12, 8),
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
               child: ConstrainedBox(
                 constraints: BoxConstraints(
                   maxWidth: math.min(560, constraints.maxWidth),
