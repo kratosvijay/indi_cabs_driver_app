@@ -228,7 +228,7 @@ class OverlayService {
         await _resizeOverlay(
           requestSize.width.round(),
           requestSize.height.round(),
-          enableDrag: false,
+          enableDrag: true,
         );
         return;
       }
@@ -254,11 +254,11 @@ class OverlayService {
       await FlutterOverlayWindow.showOverlay(
         height: requestSize.height.round(),
         width: requestSize.width.round(),
-        enableDrag: false,
-        alignment: OverlayAlignment.topCenter,
+        enableDrag: true,
+        alignment: OverlayAlignment.center,
         flag: OverlayFlag.defaultFlag,
       );
-      log("OverlayService: Request overlay created at top-center.");
+      log("OverlayService: Request overlay created at center.");
 
       await Future.delayed(const Duration(milliseconds: 120));
 
@@ -274,7 +274,7 @@ class OverlayService {
     await _resizeOverlay(
       requestSize.width.round(),
       requestSize.height.round(),
-      enableDrag: false,
+      enableDrag: true,
     );
     await FlutterOverlayWindow.shareData({
       "type": "SHOW_REQUEST",

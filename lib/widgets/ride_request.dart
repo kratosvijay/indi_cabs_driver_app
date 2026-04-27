@@ -59,6 +59,7 @@ class RideRequest {
   final DateTime? startedAt;
   final DateTime? createdAt; // Added for distributed timer logic
   final double? actualDistance;
+  final double? accumulatedDistanceMeters;
   final double? actualDuration;
 
   final double waitingCharge;
@@ -107,6 +108,7 @@ class RideRequest {
     this.startedAt,
     this.createdAt,
     this.actualDistance,
+    this.accumulatedDistanceMeters,
     this.actualDuration,
     this.waitingCharge = 0.0,
     this.paidByWallet,
@@ -147,6 +149,7 @@ class RideRequest {
     DateTime? startedAt,
     DateTime? createdAt,
     double? actualDistance,
+    double? accumulatedDistanceMeters,
     double? actualDuration,
     double? waitingCharge,
     double? paidByWallet,
@@ -186,6 +189,8 @@ class RideRequest {
       startedAt: startedAt ?? this.startedAt,
       createdAt: createdAt ?? this.createdAt,
       actualDistance: actualDistance ?? this.actualDistance,
+      accumulatedDistanceMeters:
+          accumulatedDistanceMeters ?? this.accumulatedDistanceMeters,
       actualDuration: actualDuration ?? this.actualDuration,
       waitingCharge: waitingCharge ?? this.waitingCharge,
       paidByWallet: paidByWallet ?? this.paidByWallet,
@@ -233,6 +238,7 @@ class RideRequest {
       'startedAt': startedAt != null ? Timestamp.fromDate(startedAt!) : null,
       'createdAt': createdAt != null ? Timestamp.fromDate(createdAt!) : null,
       'actualDistance': actualDistance,
+      'accumulatedDistanceMeters': accumulatedDistanceMeters,
       'actualDuration': actualDuration,
       'waitingCharge': waitingCharge,
       'paidByWallet': paidByWallet,
@@ -307,7 +313,8 @@ class RideRequest {
           json['dropoffAddress'] ??
           '',
       pickupPlaceName: json['pickupPlaceName'], // **NEW**
-      dropoffPlaceName: json['destinationPlaceName'] ?? json['dropoffPlaceName'], // **NEW**
+      dropoffPlaceName:
+          json['destinationPlaceName'] ?? json['dropoffPlaceName'], // **NEW**
       driverDistance: (json['driverDistance'] as num?)?.toDouble() ?? 0.0,
       rideDistance: (json['rideDistance'] as num?)?.toDouble() ?? 0.0,
       rideFare:
@@ -367,6 +374,8 @@ class RideRequest {
                 : null)
           : null,
       actualDistance: (json['actualDistance'] as num?)?.toDouble(),
+      accumulatedDistanceMeters: (json['accumulatedDistanceMeters'] as num?)
+          ?.toDouble(),
       actualDuration: (json['actualDuration'] as num?)?.toDouble(),
       waitingCharge: (json['waitingCharge'] as num?)?.toDouble() ?? 0.0,
       paidByWallet: (json['paidByWallet'] as num?)?.toDouble(),
@@ -620,11 +629,13 @@ class _RideRequestCardState extends State<RideRequestCard> {
                     ? _buildShimmerRow()
                     : Builder(
                         builder: (context) {
-                          final pendingStop = widget.rideRequest.stops
+                          final pendingStop =
+                              widget.rideRequest.stops
                                   .where((s) => s.isPending)
                                   .isNotEmpty
-                              ? widget.rideRequest.stops
-                                  .firstWhere((s) => s.isPending)
+                              ? widget.rideRequest.stops.firstWhere(
+                                  (s) => s.isPending,
+                                )
                               : null;
 
                           String title = "";
@@ -634,10 +645,12 @@ class _RideRequestCardState extends State<RideRequestCard> {
                             title = pendingStop.title;
                             address = pendingStop.fullAddress;
                           } else {
-                            title = _translatedDropoffTitle ??
+                            title =
+                                _translatedDropoffTitle ??
                                 widget.rideRequest.dropoffPlaceName ??
                                 widget.rideRequest.dropoffTitle;
-                            address = _translatedDropoffAddress ??
+                            address =
+                                _translatedDropoffAddress ??
                                 widget.rideRequest.dropoffFullAddress;
                           }
 

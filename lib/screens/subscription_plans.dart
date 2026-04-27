@@ -119,7 +119,11 @@ class _SubscriptionPlansScreenState extends State<SubscriptionPlansScreen> {
                       ),
                       child: Column(
                         children: [
-                          const Icon(Icons.stars, color: Colors.white, size: 40),
+                          const Icon(
+                            Icons.stars,
+                            color: Colors.white,
+                            size: 40,
+                          ),
                           const SizedBox(height: 10),
                           Text(
                             "unlimitedRidesBanner".tr,
@@ -275,24 +279,11 @@ class _SubscriptionPlansScreenState extends State<SubscriptionPlansScreen> {
                                     ),
                                     // Price
                                     Column(
-                                      crossAxisAlignment: CrossAxisAlignment.end,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.end,
                                       children: [
-                                        if (plan.id == '1_day')
-                                          Text(
-                                            "₹${plan.basePrice.toStringAsFixed(0)}",
-                                            style: TextStyle(
-                                              fontSize: 14,
-                                              decoration:
-                                                  TextDecoration.lineThrough,
-                                              color: isDark
-                                                  ? Colors.grey
-                                                  : Colors.grey,
-                                            ),
-                                          ),
                                         Text(
-                                          plan.id == '1_day'
-                                              ? "₹0"
-                                              : "₹${plan.basePrice.toStringAsFixed(0)}",
+                                          "₹${plan.basePrice.toStringAsFixed(0)}",
                                           style: TextStyle(
                                             fontSize: 18,
                                             fontWeight: FontWeight.bold,
@@ -301,15 +292,6 @@ class _SubscriptionPlansScreenState extends State<SubscriptionPlansScreen> {
                                                 : Colors.black87,
                                           ),
                                         ),
-                                        if (plan.id == '1_day')
-                                          Text(
-                                            "freeTrial".tr,
-                                            style: const TextStyle(
-                                              fontSize: 11,
-                                              fontWeight: FontWeight.bold,
-                                              color: Colors.green,
-                                            ),
-                                          ),
                                       ],
                                     ),
                                   ],
@@ -352,7 +334,10 @@ class _SubscriptionPlansScreenState extends State<SubscriptionPlansScreen> {
                           _buildBulletPoint(isDark, "gstNote".tr),
                           _buildBulletPoint(isDark, "unlimitedRidesNote".tr),
                           _buildBulletPoint(isDark, "autoActivateNote".tr),
-                          _buildBulletPoint(isDark, "No refunds are given once a plan is purchased."),
+                          _buildBulletPoint(
+                            isDark,
+                            "No refunds are given once a plan is purchased.",
+                          ),
                         ],
                       ),
                     ),
@@ -379,10 +364,16 @@ class _SubscriptionPlansScreenState extends State<SubscriptionPlansScreen> {
             Container(
               padding: const EdgeInsets.all(24),
               decoration: BoxDecoration(
-                color: isDark ? Colors.blue.shade900.withValues(alpha: 0.2) : Colors.blue.shade50,
+                color: isDark
+                    ? Colors.blue.shade900.withValues(alpha: 0.2)
+                    : Colors.blue.shade50,
                 shape: BoxShape.circle,
               ),
-              child: Icon(Icons.auto_awesome, size: 64, color: Colors.blue.shade400),
+              child: Icon(
+                Icons.auto_awesome,
+                size: 64,
+                color: Colors.blue.shade400,
+              ),
             ),
             const SizedBox(height: 24),
             Text(
@@ -404,10 +395,7 @@ class _SubscriptionPlansScreenState extends State<SubscriptionPlansScreen> {
               ),
             ),
             const SizedBox(height: 32),
-            ProButton(
-              text: "Back to Home",
-              onPressed: () => Get.back(),
-            ),
+            ProButton(text: "Back to Home", onPressed: () => Get.back()),
             const SizedBox(height: 20),
             Text(
               "No refunds are given for purchased plans.",
@@ -456,63 +444,32 @@ class _SubscriptionPlansScreenState extends State<SubscriptionPlansScreen> {
                   ),
                 ),
                 Text(
-                  plan.id == '1_day'
-                      ? "₹${plan.basePrice.toStringAsFixed(2)}"
-                      : "₹${plan.basePrice.toStringAsFixed(2)}",
+                  "₹${plan.basePrice.toStringAsFixed(2)}",
                   style: TextStyle(
                     color: isDark ? Colors.white70 : Colors.black87,
-                    decoration: plan.id == '1_day'
-                        ? TextDecoration.lineThrough
-                        : TextDecoration.none,
                   ),
                 ),
               ],
             ),
-            if (plan.id != '1_day') ...[
-              const SizedBox(height: 4),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    "GST (18%)",
-                    style: TextStyle(
-                      color: isDark ? Colors.grey : Colors.grey.shade600,
-                      fontSize: 14,
-                    ),
+            const SizedBox(height: 4),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  "GST (18%)",
+                  style: TextStyle(
+                    color: isDark ? Colors.grey : Colors.grey.shade600,
+                    fontSize: 14,
                   ),
-                  Text(
-                    "₹${plan.gstAmount.toStringAsFixed(2)}",
-                    style: TextStyle(
-                      color: isDark ? Colors.white70 : Colors.black87,
-                    ),
+                ),
+                Text(
+                  "₹${plan.gstAmount.toStringAsFixed(2)}",
+                  style: TextStyle(
+                    color: isDark ? Colors.white70 : Colors.black87,
                   ),
-                ],
-              ),
-            ],
-            if (plan.id == '1_day') ...[
-              const SizedBox(height: 4),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    "offerPrice".tr,
-                    style: TextStyle(
-                      color: isDark ? Colors.grey : Colors.grey.shade600,
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const Text(
-                    "₹0.00",
-                    style: TextStyle(
-                      color: Colors.green,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                    ),
-                  ),
-                ],
-              ),
-            ],
+                ),
+              ],
+            ),
             const SizedBox(height: 16),
             const Divider(),
             const SizedBox(height: 16),
@@ -533,9 +490,7 @@ class _SubscriptionPlansScreenState extends State<SubscriptionPlansScreen> {
                         ),
                       ),
                       Text(
-                        plan.id == '1_day'
-                            ? "₹0.00"
-                            : "₹${plan.totalPrice.toStringAsFixed(2)}",
+                        "₹${plan.totalPrice.toStringAsFixed(2)}",
                         style: TextStyle(
                           fontSize: 24,
                           fontWeight: FontWeight.bold,
@@ -596,10 +551,9 @@ class _SubscriptionPlansScreenState extends State<SubscriptionPlansScreen> {
     WalletController controller,
     SubscriptionPlan plan,
   ) {
-    final finalPrice = plan.id == '1_day' ? 0.0 : plan.totalPrice;
     controller.initiatePlanPurchase(
-      "${plan.durationDays} Day Plan${plan.id == '1_day' ? ' (Trial)' : ''}",
-      finalPrice,
+      "${plan.durationDays} Day Plan",
+      plan.totalPrice,
       plan.durationDays,
     );
   }

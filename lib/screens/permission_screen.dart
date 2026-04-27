@@ -2,6 +2,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:get/get.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import 'package:project_taxi_driver_app/screens/onboarding.dart'; // Added OnboardingScreen import
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
@@ -23,6 +24,7 @@ class _PermissionScreenState extends State<PermissionScreen>
   bool _locationGranted = false;
   bool _notificationGranted = false;
   bool _overlayGranted = false;
+  bool _batteryGranted = false;
 
   @override
   void initState() {
@@ -61,6 +63,13 @@ class _PermissionScreenState extends State<PermissionScreen>
     if (overlayStatus) {
       setState(() => _overlayGranted = true);
     }
+
+    // Check Battery Optimization
+    bool isIgnoringBattery =
+        await Permission.ignoreBatteryOptimizations.isGranted;
+    if (isIgnoringBattery) {
+      setState(() => _batteryGranted = true);
+    }
   }
 
   Future<void> _requestLocation() async {
@@ -90,7 +99,9 @@ class _PermissionScreenState extends State<PermissionScreen>
       builder: (BuildContext context) {
         final bool isDark = Theme.of(context).brightness == Brightness.dark;
         return AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
           backgroundColor: isDark ? const Color(0xFF2C2C2C) : Colors.white,
           title: Row(
             children: [
@@ -109,7 +120,9 @@ class _PermissionScreenState extends State<PermissionScreen>
               onPressed: () => Navigator.of(context).pop(false),
               child: Text(
                 "Deny",
-                style: TextStyle(color: isDark ? Colors.white60 : Colors.black54),
+                style: TextStyle(
+                  color: isDark ? Colors.white60 : Colors.black54,
+                ),
               ),
             ),
             ElevatedButton(
@@ -178,6 +191,20 @@ class _PermissionScreenState extends State<PermissionScreen>
     debugPrint('Overlay: Request complete, _overlayGranted=$_overlayGranted');
   }
 
+  Future<void> _requestBattery() async {
+    if (_batteryGranted) return;
+
+    try {
+      PermissionStatus status = await Permission.ignoreBatteryOptimizations
+          .request();
+      if (status.isGranted) {
+        if (mounted) setState(() => _batteryGranted = true);
+      }
+    } catch (e) {
+      debugPrint('Error requesting battery permission: $e');
+    }
+  }
+
   Future<void> _requestAllPermissions() async {
     debugPrint('RequestAll: Starting...');
     setState(() => _isLoading = true);
@@ -191,6 +218,9 @@ class _PermissionScreenState extends State<PermissionScreen>
 
       debugPrint('RequestAll: Overlay granted=$_overlayGranted');
       if (!_overlayGranted) await _requestOverlay();
+
+      debugPrint('RequestAll: Battery granted=$_batteryGranted');
+      if (!_batteryGranted) await _requestBattery();
 
       debugPrint('RequestAll: All requests done. Location=$_locationGranted');
       if (_locationGranted) {
@@ -288,6 +318,17 @@ class _PermissionScreenState extends State<PermissionScreen>
                     "Required to show ride requests while using other apps.",
                 isGranted: _overlayGranted,
                 onTap: _requestOverlay,
+              ),
+
+              const SizedBox(height: 20),
+
+              _buildPermissionTile(
+                icon: Icons.battery_charging_full,
+                title: "Battery Optimization",
+                description:
+                    "Disable optimization to keep GPS tracking and notifications active in background.",
+                isGranted: _batteryGranted,
+                onTap: _requestBattery,
               ),
 
               const Spacer(),

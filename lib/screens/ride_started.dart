@@ -21,6 +21,7 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:google_navigation_flutter/google_navigation_flutter.dart'
     as nav; // Keep for data types if needed, or remove if unused in this file.
 import 'package:flutter_polyline_points/flutter_polyline_points.dart';
@@ -68,10 +69,13 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
   int _paidWaitSeconds = 0;
 
   String _fetchedAddress = ''; // Store locally fetched address
+  Timer? _syncTimer;
+  SharedPreferences? _prefs;
 
   @override
   void initState() {
     super.initState();
+    _initDistanceTracking();
     debugPrint(
       "RideStarted Init - Name: ${widget.rideRequest.userName}, Type: ${widget.rideRequest.rideType}, Stops: ${widget.rideRequest.stops.length}",
     );
@@ -91,6 +95,32 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
 
     // Check if we need to resolve address
     _checkAndResolveAddress();
+  }
+
+  Future<void> _initDistanceTracking() async {
+    _prefs = await SharedPreferences.getInstance();
+    final localDistance =
+        _prefs?.getDouble('distance_tracking_${widget.rideRequest.rideId}') ??
+        0.0;
+    final firestoreDistance =
+        widget.rideRequest.accumulatedDistanceMeters ?? 0.0;
+
+    // Use the maximum to ensure we don't lose data
+    _accumulatedDistance = (localDistance > firestoreDistance)
+        ? localDistance
+        : firestoreDistance;
+
+    // Start 5 min sync timer
+    _syncTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
+      if (!mounted) return;
+      _firestore
+          .collection(collectionPath)
+          .doc(widget.rideRequest.rideId)
+          .update({'accumulatedDistanceMeters': _accumulatedDistance})
+          .catchError(
+            (e) => debugPrint("Error syncing distance to Firestore: $e"),
+          );
+    });
   }
 
   Future<void> _checkAndResolveAddress() async {
@@ -544,6 +574,10 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
             // Sanity check: verify reasonable speed to avoid massive jumps?
             // For now, trust Geolocator with high accuracy.
             _accumulatedDistance += dist;
+            _prefs?.setDouble(
+              'distance_tracking_${widget.rideRequest.rideId}',
+              _accumulatedDistance,
+            );
           }
 
           _lastRecordedLocation = newLoc;
@@ -681,6 +715,7 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
     _rideSubscription?.cancel();
     _wakelockTimer?.cancel();
     _waitTimer?.cancel();
+    _syncTimer?.cancel();
     // WakelockPlus.disable(); // Handled globally/by home
     super.dispose();
   }
@@ -1054,10 +1089,14 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
         "Ending Ride. Accumulated Distance: ${_accumulatedDistance}m. Final used km: $actualDistance",
       );
 
+      // Cleanup local SharedPreferences backup
+      _prefs?.remove('distance_tracking_${widget.rideRequest.rideId}');
+      _syncTimer?.cancel();
+
       // Calculate Paid Waiting Charge
       // pickupWait comes from the pickup phase (passed via RideRequest)
       double pickupWait = _rideRequest.waitingCharge;
-      
+
       // stopWait is total seconds beyond the free 3 mins per stop during the trip
       int totalStopWaitMinutes = (_paidWaitSeconds / 60).ceil();
       double stopWait = totalStopWaitMinutes * 3.0; // ₹3 per min
@@ -1073,7 +1112,8 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
           .call({
             'rideId': _rideRequest.rideId,
             'actualDistanceKm': actualDistance,
-            'waitingCharge': 0.0, // Pass 0.0 to ensure Cloud Function only calculates Dynamic Base Fare
+            'waitingCharge':
+                0.0, // Pass 0.0 to ensure Cloud Function only calculates Dynamic Base Fare
             'rideType': rideType,
           });
 
@@ -1096,10 +1136,11 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
           const Duration(seconds: 10),
         );
         resultData = resultFuture.data as Map<String, dynamic>;
-        
+
         // The Cloud Function now returns ONLY the Dynamic Base Fare (since we passed 0.0 waitingCharge)
-        finalFare = (resultData['finalFare'] ?? _rideRequest.rideFare).toDouble();
-        
+        finalFare = (resultData['finalFare'] ?? _rideRequest.rideFare)
+            .toDouble();
+
         priceUpdated = resultData['priceUpdated'] ?? false;
         tollCrossed = resultData['tollCrossed'] ?? false;
         tollZones = resultData['tollZonesCrossed'] ?? [];
@@ -1111,11 +1152,11 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
       } catch (e) {
         // Network error or timeout - use Firestore fare as fallback
         debugPrint("Dynamic Pricing Error (using Firestore fallback): $e");
-        
+
         // If pricing call fails, we take the original estimate and add the total waiting charge manually
         // If pricing call fails, we use the original estimate (base fare)
         finalFare = _rideRequest.rideFare;
-        
+
         Get.snackbar(
           'Network Issue',
           'Using stored price. Toll adjustments will be verified later.',
@@ -1126,9 +1167,13 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
         );
       }
 
-      debugPrint("PRICING_DEBUG: totalWaitCharge=$totalWaitCharge, tollCharge=$tollCharge, baseDynamicFare (finalFare)=$finalFare");
-      debugPrint("PRICING_DEBUG: totalAmountForUser=${finalFare + totalWaitCharge + tollCharge}");
-      
+      debugPrint(
+        "PRICING_DEBUG: totalWaitCharge=$totalWaitCharge, tollCharge=$tollCharge, baseDynamicFare (finalFare)=$finalFare",
+      );
+      debugPrint(
+        "PRICING_DEBUG: totalAmountForUser=${finalFare + totalWaitCharge + tollCharge}",
+      );
+
       final Map<String, dynamic> updateData = {
         'status': 'completed',
         'rideFare': finalFare,

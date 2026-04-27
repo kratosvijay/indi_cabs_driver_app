@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_navigation_flutter/google_navigation_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -273,54 +274,58 @@ class _NavigationScreenState extends State<NavigationScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Stack(
-        children: [
-          if (_navigationSessionInitialized)
-            Padding(
-              padding: const EdgeInsets.only(top: 50),
-              child: GoogleMapsNavigationView(
+      extendBodyBehindAppBar: true,
+      body: AnnotatedRegion<SystemUiOverlayStyle>(
+        value: const SystemUiOverlayStyle(
+          statusBarColor: Colors.transparent,
+          statusBarIconBrightness:
+              Brightness.dark, // Ensures battery/time are visible (dark icons)
+        ),
+        child: Stack(
+          children: [
+            if (_navigationSessionInitialized)
+              GoogleMapsNavigationView(
                 onViewCreated: _onViewCreated,
                 initialNavigationUIEnabledPreference:
                     NavigationUIEnabledPreference.automatic,
+              )
+            else
+              const Center(child: CircularProgressIndicator()),
+
+            // Voice Control Button
+            Positioned(
+              top: 150,
+              right: 20,
+              child: FloatingActionButton(
+                heroTag: 'nav_mute_btn',
+                mini: true,
+                backgroundColor: Colors.white,
+                foregroundColor: Colors.black,
+                onPressed: _toggleMute,
+                child: Icon(_isMuted ? Icons.volume_off : Icons.volume_up),
               ),
-            )
-          else
-            const Center(child: CircularProgressIndicator()),
-
-          // Voice Control Button
-          Positioned(
-            top: 150,
-            right: 20,
-            child: FloatingActionButton(
-              heroTag: 'nav_mute_btn',
-              mini: true,
-              backgroundColor: Colors.white,
-              foregroundColor: Colors.black,
-              onPressed: _toggleMute,
-              child: Icon(_isMuted ? Icons.volume_off : Icons.volume_up),
             ),
-          ),
 
-          // Close button - Merged into the bottom bar area
-          Positioned(
-            bottom:
-                10, // Aligned with the typical height of the native navigation bottom bar
-            right: 20, // Moved to the left side
-            child: Material(
-              color: Colors.red[700],
-              elevation: 6,
-              shape: const CircleBorder(),
-              child: InkWell(
-                customBorder: const CircleBorder(),
-                onTap: () => Get.back(),
-                child: const Padding(
-                  padding: EdgeInsets.all(12),
-                  child: Icon(Icons.close, color: Colors.white, size: 28),
+            // Close button - Merged into the bottom bar area
+            Positioned(
+              bottom: 10,
+              right: 20,
+              child: Material(
+                color: Colors.red[700],
+                elevation: 6,
+                shape: const CircleBorder(),
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: () => Get.back(),
+                  child: const Padding(
+                    padding: EdgeInsets.all(12),
+                    child: Icon(Icons.close, color: Colors.white, size: 28),
+                  ),
                 ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

@@ -1,6 +1,7 @@
 // ignore_for_file: unused_field, prefer_final_fields, unused_local_variable
 
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart' hide Route;
 import 'package:get/get.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -520,25 +521,95 @@ class _DriverHomePageState extends State<DriverHomePage>
       backgroundColor: isDark ? const Color(0xFF1E1E1E) : Colors.white,
       child: Column(
         children: [
-          UserAccountsDrawerHeader(
-            decoration: BoxDecoration(
-              gradient: AppColors.getAppBarGradient(context),
-            ),
-            accountName: Text(
-              widget.user.displayName ?? 'Driver',
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-            ),
-            accountEmail: Text(widget.user.email ?? ''),
-            currentAccountPicture: CircleAvatar(
-              backgroundImage: widget.user.photoURL != null
-                  ? NetworkImage(widget.user.photoURL!)
-                  : null,
-              backgroundColor: Colors.white,
-              child: widget.user.photoURL == null
-                  ? const Icon(Icons.person, size: 40, color: Colors.grey)
-                  : null,
-            ),
-          ),
+          Obx(() {
+            final docId = controller.driverId.value.isNotEmpty
+                ? controller.driverId.value
+                : widget.user.uid;
+            return StreamBuilder<DocumentSnapshot>(
+              stream: FirebaseFirestore.instance
+                  .collection('drivers')
+                  .doc(docId)
+                  .snapshots(),
+              builder: (context, snapshot) {
+                double rating = 5.0;
+                if (snapshot.hasData &&
+                    snapshot.data != null &&
+                    snapshot.data!.exists) {
+                  final data = snapshot.data!.data() as Map<String, dynamic>?;
+                  if (data != null) {
+                    rating = (data['rating'] as num?)?.toDouble() ?? 5.0;
+                  }
+                }
+
+                return Container(
+                  padding: EdgeInsets.only(
+                    top: MediaQuery.of(context).padding.top + 20,
+                    bottom: 20,
+                    left: 16,
+                    right: 16,
+                  ),
+                  decoration: BoxDecoration(
+                    gradient: AppColors.getAppBarGradient(context),
+                  ),
+                  child: Row(
+                    children: [
+                      CircleAvatar(
+                        radius: 28, // Smaller profile picture
+                        backgroundImage: widget.user.photoURL != null
+                            ? NetworkImage(widget.user.photoURL!)
+                            : null,
+                        backgroundColor: Colors.white,
+                        child: widget.user.photoURL == null
+                            ? const Icon(
+                                Icons.person,
+                                size: 28,
+                                color: Colors.grey,
+                              )
+                            : null,
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              widget.user.displayName ?? 'Driver',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 18,
+                                color: Colors.white,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 4),
+                            Row(
+                              children: [
+                                const Icon(
+                                  Icons.star,
+                                  color: Colors.amber,
+                                  size: 16,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  rating.toStringAsFixed(1),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            );
+          }),
           Expanded(
             child: ListView(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -616,23 +687,26 @@ class _DriverHomePageState extends State<DriverHomePage>
                   },
                 ),
                 Obx(() {
-                  final String vClass = controller.driverVehicleClass.value.toLowerCase();
+                  final String vClass = controller.driverVehicleClass.value
+                      .toLowerCase();
                   final String role = controller.driverRole.value.toLowerCase();
-                  
+
                   // Hide for fleet drivers and auto
                   if (role == 'fleet_driver' || vClass == 'auto') {
                     return const SizedBox.shrink();
                   }
-                  
+
                   return _buildMenuItem(
                     icon: Icons.people_outline,
                     title: "Post a Ride",
                     onTap: () {
                       Get.back();
-                      Get.to(() => PostRideScreen(
-                        user: widget.user, 
-                        vehicleClass: controller.driverVehicleClass.value,
-                      ));
+                      Get.to(
+                        () => PostRideScreen(
+                          user: widget.user,
+                          vehicleClass: controller.driverVehicleClass.value,
+                        ),
+                      );
                     },
                   );
                 }),
