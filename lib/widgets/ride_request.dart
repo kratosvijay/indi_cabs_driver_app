@@ -316,13 +316,25 @@ class RideRequest {
       dropoffPlaceName:
           json['destinationPlaceName'] ?? json['dropoffPlaceName'], // **NEW**
       driverDistance: (json['driverDistance'] as num?)?.toDouble() ?? 0.0,
-      rideDistance: (json['rideDistance'] as num?)?.toDouble() ?? 0.0,
+      rideDistance: (json['rideDistance'] as num?)?.toDouble() ??
+          (json['distance'] as num?)?.toDouble() ??
+          (json['totalDistance'] as num?)?.toDouble() ??
+          (json['total_km'] as num?)?.toDouble() ??
+          (json['distance_km'] as num?)?.toDouble() ??
+          (json['estimatedDistance'] as num?)?.toDouble() ??
+          ((json['distance_meters'] as num?)?.toDouble() ??
+                  (json['total_meters'] as num?)?.toDouble() ??
+                  0.0) /
+              1000.0,
       rideFare:
           (json['rideFare'] as num?)?.toDouble() ??
           (json['fare'] as num?)?.toDouble() ??
           0.0,
       tip: (json['tip'] as num?)?.toDouble(),
-      vehicleType: json['vehicleType'] ?? '',
+      vehicleType: json['vehicleType'] ??
+          json['vehicle_type'] ??
+          json['vehicleClass'] ??
+          'Sedan',
       pickupLocation: () {
         final loc = json['pickupLocation'];
         if (loc is GeoPoint) {

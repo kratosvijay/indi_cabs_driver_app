@@ -17,6 +17,12 @@ subprojects {
 }
 subprojects {
     project.evaluationDependsOn(":app")
+    
+    project.configurations.all {
+        resolutionStrategy {
+            force("com.google.android.gms:play-services-ads:23.0.0")
+        }
+    }
 }
 
 tasks.register<Delete>("clean") {

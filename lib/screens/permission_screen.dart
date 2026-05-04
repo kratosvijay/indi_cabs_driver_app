@@ -199,9 +199,26 @@ class _PermissionScreenState extends State<PermissionScreen>
           .request();
       if (status.isGranted) {
         if (mounted) setState(() => _batteryGranted = true);
+      } else if (status.isPermanentlyDenied) {
+        openAppSettings();
+      } else {
+        debugPrint('Battery optimization denied');
+        Get.snackbar(
+          'Optimization Required',
+          'Please disable battery optimization to ensure consistent GPS tracking.',
+          backgroundColor: Colors.orange,
+          colorText: Colors.white,
+          snackPosition: SnackPosition.BOTTOM,
+        );
       }
     } catch (e) {
       debugPrint('Error requesting battery permission: $e');
+      Get.snackbar(
+        'Error',
+        'Could not open battery settings: $e',
+        backgroundColor: Colors.red,
+        colorText: Colors.white,
+      );
     }
   }
 

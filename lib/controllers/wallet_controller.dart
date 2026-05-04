@@ -79,11 +79,17 @@ class WalletController extends GetxController with WidgetsBindingObserver {
   String? _driverDocId;
 
   Future<void> _loadDocId() async {
-    if (_driverDocId != null) return;
     final user = _auth.currentUser;
     if (user != null) {
+      final oldId = _driverDocId;
       _driverDocId = await IdService.getDriverDocId(user.uid);
-      debugPrint("WalletController: Final driverDocId: $_driverDocId");
+      debugPrint("WalletController: Resolved driverDocId: $_driverDocId (Previous: $oldId)");
+      
+      // If we recovered a real ID after having no ID, we MUST re-initialize listeners
+      if (oldId == null && _driverDocId != null) {
+        debugPrint("WalletController: Professional ID discovered. Re-initializing listeners...");
+        fetchWalletData();
+      }
     }
   }
 
@@ -97,6 +103,7 @@ class WalletController extends GetxController with WidgetsBindingObserver {
     // This allows the screen transition animation to run smoothly
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await _loadDocId();
+      debugPrint("WalletController: onInit complete. Driver ID: $_id");
       fetchWalletData();
       // fetchUpiIds(); // Commented out per user request (Cashfree UPI disabled)
       fetchBankAccounts();
@@ -488,14 +495,16 @@ class WalletController extends GetxController with WidgetsBindingObserver {
 
   String get _id => _driverDocId ?? _auth.currentUser?.uid ?? "";
 
-  void fetchWalletData() async {
+  void fetchWalletData() {
+    debugPrint("WalletController: Initializing Fetch for ID: $_id (IsProfessional: ${_driverDocId != null})");
+
+    if (_id.isEmpty) {
+      debugPrint("WalletController: ABORT: Cannot fetch wallet data, ID is empty");
+      return;
+    }
+
     final user = _auth.currentUser;
     if (user == null) return;
-
-    // Ensure we have the correct ID before starting any listeners
-    if (_driverDocId == null) {
-      await _loadDocId();
-    }
 
     // Cancel existing listeners to prevent duplicates
     for (var sub in _subscriptions) {

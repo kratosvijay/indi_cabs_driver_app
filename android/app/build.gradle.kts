@@ -10,6 +10,7 @@ plugins {
 }
 
 
+
 configurations.all {
     exclude(group = "com.google.android.gms", module = "play-services-maps")
 }
@@ -22,13 +23,13 @@ android {
     // ndkVersion is omitted to allow Gradle to select the appropriate default for SDK 36
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
         isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_11.toString()
+        jvmTarget = JavaVersion.VERSION_17.toString()
     }
 
     defaultConfig {

@@ -148,7 +148,7 @@ class Ride {
       time: data['actualDuration'] != null
           ? '${parseDouble(data['actualDuration']).toStringAsFixed(0)} min'
           : '0 min',
-      earnings: parseDouble(data['rideFare']) + parseDouble(data['tip']),
+      earnings: parseDouble(data['totalFare'] ?? (parseDouble(data['rideFare']) + parseDouble(data['tip']))),
       timestamp: timestamp,
       pickupLocation: pickup,
       dropoffLocation: dropoff,

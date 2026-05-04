@@ -232,6 +232,8 @@ class ProAppBar extends StatelessWidget implements PreferredSizeWidget {
 
   @override
   Widget build(BuildContext context) {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+
     return AppBar(
       title:
           title ??
@@ -246,7 +248,7 @@ class ProAppBar extends StatelessWidget implements PreferredSizeWidget {
       backgroundColor: backgroundColor ?? Colors.transparent,
       elevation: 0,
       toolbarHeight: toolbarHeight,
-      flexibleSpace: backgroundColor == Colors.transparent
+      flexibleSpace: (backgroundColor != null && backgroundColor != Colors.transparent)
           ? null
           : Container(
               decoration: BoxDecoration(
@@ -257,6 +259,15 @@ class ProAppBar extends StatelessWidget implements PreferredSizeWidget {
       automaticallyImplyLeading: automaticallyImplyLeading,
       actions: actions,
       bottom: bottom,
+      systemOverlayStyle: SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.light, // Always light icons on top of dark gradient
+        statusBarBrightness: Brightness.dark,
+        systemNavigationBarColor: Colors.transparent,
+        systemNavigationBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
+        systemNavigationBarContrastEnforced: false,
+        systemStatusBarContrastEnforced: false,
+      ),
       iconTheme: const IconThemeData(color: Colors.white),
     );
   }

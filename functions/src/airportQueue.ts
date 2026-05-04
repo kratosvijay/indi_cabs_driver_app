@@ -3,7 +3,10 @@ import { onDocumentUpdated, onDocumentCreated, onDocumentDeleted } from "firebas
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import { getFirestore } from "firebase-admin/firestore";
-import { getDriverDocId } from "./index";
+import { getDatabase } from "firebase-admin/database";
+import { getDriverDocId, calculateDistance } from "./index";
+
+const AIRPORT_CENTER = { lat: 12.994112, lng: 80.170866 }; // Chennai Airport (MAA)
 
 // ------------------------------------------------------------------
 // 1. Invalid Driver Prevention (Remove from queue if offline/on_trip)
@@ -141,6 +144,23 @@ export const assignAirportRide = async (airportId: string, rideId: string, rideD
         const driverDoc = await db.collection("drivers").doc(dId).get();
         if (!driverDoc.exists) continue;
         const dData = driverDoc.data()!;
+
+        // 1. DISTANCE CHECK: Verify driver is still near the airport (max 4km)
+        const rtdb = getDatabase();
+        const locSnap = await rtdb.ref(`driver_locations/${dId}`).once('value');
+        const locData = locSnap.val();
+
+        if (locData) {
+            const dist = calculateDistance(AIRPORT_CENTER.lat, AIRPORT_CENTER.lng, locData.lat, locData.lng);
+            if (dist > 4.0) {
+                console.log(`[Queue] Driver ${dId} is too far from airport (${dist.toFixed(2)}km). Skipping.`);
+                continue;
+            }
+            console.log(`[Queue] Driver ${dId} is at ${dist.toFixed(2)}km from airport. Proceeding.`);
+        } else {
+            console.warn(`[Queue] No location data found for driver ${dId}. Skipping.`);
+            continue;
+        }
 
         // STRICT FIFO CHECKS
         if (qData.status === "queued" && qData.lockedForRide !== true && dData.status === "online" && !dData.isBusy) {

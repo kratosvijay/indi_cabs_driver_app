@@ -26,6 +26,11 @@ class _NavigationScreenState extends State<NavigationScreen> {
   @override
   void initState() {
     super.initState();
+    // Force status bar and navigation bar to be visible
+    SystemChrome.setEnabledSystemUIMode(
+      SystemUiMode.manual,
+      overlays: SystemUiOverlay.values,
+    );
     _loadSettings();
     _initNavigation();
     WakelockPlus.enable();
@@ -188,6 +193,12 @@ class _NavigationScreenState extends State<NavigationScreen> {
   }
 
   void _onViewCreated(GoogleNavigationViewController controller) {
+    // Reinforce status bar visibility
+    SystemChrome.setEnabledSystemUIMode(
+      SystemUiMode.manual,
+      overlays: SystemUiOverlay.values,
+    );
+
     // Explicitly enable UI elements
     controller.setNavigationUIEnabled(true);
     controller.setMyLocationEnabled(true);
@@ -274,44 +285,57 @@ class _NavigationScreenState extends State<NavigationScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.black,
       extendBodyBehindAppBar: true,
-      body: AnnotatedRegion<SystemUiOverlayStyle>(
-        value: const SystemUiOverlayStyle(
+      appBar: AppBar(
+        toolbarHeight: 0,
+        elevation: 0,
+        backgroundColor: Colors.transparent,
+        systemOverlayStyle: const SystemUiOverlayStyle(
           statusBarColor: Colors.transparent,
-          statusBarIconBrightness:
-              Brightness.dark, // Ensures battery/time are visible (dark icons)
+          statusBarIconBrightness: Brightness.light, // White icons for dark map
+          statusBarBrightness: Brightness.dark,
         ),
-        child: Stack(
-          children: [
-            if (_navigationSessionInitialized)
-              GoogleMapsNavigationView(
-                onViewCreated: _onViewCreated,
-                initialNavigationUIEnabledPreference:
-                    NavigationUIEnabledPreference.automatic,
-              )
-            else
-              const Center(child: CircularProgressIndicator()),
+      ),
+      body: Stack(
+        children: [
+          // Map stays full screen
+          if (_navigationSessionInitialized)
+            GoogleMapsNavigationView(
+              onViewCreated: _onViewCreated,
+              initialNavigationUIEnabledPreference:
+                  NavigationUIEnabledPreference.automatic,
+              initialPadding: EdgeInsets.only(
+                top: MediaQuery.of(context).padding.top + 10,
+              ),
+            )
+          else
+            const Center(child: CircularProgressIndicator()),
 
-            // Voice Control Button
-            Positioned(
-              top: 150,
-              right: 20,
+          // UI Overlays
+          // Voice Control Button - Positioned to align with compass vertically
+          Positioned(
+            top: 200,
+            right: 12,
+            child: SafeArea(
               child: FloatingActionButton(
                 heroTag: 'nav_mute_btn',
                 mini: true,
-                backgroundColor: Colors.white,
+                backgroundColor: Colors.white.withValues(alpha: 0.9),
                 foregroundColor: Colors.black,
                 onPressed: _toggleMute,
                 child: Icon(_isMuted ? Icons.volume_off : Icons.volume_up),
               ),
             ),
+          ),
 
-            // Close button - Merged into the bottom bar area
-            Positioned(
-              bottom: 10,
-              right: 20,
+          // Close button
+          Positioned(
+            bottom: 10,
+            right: 20,
+            child: SafeArea(
               child: Material(
-                color: Colors.red[700],
+                color: Colors.red[700]?.withValues(alpha: 0.9),
                 elevation: 6,
                 shape: const CircleBorder(),
                 child: InkWell(
@@ -324,8 +348,8 @@ class _NavigationScreenState extends State<NavigationScreen> {
                 ),
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

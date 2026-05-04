@@ -8,7 +8,6 @@ import 'package:project_taxi_driver_app/controllers/home_page_controller.dart';
 import 'package:project_taxi_driver_app/screens/homepage.dart';
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
 import 'package:project_taxi_driver_app/widgets/ride_request.dart';
-import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:project_taxi_driver_app/widgets/status_slider.dart';
@@ -50,10 +49,11 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
 
   double _fetchedWalletAmount = 0.0;
 
+  bool get _isRental => _rideRequest.rideType == 'rental';
+
   @override
   void initState() {
     super.initState();
-    WakelockPlus.enable();
     _fetchDriverUpiDetails();
     _startRideStream();
   }
@@ -94,12 +94,10 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
               }
             },
             onError: (e) {
-              debugPrint("Error in ride stream: $e");
               if (mounted) setState(() => _isDataLoaded = true);
             },
           );
     } catch (e) {
-      debugPrint("Error starting ride stream: $e");
       if (mounted) setState(() => _isDataLoaded = true);
     }
   }
@@ -108,10 +106,7 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
     try {
       final user = FirebaseAuth.instance.currentUser;
       if (user != null) {
-        if (_driverDocId == null) {
-          _driverDocId = await IdService.getDriverDocId(user.uid);
-          debugPrint('RidePayment: Resolved DriverDocID: $_driverDocId');
-        }
+        _driverDocId ??= await IdService.getDriverDocId(user.uid);
 
         final doc = await FirebaseFirestore.instance
             .collection('drivers')
@@ -120,14 +115,9 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
 
         if (doc.exists) {
           final data = doc.data();
-          debugPrint(
-            'RidePayment: Fetched Driver Data. activeUpiId: ${data?['activeUpiId']}',
-          );
 
           if (mounted) {
             setState(() {
-              // OPTIMIZATION: Only update if the fetched data is non-null
-              // This prevents stale Cloud data (lag) from overwriting a freshly saved local UPI ID
               final fetchedUpi = data?['activeUpiId'] ?? data?['upiId'];
               if (fetchedUpi != null) {
                 _driverUpiId = fetchedUpi;
@@ -139,14 +129,10 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
               _driverName = (data?['userName'] ?? 'Customer').toString().trim();
             });
           }
-        } else {
-          debugPrint(
-            'RidePayment: Driver document does not exist for ID: $_driverDocId',
-          );
         }
       }
     } catch (e) {
-      debugPrint('Error fetching driver UPI details: $e');
+      // Error handled silently
     }
   }
 
@@ -155,34 +141,23 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) return;
 
-      // Ensure we have the Doc ID
-      if (_driverDocId == null) {
-        debugPrint("RidePayment: Resolving driverDocId in _addUpiId...");
-        _driverDocId = await IdService.getDriverDocId(user.uid);
-      }
-
-      debugPrint("RidePayment: Adding UPI $upiId to Doc $_driverDocId");
+      _driverDocId ??= await IdService.getDriverDocId(user.uid);
 
       final docRef = FirebaseFirestore.instance
           .collection('drivers')
           .doc(_driverDocId);
 
-      // Use set with merge to create/update fields reliably
       await docRef.set({
         'activeUpiId': upiId,
         'upiIds': FieldValue.arrayUnion([upiId]),
       }, SetOptions(merge: true));
 
-      debugPrint("RidePayment: Firestore update successful for UPI: $upiId");
-
-      // Set state FIRST to ensure UI updates immediately
       if (mounted) {
         setState(() {
           _driverUpiId = upiId;
         });
       }
 
-      // Then trigger refresh (the fetch guard will now protect the local state)
       await _fetchDriverUpiDetails();
 
       Get.snackbar(
@@ -193,7 +168,6 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
         snackPosition: SnackPosition.BOTTOM,
       );
     } catch (e) {
-      debugPrint('Error adding UPI ID: $e');
       Get.snackbar(
         'Error',
         'Failed to save UPI ID. Please check your connection.',
@@ -254,7 +228,7 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                             final pa = uri.queryParameters['pa'];
                             if (pa != null) extractedId = pa;
                           } catch (e) {
-                            debugPrint("Error parsing UPI URI: $e");
+                            // Error ignored
                           }
                         }
                         upiController.text = extractedId;
@@ -330,7 +304,6 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
         ),
       );
     } else {
-      // Empty state prompt
       return Padding(
         padding: const EdgeInsets.only(top: 20.0),
         child: Card(
@@ -370,11 +343,9 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
   @override
   void dispose() {
     _rideSubscription?.cancel();
-    // WakelockPlus.disable(); // Keep screen on even after leaving this screen (handled by Home)
     super.dispose();
   }
 
-  // Use explicitly fetched amount if available, otherwise fallback to request model
   double get _walletAmount => _fetchedWalletAmount > 0
       ? _fetchedWalletAmount
       : (_rideRequest.paidByWallet ?? 0.0);
@@ -463,15 +434,12 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
   }
 
   Future<void> _finishRide(double driverProvidedRating) async {
-    // Ensure WalletController is available for GST deduction
     if (!Get.isRegistered<WalletController>()) {
       Get.put(WalletController());
     }
-    final WalletController walletController = WalletController.instance;
 
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
-      // 1. Capture Data Locally (Safety against widget disposal)
       final localTotalAmount = widget.totalAmount;
       final localRideId = _rideRequest.rideId;
       final localRideDistance = _rideRequest.rideDistance;
@@ -484,13 +452,9 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
       final bool isCashPlusWallet = _isCashPlusWallet;
       final double walletAmt = _walletAmount;
 
-      // 2. Navigation Logic
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('details_accepted_ride_id');
 
-      // Prevent the just-finished ride from ghost-triggering due to local cache lag.
-      // HomePageController may not be registered if the app was restored directly
-      // to RidePaymentScreen (e.g. after a crash/restart mid-ride).
       if (Get.isRegistered<HomePageController>()) {
         Get.find<HomePageController>().ignoreRide(localRideId);
       }
@@ -499,49 +463,18 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
         () => DriverHomePage(user: user, initialStatus: DriverStatus.online),
       );
 
-      // 3. Background Transactions
-      // We use a separate async block or just continue here.
-      // Since we already navigated, 'context' is unsafe, but Firebase calls are fine.
-
-      // Credit Logic
       final amountToCredit = isOnline
           ? localTotalAmount
           : (isCashPlusWallet ? walletAmt : 0.0);
 
-      // GST Deduction (5% of Total Fare)
-      try {
-        final gstAmount = double.parse(
-          (localTotalAmount * 0.05).toStringAsFixed(2),
-        );
-        debugPrint(
-          "[GST] Ride ID: $localRideId, Total Amount: $localTotalAmount, Calculated GST: $gstAmount",
-        );
-
-        if (gstAmount > 0) {
-          // Use the localized controller instance
-          await walletController.debitWallet(
-            gstAmount,
-            "gst_$localRideId",
-            description: "5% GST Deduction: $localRideId",
-          );
-          debugPrint("[GST] Successfully triggered debit for $gstAmount");
-        } else {
-          debugPrint("[GST] Skipping deduction - Amount is 0");
-        }
-      } catch (e) {
-        debugPrint("[GST] Failed to deduct GST: $e");
-      }
-
       if (amountToCredit > 0) {
         try {
-          // A. Credit Driver Wallet
           await WalletController.instance.creditWallet(
             amountToCredit,
             "ride_${_rideRequest.rideId}",
             description: "Ride Credit: ${_rideRequest.rideId}",
           );
 
-          // B. Create Earnings Record
           try {
             await FirebaseFirestore.instance
                 .collection('earnings')
@@ -564,69 +497,49 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                   'status': 'completed',
                   'type': 'ride_fare',
                 });
-            debugPrint("Earnings record created for ride $localRideId");
           } catch (e) {
-            debugPrint("Failed to create earnings record: $e");
+            // Error ignored
           }
 
-          // C. Deduct from Customer Wallet (Only if Cash + Wallet)
           if (isCashPlusWallet) {
-            final amountToDeduct = walletAmt;
+            final double refundAmount = walletAmt - localTotalAmount;
 
-            if (amountToDeduct > 0) {
-              await FirebaseFirestore.instance.runTransaction((
-                transaction,
-              ) async {
-                final userRef = FirebaseFirestore.instance
-                    .collection('users')
-                    .doc(localCustomerId);
-
+            if (refundAmount > 0) {
+              await FirebaseFirestore.instance.runTransaction((transaction) async {
+                final userRef = FirebaseFirestore.instance.collection('users').doc(localCustomerId);
                 final userSnapshot = await transaction.get(userRef);
+
                 if (userSnapshot.exists) {
                   final userData = userSnapshot.data();
                   if (userData != null) {
-                    var currentBalance = (userData['wallet_balance'] as num?)
-                        ?.toDouble();
-                    currentBalance ??= (userData['walletBalance'] as num?)
-                        ?.toDouble();
-                    currentBalance ??= 0.0;
+                    var currentBalance = (userData['wallet_balance'] as num?)?.toDouble() ?? 
+                                         (userData['walletBalance'] as num?)?.toDouble() ?? 0.0;
 
-                    final newBalance = currentBalance - amountToDeduct;
+                    final newBalance = currentBalance + refundAmount;
 
                     if (userData.containsKey('wallet_balance')) {
-                      transaction.update(userRef, {
-                        'wallet_balance': newBalance,
-                      });
+                      transaction.update(userRef, {'wallet_balance': newBalance});
                     } else {
-                      transaction.update(userRef, {
-                        'walletBalance': newBalance,
-                      });
+                      transaction.update(userRef, {'walletBalance': newBalance});
                     }
 
-                    final transactionRef = userRef
-                        .collection('wallet_transactions')
-                        .doc();
+                    final transactionRef = userRef.collection('wallet_transactions').doc();
                     transaction.set(transactionRef, {
-                      'amount': -amountToDeduct,
-                      'description': 'Ride Payment: $localRideId',
+                      'amount': refundAmount,
+                      'description': 'Ride Refund (Bill Adjusted): $localRideId',
                       'timestamp': FieldValue.serverTimestamp(),
-                      'type': 'debit',
+                      'type': 'credit',
                     });
                   }
                 }
               });
-              debugPrint(
-                "Deducted $amountToDeduct from customer $localCustomerId wallet.",
-              );
             }
           }
         } catch (e) {
-          debugPrint("Failed to process background wallet transactions: $e");
-          // No valid context to show snackbar, just log.
+          // Error ignored
         }
       }
 
-      // D. Update Customer Rating
       if (driverProvidedRating > 0) {
         try {
           final userRef = FirebaseFirestore.instance
@@ -656,11 +569,8 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
               }
             }
           });
-          debugPrint(
-            "Successfully updated customer rating to $driverProvidedRating",
-          );
         } catch (e) {
-          debugPrint("Failed to update customer rating: $e");
+          // Error ignored
         }
       }
     }
@@ -704,7 +614,6 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                             ),
                             const SizedBox(height: 40),
 
-                            // Fare Details
                             Card(
                               elevation: 4,
                               shape: RoundedRectangleBorder(
@@ -714,17 +623,11 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                 padding: const EdgeInsets.all(16.0),
                                 child: Column(
                                   children: [
-                                    // Breakdown (Informational)
                                     Builder(
                                       builder: (context) {
-                                        // Logic: totalAmount = Base/Package + Extras + Waiting + Tolls
-                                        // We want to show the components separately.
-
-                                        final isRental =
-                                            _rideRequest.rideType == 'rental';
-                                        final double baseFare = isRental
+                                        final double baseFare = _isRental
                                             ? (_rideRequest
-                                                  .rideFare) // Package Price
+                                                  .rideFare)
                                             : (widget.totalAmount -
                                                   _rideRequest.waitingCharge -
                                                   widget.tollCharge);
@@ -736,21 +639,36 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                                   MainAxisAlignment
                                                       .spaceBetween,
                                               children: [
-                                                Text(
-                                                  isRental
-                                                      ? '${'packageBaseFare'.tr} (${_rideRequest.packageName})'
-                                                      : 'rideFare'.tr,
-                                                  style: TextStyle(
-                                                    fontSize: 16,
-                                                    color:
-                                                        Theme.of(
-                                                              context,
-                                                            ).brightness ==
-                                                            Brightness.dark
-                                                        ? Colors.grey[400]
-                                                        : Colors.grey[600],
+                                                Expanded(
+                                                  child: Text(
+                                                    _isRental
+                                                        ? (_rideRequest.durationHours != null
+                                                            ? '${_rideRequest.durationHours} ${'hourRental'.tr}'
+                                                            : (_rideRequest.packageName != null &&
+                                                                    _rideRequest
+                                                                        .packageName!
+                                                                        .contains(
+                                                                      'Hour',
+                                                                    ))
+                                                                ? '${_rideRequest.packageName!.split(' ')[0]} ${'hourRental'.tr}'
+                                                                : '${'packageBaseFare'.tr} (${_rideRequest.packageName})')
+                                                        : 'rideFare'.tr,
+                                                    style: TextStyle(
+                                                      fontSize: 16,
+                                                      color:
+                                                          Theme.of(
+                                                                context,
+                                                              ).brightness ==
+                                                              Brightness.dark
+                                                          ? Colors.grey[400]
+                                                          : Colors.grey[600],
+                                                    ),
+                                                    maxLines: 1,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
                                                   ),
                                                 ),
+                                                const SizedBox(width: 8),
                                                 Text(
                                                   '₹${baseFare.toStringAsFixed(2)}',
                                                   style: TextStyle(
@@ -772,19 +690,22 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                                     MainAxisAlignment
                                                         .spaceBetween,
                                                 children: [
-                                                  Text(
-                                                    'waitingCharges'.tr,
-                                                    style: TextStyle(
-                                                      fontSize: 16,
-                                                      color:
-                                                          Theme.of(
-                                                                context,
-                                                              ).brightness ==
-                                                              Brightness.dark
-                                                          ? Colors.grey[400]
-                                                          : Colors.grey[600],
+                                                  Expanded(
+                                                    child: Text(
+                                                      'waitingCharges'.tr,
+                                                      style: TextStyle(
+                                                        fontSize: 16,
+                                                        color:
+                                                            Theme.of(
+                                                                  context,
+                                                                ).brightness ==
+                                                                Brightness.dark
+                                                            ? Colors.grey[400]
+                                                            : Colors.grey[600],
+                                                      ),
                                                     ),
                                                   ),
+                                                  const SizedBox(width: 8),
                                                   Text(
                                                     '+ ₹${_rideRequest.waitingCharge.toStringAsFixed(2)}',
                                                     style: const TextStyle(
@@ -797,13 +718,12 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                                 ],
                                               ),
                                             ],
-                                            const Divider(height: 20),
+
                                           ],
                                         );
                                       },
                                     ),
 
-                                    // Toll Information (if applicable)
                                     if (widget.tollCharge > 0) ...[
                                       Container(
                                         padding: const EdgeInsets.all(12),
@@ -820,24 +740,26 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                           mainAxisAlignment:
                                               MainAxisAlignment.spaceBetween,
                                           children: [
-                                            Row(
-                                              children: [
-                                                Icon(
-                                                  Icons.directions,
-                                                  color: Colors.orange,
-                                                  size: 20,
-                                                ),
-                                                const SizedBox(width: 8),
-                                                Text(
-                                                  widget.tollCrossed
-                                                      ? 'Toll Charges'
-                                                      : 'Toll (Deducted)',
-                                                  style: const TextStyle(
-                                                    fontSize: 16,
-                                                    fontWeight: FontWeight.bold,
+                                            Expanded(
+                                              child: Row(
+                                                children: [
+                                                  Icon(
+                                                    Icons.directions,
+                                                    color: Colors.orange,
+                                                    size: 20,
                                                   ),
-                                                ),
-                                              ],
+                                                  const SizedBox(width: 8),
+                                                  Text(
+                                                    widget.tollCrossed
+                                                        ? 'tollCharges'.tr
+                                                        : 'tollDeducted'.tr,
+                                                    style: const TextStyle(
+                                                      fontSize: 16,
+                                                      fontWeight: FontWeight.bold,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
                                             ),
                                             Text(
                                               widget.tollCrossed
@@ -858,7 +780,6 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                       const Divider(height: 20),
                                     ],
 
-                                    // Price Update Status
                                     if (widget.priceUpdated) ...[
                                       Container(
                                         padding: const EdgeInsets.all(12),
@@ -880,9 +801,10 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                             const SizedBox(width: 8),
                                             Expanded(
                                               child: Text(
-                                                'Price recalculated based on actual distance traveled',
+                                                'priceRecalculatedMsg'.tr,
+                                                textAlign: TextAlign.center,
                                                 style: TextStyle(
-                                                  fontSize: 13,
+                                                  fontSize: 12,
                                                   color: Colors.blue[700],
                                                 ),
                                               ),
@@ -936,7 +858,18 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                                         .spaceBetween,
                                                 children: [
                                                   Text(
-                                                    '${'baseFare'.tr} (${_rideRequest.packageName})',
+                                                    _isRental
+                                                        ? (_rideRequest.durationHours != null
+                                                            ? '${_rideRequest.durationHours} ${'hourRental'.tr}'
+                                                            : (_rideRequest.packageName != null &&
+                                                                    _rideRequest
+                                                                        .packageName!
+                                                                        .contains(
+                                                                      'Hour',
+                                                                    ))
+                                                                ? '${_rideRequest.packageName!.split(' ')[0]} ${'hourRental'.tr}'
+                                                                : '${'packageBaseFare'.tr} (${_rideRequest.packageName})')
+                                                        : 'rideFare'.tr,
                                                     style: const TextStyle(
                                                       fontSize:
                                                           0, // Hidden here because we show it in the top breakdown now
@@ -955,21 +888,24 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                                         MainAxisAlignment
                                                             .spaceBetween,
                                                     children: [
-                                                      Text(
-                                                        '${'extraDistance'.tr} (${extraDistance.toStringAsFixed(1)} km)',
-                                                        style: TextStyle(
-                                                          fontSize: 16,
-                                                          color:
-                                                              Theme.of(
-                                                                    context,
-                                                                  ).brightness ==
-                                                                  Brightness
-                                                                      .dark
-                                                              ? Colors.grey[400]
-                                                              : Colors
-                                                                    .grey[600],
+                                                      Expanded(
+                                                        child: Text(
+                                                          '${'extraDistance'.tr} (${extraDistance.toStringAsFixed(1)} km)',
+                                                          style: TextStyle(
+                                                            fontSize: 16,
+                                                            color:
+                                                                Theme.of(
+                                                                      context,
+                                                                    ).brightness ==
+                                                                    Brightness
+                                                                        .dark
+                                                                ? Colors.grey[400]
+                                                                : Colors
+                                                                      .grey[600],
+                                                          ),
                                                         ),
                                                       ),
+                                                      const SizedBox(width: 8),
                                                       Text(
                                                         '+ ₹${extraDistanceCost.toStringAsFixed(2)}',
                                                         style: const TextStyle(
@@ -990,21 +926,24 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                                         MainAxisAlignment
                                                             .spaceBetween,
                                                     children: [
-                                                      Text(
-                                                        '${'extraTime'.tr} (${extraDuration.toStringAsFixed(0)} ${'mins'.tr})',
-                                                        style: TextStyle(
-                                                          fontSize: 16,
-                                                          color:
-                                                              Theme.of(
-                                                                    context,
-                                                                  ).brightness ==
-                                                                  Brightness
-                                                                      .dark
-                                                              ? Colors.grey[400]
-                                                              : Colors
-                                                                    .grey[600],
+                                                      Expanded(
+                                                        child: Text(
+                                                          '${'extraTime'.tr} (${extraDuration.toStringAsFixed(0)} ${'mins'.tr})',
+                                                          style: TextStyle(
+                                                            fontSize: 16,
+                                                            color:
+                                                                Theme.of(
+                                                                      context,
+                                                                    ).brightness ==
+                                                                    Brightness
+                                                                        .dark
+                                                                ? Colors.grey[400]
+                                                                : Colors
+                                                                      .grey[600],
+                                                          ),
                                                         ),
                                                       ),
+                                                      const SizedBox(width: 8),
                                                       Text(
                                                         '+ ₹${extraDurationCost.toStringAsFixed(2)}',
                                                         style: const TextStyle(
@@ -1048,50 +987,92 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                     if (_isCashPlusWallet &&
                                         _walletAmount > 0) ...[
                                       const SizedBox(height: 8),
-                                      Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.spaceBetween,
-                                        children: [
-                                          Text(
-                                            'paidByWallet'.tr,
-                                            style: TextStyle(
-                                              fontSize: 16,
-                                              color: Colors.green,
+                                      Builder(builder: (context) {
+                                        final double total = widget.totalAmount;
+                                        final double reserved = _walletAmount;
+                                        final double usedFromWallet =
+                                            total < reserved ? total : reserved;
+                                        final double refund =
+                                            total < reserved ? (reserved - total) : 0.0;
+
+                                        return Column(
+                                          children: [
+                                            Row(
+                                              mainAxisAlignment:
+                                                  MainAxisAlignment.spaceBetween,
+                                              children: [
+                                                Text(
+                                                  'paidByWallet'.tr,
+                                                  style: const TextStyle(
+                                                    fontSize: 16,
+                                                    color: Colors.green,
+                                                  ),
+                                                ),
+                                                Text(
+                                                  '- ₹${usedFromWallet.toStringAsFixed(2)}',
+                                                  style: const TextStyle(
+                                                    fontSize: 16,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: Colors.green,
+                                                  ),
+                                                ),
+                                              ],
                                             ),
-                                          ),
-                                          Text(
-                                            '- ₹${_walletAmount.toStringAsFixed(2)}',
-                                            style: const TextStyle(
-                                              fontSize: 16,
-                                              fontWeight: FontWeight.bold,
-                                              color: Colors.green,
+                                            if (refund > 0) ...[
+                                              const SizedBox(height: 4),
+                                              Row(
+                                                mainAxisAlignment:
+                                                    MainAxisAlignment.spaceBetween,
+                                                children: [
+                                                  const Text(
+                                                    'Refund to Wallet',
+                                                    style: TextStyle(
+                                                      fontSize: 16,
+                                                      color: Colors.blue,
+                                                      fontWeight: FontWeight.w500,
+                                                    ),
+                                                  ),
+                                                  Text(
+                                                    '+ ₹${refund.toStringAsFixed(2)}',
+                                                    style: const TextStyle(
+                                                      fontSize: 16,
+                                                      fontWeight: FontWeight.bold,
+                                                      color: Colors.blue,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ],
+                                            const Divider(height: 20),
+                                            Row(
+                                              mainAxisAlignment:
+                                                  MainAxisAlignment.spaceBetween,
+                                              children: [
+                                                Text(
+                                                  'cashToCollect'.tr,
+                                                  style: TextStyle(
+                                                    fontSize: 18,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: _cashToCollect > 0
+                                                        ? Colors.redAccent
+                                                        : Colors.grey,
+                                                  ),
+                                                ),
+                                                Text(
+                                                  '₹${_cashToCollect.toStringAsFixed(2)}',
+                                                  style: TextStyle(
+                                                    fontSize: 24,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: _cashToCollect > 0
+                                                        ? Colors.redAccent
+                                                        : Colors.grey,
+                                                  ),
+                                                ),
+                                              ],
                                             ),
-                                          ),
-                                        ],
-                                      ),
-                                      const Divider(height: 20),
-                                      Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.spaceBetween,
-                                        children: [
-                                          Text(
-                                            'cashToCollect'.tr,
-                                            style: TextStyle(
-                                              fontSize: 18,
-                                              fontWeight: FontWeight.bold,
-                                              color: Colors.redAccent,
-                                            ),
-                                          ),
-                                          Text(
-                                            '₹${_cashToCollect.toStringAsFixed(2)}',
-                                            style: const TextStyle(
-                                              fontSize: 24,
-                                              fontWeight: FontWeight.bold,
-                                              color: Colors.redAccent,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
+                                          ],
+                                        );
+                                      }),
                                     ],
                                     const Divider(height: 30),
                                     Row(

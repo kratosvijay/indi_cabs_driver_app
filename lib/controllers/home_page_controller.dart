@@ -1355,6 +1355,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     walletSubscription?.cancel();
 
     // Listen to wallet balance from subcollection
+    debugPrint("HomePageController: Starting Wallet Listener for ID: ${_driverDocId ?? user.uid} (IsProfessional: ${_driverDocId != null})");
     FirebaseFirestore.instance
         .collection('drivers')
         .doc(_driverDocId ?? user.uid)
@@ -1946,7 +1947,12 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
           if (snapshot.docs.isNotEmpty) {
             for (var doc in snapshot.docs) {
               final data = doc.data();
-              tempTotal += (data['totalFare'] as num? ?? 0.0).toDouble();
+              // Sum up components if totalFare is missing
+              double rideTotal = (data['totalFare'] as num?)?.toDouble() ?? 
+                               ((data['rideFare'] as num? ?? 0.0).toDouble() + 
+                                (data['waitingCharge'] as num? ?? 0.0).toDouble() + 
+                                (data['tollCharge'] as num? ?? 0.0).toDouble());
+              tempTotal += rideTotal;
             }
             // Parse last ride
             tempLast = Ride.fromFirestore(snapshot.docs.first);
@@ -1973,7 +1979,12 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
           if (snapshot.docs.isNotEmpty) {
             for (var doc in snapshot.docs) {
               final data = doc.data();
-              tempTotal += (data['totalFare'] as num? ?? 0.0).toDouble();
+              // Sum up components if totalFare is missing
+              double rideTotal = (data['totalFare'] as num?)?.toDouble() ?? 
+                               ((data['rideFare'] as num? ?? 0.0).toDouble() + 
+                                (data['waitingCharge'] as num? ?? 0.0).toDouble() + 
+                                (data['tollCharge'] as num? ?? 0.0).toDouble());
+              tempTotal += rideTotal;
             }
             // Parse last ride using updated Ride model
             tempLast = Ride.fromFirestore(snapshot.docs.first);
@@ -2294,11 +2305,11 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       driverStatus.value = DriverStatus.online;
       handleStatusChange(DriverStatus.online);
 
-      // Preserve ONLY the accepted ride so we don't re-process it
-      activeRequests.removeWhere((r) => r.rideId != rideId);
-      if (!activeRequests.any((r) => r.rideId == rideId)) {
-        activeRequests.add(request);
-      }
+      // Clear all active requests since we are transitioning to the ride screen
+      activeRequests.clear();
+      OverlayService.instance.clearRideQueue();
+      OverlayService.instance.hideFloatingBubble();
+
 
       _isAcceptingRide = false;
       isRideAcceptanceInProgress.value = false;
@@ -2700,7 +2711,9 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
     // Show ride-request card when online with pending requests; otherwise just
     // show the small bubble so the driver can tap back into the app.
-    if (activeRequests.isNotEmpty && driverStatus.value == DriverStatus.online) {
+    if (activeRequests.isNotEmpty &&
+        driverStatus.value == DriverStatus.online &&
+        activeRequests.first.status == 'searching') {
       _showOverlayForRide(activeRequests.first);
     } else if (driverStatus.value == DriverStatus.online ||
         driverStatus.value == DriverStatus.goTo) {

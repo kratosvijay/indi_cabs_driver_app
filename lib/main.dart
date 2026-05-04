@@ -81,17 +81,21 @@ Future<void> main() async {
     debugPrint("Error setting high refresh rate: $e");
   }
 
-  // Enable edge-to-edge support (Handles Android 15/Play Console warning)
+  // Enable edge-to-edge support like the User App
+  debugPrint("UI: Setting SystemUiMode.edgeToEdge");
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-  SystemChrome.setSystemUIOverlayStyle(
-    const SystemUiOverlayStyle(
+  
+  // Re-apply style after a short delay to ensure it sticks
+  Future.delayed(const Duration(milliseconds: 500), () {
+    SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
       systemNavigationBarColor: Colors.transparent,
-      systemNavigationBarDividerColor: Colors.transparent,
-      systemStatusBarContrastEnforced: false,
+      systemNavigationBarIconBrightness: Brightness.light,
+      statusBarIconBrightness: Brightness.light,
       systemNavigationBarContrastEnforced: false,
-    ),
-  );
+      systemStatusBarContrastEnforced: false,
+    ));
+  });
 
   // Initialize AuthController globally
   Get.put(AuthController());
@@ -133,39 +137,55 @@ class _MyAppState extends State<MyApp> {
       theme: ThemeData(
         brightness: Brightness.light,
         useMaterial3: true,
+        scaffoldBackgroundColor: Colors.white,
         textTheme: GoogleFonts.notoSansTextTheme(ThemeData.light().textTheme),
         colorScheme: ColorScheme.fromSeed(
           seedColor: AppColors.lightEnd,
           brightness: Brightness.light,
         ),
         appBarTheme: AppBarTheme(
-          backgroundColor: AppColors.lightEnd, // Solid fallback
-          foregroundColor: Colors.white,
+          backgroundColor: Colors.transparent,
           elevation: 0,
+          iconTheme: const IconThemeData(color: Colors.white),
+          titleTextStyle: GoogleFonts.notoSans(
+            color: Colors.white,
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+          ),
         ),
       ),
-
+ 
       // **2. Dark Theme Configuration**
       darkTheme: ThemeData(
         brightness: Brightness.dark,
         useMaterial3: true,
+        scaffoldBackgroundColor: Colors.black,
         textTheme: GoogleFonts.notoSansTextTheme(ThemeData.dark().textTheme),
         colorScheme: ColorScheme.fromSeed(
-          seedColor: AppColors.darkStart,
+          seedColor: AppColors.lightEnd,
           brightness: Brightness.dark,
         ),
         appBarTheme: AppBarTheme(
-          backgroundColor: AppColors.darkEnd, // Solid fallback
-          foregroundColor: Colors.white,
+          backgroundColor: Colors.transparent,
           elevation: 0,
+          iconTheme: const IconThemeData(color: Colors.white),
+          titleTextStyle: GoogleFonts.notoSans(
+            color: Colors.white,
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+          ),
         ),
-        scaffoldBackgroundColor: const Color(0xFF121212),
       ),
 
-      // Automatically switch based on phone settings
       themeMode: ThemeMode.system,
 
-      home: UpgradeAlert(child: const SplashScreen()),
+      home: UpgradeAlert(
+        upgrader: Upgrader(),
+        showIgnore: false,
+        showLater: false,
+        barrierDismissible: false,
+        child: const SplashScreen(),
+      ),
     );
   }
 }

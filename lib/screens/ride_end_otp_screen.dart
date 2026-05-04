@@ -1,11 +1,11 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart' as maps;
 import 'package:pinput/pinput.dart';
 import 'package:project_taxi_driver_app/screens/ride_payment.dart';
 import 'package:project_taxi_driver_app/widgets/ride_request.dart';
+import 'package:project_taxi_driver_app/services/pricing_service.dart';
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
 
 class RideEndOtpScreen extends StatefulWidget {
@@ -90,22 +90,20 @@ class _RideEndOtpScreenState extends State<RideEndOtpScreen> {
         actualDistanceKm = widget.accumulatedDistance / 1000.0;
       }
 
-      // Call Cloud Function for RENTAL billing
-      final pricingFuture = FirebaseFunctions.instanceFor(region: 'asia-south1')
-          .httpsCallable('calculateDynamicPricing')
-          .call({
-            'rideId': widget.rideRequest.rideId,
-            'actualDistanceKm': actualDistanceKm,
-            'waitingCharge': 0.0, // Usually implicit in rental duration
-            'rideType': 'rental',
-          });
+      // Calculate Duration for pricing
+      final double actualDuration = widget.rideRequest.startedAt != null
+          ? DateTime.now().difference(widget.rideRequest.startedAt!).inMinutes.toDouble()
+          : 0.0;
 
-      final result = await pricingFuture;
-      final resultData = result.data as Map<String, dynamic>;
+      // Local Recalculation for RENTAL billing
+      final localResult = PricingService.calculateFareLocally(
+        rideRequest: widget.rideRequest,
+        actualDistanceKm: actualDistanceKm,
+        actualDurationMins: actualDuration,
+        waitingCharge: 0.0,
+      );
 
-      final totalFare = (resultData['finalFare'] ?? 0.0).toDouble();
-      final actualDuration = (resultData['actualDurationMinutes'] ?? 0.0)
-          .toDouble();
+      final totalFare = (localResult['finalFare'] as num).toDouble();
 
       // Local update for UI transition (Backend updates Firestore)
       RideRequest updatedRequest = widget.rideRequest.copyWith(
@@ -120,6 +118,7 @@ class _RideEndOtpScreenState extends State<RideEndOtpScreen> {
         'status': 'completed',
         'rideFare': totalFare, // For rentals, this includes package price + extras
         'baseFare': totalFare,
+        'totalFare': totalFare, // NEW: Added for dashboard earnings sync
         'actualDistance': actualDistanceKm,
         'actualDuration': actualDuration,
         'completedAt': FieldValue.serverTimestamp(),

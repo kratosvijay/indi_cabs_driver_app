@@ -4,7 +4,6 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:get/get.dart';
@@ -12,12 +11,12 @@ import 'package:google_maps_flutter/google_maps_flutter.dart' as maps;
 import 'package:project_taxi_driver_app/widgets/ride_request.dart';
 import 'package:project_taxi_driver_app/widgets/ride_status_slider.dart';
 import 'package:project_taxi_driver_app/screens/ride_payment.dart';
+import 'package:project_taxi_driver_app/services/pricing_service.dart';
 import 'package:project_taxi_driver_app/screens/navigation_screen.dart'; // Import NavigationScreen
 import 'package:project_taxi_driver_app/screens/ride_end_otp_screen.dart';
 import 'package:project_taxi_driver_app/services/ride_queue_service.dart';
 
 import 'package:wakelock_plus/wakelock_plus.dart';
-import 'package:cloud_functions/cloud_functions.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:url_launcher/url_launcher.dart';
@@ -170,57 +169,9 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
       }
     }
 
-    // --- PATCH: Fix Invalid Dropoff Location (0,0) ---
-    if (_rideRequest.dropoffLocation.latitude == 0 &&
-        _rideRequest.dropoffLocation.longitude == 0) {
-      debugPrint(
-        "PATCH: Invalid Dropoff (0,0) detected. Waiting for driver location...",
-      );
+    // --- PATCH REMOVED: It was incorrectly resetting destination to pickup if dropoff was 0,0 ---
+    // The _repairDropoffLocation() method handles this safely via geocoding later in the lifecycle.
 
-      // Wait for driver location (up to 5 seconds) - non-blocking
-      int retries = 0;
-      while (_driverLocation == null && retries < 10) {
-        await Future.delayed(const Duration(milliseconds: 500));
-        retries++;
-        // Avoid blocking the UI during the wait
-        if (kDebugMode && retries % 2 == 0) {
-          debugPrint("PATCH: Waiting for driver location... retry $retries/10");
-        }
-      }
-
-      if (_driverLocation != null) {
-        debugPrint(
-          "PATCH: Updating Dropoff to current driver location: $_driverLocation",
-        );
-        try {
-          await _firestore
-              .collection(collectionPath)
-              .doc(widget.rideRequest.rideId)
-              .update({
-                'dropoffLocation': {
-                  'lat': _driverLocation!.latitude,
-                  'lng': _driverLocation!.longitude,
-                },
-                'dropoffFullAddress': 'Current Location (Patched)',
-                'dropoffTitle': 'Test Dropoff',
-              });
-          debugPrint("PATCH: Firestore updated successfully.");
-
-          if (mounted) {
-            setState(() {
-              _dropLocation = _driverLocation;
-              _fetchedAddress = 'Current Location (Patched)';
-            });
-            _getRoute(_driverLocation!, _dropLocation!);
-          }
-        } catch (e) {
-          debugPrint("PATCH: Error updating dropoff: $e");
-        }
-      } else {
-        debugPrint("PATCH: Driver location timeout. Cannot fix dropoff.");
-      }
-    }
-    // --- END PATCH ---
   }
 
   void _listenToRideUpdates() {
@@ -270,7 +221,13 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
                     oldPendingCount != newPendingCount ||
                     _rideRequest.stops.length != updatedRide.stops.length;
 
-                _dynamicRideRequest = updatedRide;
+                // Preserve locally-resolved distance if server update is missing it (0.0)
+                if (updatedRide.rideDistance == 0 && _rideRequest.rideDistance > 0) {
+                  _dynamicRideRequest =
+                      updatedRide.copyWith(rideDistance: _rideRequest.rideDistance);
+                } else {
+                  _dynamicRideRequest = updatedRide;
+                }
 
                 if (destChanged) {
                   debugPrint("Destination changed! Updating route.");
@@ -451,14 +408,19 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
       }
 
       PolylinePoints polylinePoints = PolylinePoints(apiKey: apiKey);
+      final originLoc = origin.latitude != 0 ? origin : maps.LatLng(
+        _rideRequest.pickupLocation.latitude,
+        _rideRequest.pickupLocation.longitude,
+      );
+
       final request = RoutesApiRequest(
-        origin: PointLatLng(origin.latitude, origin.longitude),
+        origin: PointLatLng(originLoc.latitude, originLoc.longitude),
         destination: PointLatLng(destination.latitude, destination.longitude),
         travelMode: TravelMode.driving,
       );
 
       debugPrint(
-        "Requesting route from ${origin.latitude},${origin.longitude} to ${destination.latitude},${destination.longitude}",
+        "Requesting route from ${originLoc.latitude},${originLoc.longitude} to ${destination.latitude},${destination.longitude}",
       );
 
       RoutesApiResponse result = await polylinePoints
@@ -477,6 +439,12 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
               .toList();
 
           setState(() {
+            // Update Distance if missing from server
+            if (_rideRequest.rideDistance == 0 && (route.distanceKm ?? 0) > 0) {
+              _dynamicRideRequest = _rideRequest.copyWith(rideDistance: route.distanceKm);
+              debugPrint("Auto-resolved missing rideDistance: ${route.distanceKm} km");
+            }
+
             _polylines.add(
               maps.Polyline(
                 polylineId: const maps.PolylineId('route'),
@@ -509,37 +477,33 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
     maps.LatLng origin,
     maps.LatLng destination,
   ) async {
-    // Add safety check for (0,0) coordinates which show the sea
+    final controller = await _controller.future;
+
+    // Add safety check for (0,0) coordinates
     if (origin.latitude == 0 ||
         origin.longitude == 0 ||
         destination.latitude == 0 ||
         destination.longitude == 0) {
       debugPrint("SKIPPING fitCameraToRoute: Invalid coordinates detected.");
+      // Just center on destination if possible
+      if (destination.latitude != 0) {
+        controller.animateCamera(maps.CameraUpdate.newLatLngZoom(destination, 15));
+      }
       return;
     }
 
-    final controller = await _controller.future;
+    // Calculate LatLngBounds to fit both points
+    final southwestLat = origin.latitude < destination.latitude ? origin.latitude : destination.latitude;
+    final southwestLng = origin.longitude < destination.longitude ? origin.longitude : destination.longitude;
+    final northeastLat = origin.latitude > destination.latitude ? origin.latitude : destination.latitude;
+    final northeastLng = origin.longitude > destination.longitude ? origin.longitude : destination.longitude;
 
     final bounds = maps.LatLngBounds(
-      southwest: maps.LatLng(
-        origin.latitude < destination.latitude
-            ? origin.latitude
-            : destination.latitude,
-        origin.longitude < destination.longitude
-            ? origin.longitude
-            : destination.longitude,
-      ),
-      northeast: maps.LatLng(
-        origin.latitude > destination.latitude
-            ? origin.latitude
-            : destination.latitude,
-        origin.longitude > destination.longitude
-            ? origin.longitude
-            : destination.longitude,
-      ),
+      southwest: maps.LatLng(southwestLat, southwestLng),
+      northeast: maps.LatLng(northeastLat, northeastLng),
     );
 
-    controller.animateCamera(maps.CameraUpdate.newLatLngBounds(bounds, 80));
+    controller.animateCamera(maps.CameraUpdate.newLatLngBounds(bounds, 100)); // Increased padding to 100
   }
 
   void _enableWakelock() {
@@ -740,15 +704,45 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
         target = maps.LatLng(stop.location.latitude, stop.location.longitude);
         title = stop.title;
       } else {
-        target =
-            _dropLocation ??
+        target = _dropLocation ??
             maps.LatLng(
               _rideRequest.dropoffLocation.latitude,
               _rideRequest.dropoffLocation.longitude,
             );
         title = _rideRequest.dropoffTitle;
 
-        // Fallback checks
+        // --- NAV SAFETY CHECK ---
+        // If target is 0,0 or suspiciously close to pickup (implies invalid data),
+        // try one last time to resolve from address before opening navigation.
+        final distToPickup = Geolocator.distanceBetween(
+          target.latitude,
+          target.longitude,
+          _rideRequest.pickupLocation.latitude,
+          _rideRequest.pickupLocation.longitude,
+        );
+
+        if ((target.latitude == 0 && target.longitude == 0) ||
+            (distToPickup < 100 && _rideRequest.rideType != 'rental')) {
+          debugPrint(
+            "Nav_Safety: Target is invalid or at pickup. Geocoding address...",
+          );
+          String address = _rideRequest.dropoffFullAddress.isNotEmpty &&
+                  _rideRequest.dropoffFullAddress != "Unknown" &&
+                  !_rideRequest.dropoffFullAddress.contains("getting address")
+              ? _rideRequest.dropoffFullAddress
+              : _rideRequest.dropoffTitle;
+
+          if (address.isNotEmpty && address != "Unknown") {
+            final resolved = await _getLatLngFromAddress(address);
+            if (resolved != null) {
+              target = resolved;
+              debugPrint("Nav_Safety: Resolved target to $target");
+            }
+          }
+        }
+
+        // Final fallback checks if still 0,0
+
         if (target.latitude == 0 && target.longitude == 0) {
           // If drop is 0,0 try getting from address
           String addressToGeocode = _rideRequest.dropoffFullAddress;
@@ -1083,7 +1077,7 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
             ) /
             1000;
       } else {
-        actualDistance = _rideRequest.rideDistance;
+        actualDistance = 0.0;
       }
       debugPrint(
         "Ending Ride. Accumulated Distance: ${_accumulatedDistance}m. Final used km: $actualDistance",
@@ -1103,19 +1097,43 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
 
       double totalWaitCharge = pickupWait + stopWait;
 
-      // Get ride type
-      final rideType = _rideRequest.rideType;
+      // ---------------------------------------------------------
+      // OPTIMIZED BILLING LOGIC
+      // ---------------------------------------------------------
+      // Calculate Duration for pricing
+      final double durationMins = _rideRequest.startedAt != null
+          ? DateTime.now().difference(_rideRequest.startedAt!).inMinutes.toDouble()
+          : 0.0;
 
-      // Start Cloud Function Call (Pricing)
-      final pricingFuture = FirebaseFunctions.instanceFor(region: 'asia-south1')
-          .httpsCallable('calculateDynamicPricing')
-          .call({
-            'rideId': _rideRequest.rideId,
-            'actualDistanceKm': actualDistance,
-            'waitingCharge':
-                0.0, // Pass 0.0 to ensure Cloud Function only calculates Dynamic Base Fare
-            'rideType': rideType,
-          });
+      // Local Recalculation
+      final localResult = PricingService.calculateFareLocally(
+        rideRequest: _rideRequest,
+        actualDistanceKm: actualDistance,
+        actualDurationMins: durationMins,
+        waitingCharge: 0.0, // We add waitingCharge manually later
+      );
+
+      double finalFare = (localResult['finalFare'] as num).toDouble();
+      bool priceUpdated = localResult['priceUpdated'] as bool;
+      String pricingReason = localResult['reason'] as String;
+
+      debugPrint("BILLING_DEBUG: Local Result - Fare: $finalFare, Updated: $priceUpdated, Reason: $pricingReason");
+
+      // Optional: If we still want to fetch toll information from Cloud, 
+      // we could call it in the background or only if needed.
+      // For now, we trust the local calculation for the base fare.
+      bool tollCrossed = false;
+      List<dynamic> tollZones = [];
+      double tollCharge = 0.0;
+
+      // If price was updated (distance changed), we might want to verify tolls via Cloud
+      // but the user wants to avoid the "always calling" delay.
+      // So we use the estimated toll from the original request as a baseline if distance matches.
+      if (!priceUpdated) {
+        tollCharge = _rideRequest.tollPrice ?? 0.0;
+        tollCrossed = tollCharge > 0;
+      }
+      // ---------------------------------------------------------
 
       // Start Address Fetch in Parallel if location known
       Future<String?>? addressFuture;
@@ -1123,61 +1141,16 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
         addressFuture = _getAddressFromLatLng(_driverLocation!);
       }
 
-      // Wait for Pricing (with fallback to Firestore if error)
-      Map<String, dynamic> resultData;
-      double finalFare = _rideRequest.rideFare; // Default fallback
-      bool priceUpdated = false;
-      bool tollCrossed = false;
-      List<dynamic> tollZones = [];
-      double tollCharge = 0.0;
-
-      try {
-        final resultFuture = await pricingFuture.timeout(
-          const Duration(seconds: 10),
-        );
-        resultData = resultFuture.data as Map<String, dynamic>;
-
-        // The Cloud Function now returns ONLY the Dynamic Base Fare (since we passed 0.0 waitingCharge)
-        finalFare = (resultData['finalFare'] ?? _rideRequest.rideFare)
-            .toDouble();
-
-        priceUpdated = resultData['priceUpdated'] ?? false;
-        tollCrossed = resultData['tollCrossed'] ?? false;
-        tollZones = resultData['tollZonesCrossed'] ?? [];
-        tollCharge = (resultData['tollCharge'] ?? 0.0).toDouble();
-
-        debugPrint(
-          "Dynamic Pricing Success. Final Fare: $finalFare, Toll Crossed: $tollCrossed",
-        );
-      } catch (e) {
-        // Network error or timeout - use Firestore fare as fallback
-        debugPrint("Dynamic Pricing Error (using Firestore fallback): $e");
-
-        // If pricing call fails, we take the original estimate and add the total waiting charge manually
-        // If pricing call fails, we use the original estimate (base fare)
-        finalFare = _rideRequest.rideFare;
-
-        Get.snackbar(
-          'Network Issue',
-          'Using stored price. Toll adjustments will be verified later.',
-          snackPosition: SnackPosition.BOTTOM,
-          backgroundColor: Colors.orange,
-          colorText: Colors.white,
-          duration: const Duration(seconds: 3),
-        );
-      }
-
       debugPrint(
         "PRICING_DEBUG: totalWaitCharge=$totalWaitCharge, tollCharge=$tollCharge, baseDynamicFare (finalFare)=$finalFare",
       );
-      debugPrint(
-        "PRICING_DEBUG: totalAmountForUser=${finalFare + totalWaitCharge + tollCharge}",
-      );
+      final double totalAmountForUser = finalFare + totalWaitCharge + tollCharge;
 
       final Map<String, dynamic> updateData = {
         'status': 'completed',
         'rideFare': finalFare,
         'baseFare': finalFare,
+        'totalFare': totalAmountForUser, // NEW: Added for dashboard earnings sync
         'waitingCharge': totalWaitCharge,
         'pickupWaitingCharge': pickupWait,
         'stopWaitingCharge': stopWait,
@@ -1188,12 +1161,7 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
         'completedAt': FieldValue.serverTimestamp(),
       };
 
-      // Calculate Duration
-      double durationMins = 0.0;
-      if (_rideRequest.startedAt != null) {
-        final diff = DateTime.now().difference(_rideRequest.startedAt!);
-        durationMins = diff.inMinutes.toDouble();
-      }
+      // Use the duration calculated earlier for pricing
       updateData['actualDuration'] = durationMins;
       updateData['actualDistance'] =
           actualDistance; // Also save distance explicitly
@@ -1376,12 +1344,17 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
             children: [
               maps.GoogleMap(
                 initialCameraPosition: maps.CameraPosition(
-                  target: _driverLocation ?? const maps.LatLng(0, 0),
-                  zoom: 16,
+                  target: _driverLocation ??
+                      maps.LatLng(
+                        _rideRequest.pickupLocation.latitude,
+                        _rideRequest.pickupLocation.longitude,
+                      ),
+                  zoom: 14, // Slightly wider initial zoom
                 ),
                 mapType: maps.MapType.normal,
                 onMapCreated: (maps.GoogleMapController controller) {
                   _controller.complete(controller);
+                  _updateMarkers(); // Ensure markers are drawn immediately
                   // Immediately try to fit bounds if we have locations
                   if (_driverLocation != null && _dropLocation != null) {
                     _fitCameraToRoute(_driverLocation!, _dropLocation!);
@@ -1422,11 +1395,11 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
                       backgroundColor: Colors.blue,
                       foregroundColor: Colors.white,
                     ),
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 8),
 
                     // Bottom Sheet
                     Container(
-                      padding: const EdgeInsets.all(16.0),
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
                       decoration: BoxDecoration(
                         color: Theme.of(context).scaffoldBackgroundColor,
                         borderRadius: const BorderRadius.vertical(
@@ -1542,7 +1515,7 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
                               ],
                             ),
                           ),
-                          const SizedBox(height: 10),
+                          const SizedBox(height: 8),
                           // Fare display
                           Row(
                             children: [
@@ -1565,7 +1538,54 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
                               ),
                             ],
                           ),
-                          const SizedBox(height: 12),
+                          const SizedBox(height: 8),
+                          // Distance display (Countdown / Remaining)
+                          Row(
+                            children: [
+                              const Icon(
+                                Icons.straighten,
+                                color: Colors.blue,
+                              ),
+                              const SizedBox(width: 10),
+                              Builder(
+                                builder: (context) {
+                                  double totalKm = _rideRequest.rideDistance;
+                                  if (_rideRequest.rideType == 'rental' &&
+                                      (_rideRequest.kmLimit ?? 0) > 0) {
+                                    totalKm = _rideRequest.kmLimit!.toDouble();
+                                  }
+
+                                  double drivenKm = _accumulatedDistance / 1000.0;
+                                  double remainingKm = totalKm - drivenKm;
+                                  if (remainingKm < 0) remainingKm = 0;
+
+                                  return Row(
+                                    crossAxisAlignment: CrossAxisAlignment.baseline,
+                                    textBaseline: TextBaseline.alphabetic,
+                                    children: [
+                                      Text(
+                                        "${'remaining'.tr}: ${remainingKm.toStringAsFixed(1)} km",
+                                        style: TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.bold,
+                                          color: Theme.of(context).textTheme.bodyLarge?.color,
+                                        ),
+                                      ),
+                                      if (totalKm > 0)
+                                        Text(
+                                          " / ${totalKm.toStringAsFixed(1)} km total",
+                                          style: TextStyle(
+                                            fontSize: 13,
+                                            color: Theme.of(context).textTheme.bodySmall?.color,
+                                          ),
+                                        ),
+                                    ],
+                                  );
+                                },
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
                           // Toll Display if applicable
                           if ((_rideRequest.tollPrice ?? 0) > 0)
                             Container(
@@ -1609,7 +1629,7 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
                                 ],
                               ),
                             ),
-                          const SizedBox(height: 16),
+                          const SizedBox(height: 10),
                           if (_isWaiting) ...[
                             Text(
                               (_waitTimeRemaining > 0)
@@ -1718,7 +1738,7 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
                             ),
                           ],
                           Padding(
-                            padding: const EdgeInsets.only(bottom: 30),
+                            padding: const EdgeInsets.only(bottom: 10),
                             child: RideStatusSlider(
                               key: ValueKey(
                                 'slider_${_currentStopIndex}_$_isWaiting',

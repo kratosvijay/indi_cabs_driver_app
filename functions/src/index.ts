@@ -286,7 +286,7 @@ const generateOtpDriver = onDocumentWritten(
 /**
  * Calculate distance between two points using Haversine formula
  */
-function calculateDistance(
+export function calculateDistance(
     lat1: number,
     lon1: number,
     lat2: number,
@@ -423,14 +423,10 @@ export const distributeRideToDrivers = onDocumentWritten(
             console.log(`Searching for drivers near ${pickupGeo.latitude}, ${pickupGeo.longitude} from Realtime Database...`);
 
             const driversRef = rtdb.ref('driver_locations');
-            const activeDriversSnap = await driversRef.once('value');
-            const allDrivers = activeDriversSnap.val() || {};
-
-            const nowMs = Date.now();
 
             // Loop to expand radius
             let currentRadius = 2.0; // Initial radius 2km
-            const maxRadius = 10.0; // Max radius 10km
+            const maxRadius = 7.0; // REDUCED from 10km to 7km for tighter daily dispatch
 
             let candidates: any[] = [];
             const previouslyCheckedDrivers = new Set<string>();
@@ -438,12 +434,18 @@ export const distributeRideToDrivers = onDocumentWritten(
             const isRental = afterData.rideType === 'rental';
             const waitTimeMs = isRental ? 10000 : 5000;
 
-            console.log(`[Dispatch Flow] Ride is ${isRental ? 'Rental' : 'Daily'}. Timer set to ${waitTimeMs}ms.`);
+            console.log(`[Dispatch Flow] Ride is ${isRental ? 'Rental' : 'Daily'}. Timer set to ${waitTimeMs}ms. Max Radius: ${maxRadius}km`);
 
             let rideFinished = false;
 
             while (currentRadius <= maxRadius && !rideFinished) {
                 console.log(`[Dispatch Flow] Expanding search radius to ${currentRadius}km...`);
+                
+                // REFRESH: Get latest driver locations from RTDB within the expansion loop
+                const activeDriversSnap = await driversRef.once('value');
+                const allDrivers = activeDriversSnap.val() || {};
+                const nowMs = Date.now();
+
                 let newCandidatesFound = false;
 
                 for (const [driverId, locData] of Object.entries<any>(allDrivers)) {
@@ -565,7 +567,7 @@ export const distributeRideToDrivers = onDocumentWritten(
                     const existingRequest = await requestRef.get();
                     if (existingRequest.exists) continue;
 
-                    console.log(`[Dispatch Flow] Sending ride ${rideId} to driver ${driverId}`);
+                    console.log(`[Dispatch Flow] Sending ride ${rideId} to driver ${driverId} at ${driverInfo.distance.toFixed(2)}km away`);
 
                     const expiresAt = admin.firestore.Timestamp.fromMillis(Date.now() + waitTimeMs);
 
@@ -1701,6 +1703,12 @@ export const onDriverNotificationCreated = onDocumentCreated(
                 return null;
             }
 
+            // Skip if this is a broadcast notification already handled by multicast
+            if (data.skipPush === true) {
+                console.log(`[PUSH] skipPush flag detected for ${event.params.notificationId}. Skipping individual push.`);
+                return null;
+            }
+
             // Prepare the notification message
             // We convert all data values to strings as FCM data payload requires string values.
             const dataPayload = data.data ? Object.keys(data.data).reduce((acc: any, key) => {
@@ -1745,6 +1753,152 @@ export const onDriverNotificationCreated = onDocumentCreated(
         return null;
     }
 );
+
+/**
+ * Triggers when a new notification document is created in the admin panel.
+ * Broadcasts the message to the specified target audience (Users or Drivers).
+ */
+export const sendGlobalNotification = onDocumentCreated(
+    {
+        document: "notifications/{notificationId}",
+        region: "asia-south1",
+    },
+    async (event) => {
+        const snap = event.data;
+        if (!snap) return null;
+
+        const data = snap.data();
+        const {title, message, target, specificIds} = data;
+
+        if (!title || !message || !target) {
+            console.error("[GLOBAL NOTIF] Missing required fields:", {title, message, target});
+            return null;
+        }
+
+        console.log(`[GLOBAL NOTIF] Processing broadcast: ${title} | Target: ${target}`);
+
+        try {
+            let targetCollection = "users";
+            if (target === "all_drivers" || target === "specific_drivers") {
+                targetCollection = "drivers";
+            }
+
+            const targetIds: string[] = [];
+
+            // 1. Determine Target IDs
+            if (target === "all_users" || target === "all_drivers") {
+                const querySnapshot = await db.collection(targetCollection).get();
+                querySnapshot.forEach((doc) => targetIds.push(doc.id));
+            } else if (specificIds && Array.isArray(specificIds)) {
+                targetIds.push(...specificIds);
+            } else if (data.specificId) {
+                targetIds.push(data.specificId);
+            }
+
+            if (targetIds.length === 0) {
+                console.warn("[GLOBAL NOTIF] No target IDs found.");
+                return snap.ref.update({status: "failed", error: "No targets found"});
+            }
+
+            // 2. Distribute to History & Collect Tokens
+            const tokens: string[] = [];
+            
+            // Process in a loop to add history records
+            for (const id of targetIds) {
+                try {
+                    const doc = await db.collection(targetCollection).doc(id).get();
+                    if (!doc.exists) continue;
+
+                    const token = doc.data()?.fcmToken;
+                    if (token) tokens.push(token);
+
+                    // Add to notification history with skipPush flag
+                    await db.collection(targetCollection).doc(id).collection("notifications").add({
+                        title: title,
+                        body: message,
+                        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                        isRead: false,
+                        skipPush: true, // Prevent individual push since we multicast below
+                        data: data.extraData || {}
+                    });
+                } catch (err) {
+                    console.error(`[GLOBAL NOTIF] Error processing target ${id}:`, err);
+                }
+            }
+
+            // 3. Multicast Push Notification
+            if (tokens.length > 0) {
+                // Batch tokens (FCM multicast supports up to 500 tokens per call)
+                const chunks = [];
+                for (let i = 0; i < tokens.length; i += 500) {
+                    chunks.push(tokens.slice(i, i + 500));
+                }
+
+                let totalSuccess = 0;
+                let totalFailure = 0;
+
+                for (const chunk of chunks) {
+                    const multicastPayload: admin.messaging.MulticastMessage = {
+                        tokens: chunk,
+                        notification: {
+                            title: title,
+                            body: message,
+                        },
+                        data: {
+                            click_action: "FLUTTER_NOTIFICATION_CLICK",
+                            type: "global_broadcast",
+                        },
+                        android: {
+                            priority: "high",
+                            notification: {
+                                sound: "default",
+                                channelId: "high_importance_channel"
+                            },
+                        },
+                        apns: {
+                            payload: {
+                                aps: {
+                                    sound: "default",
+                                },
+                            },
+                        },
+                    };
+
+                    const response = await admin.messaging().sendEachForMulticast(multicastPayload);
+                    totalSuccess += response.successCount;
+                    totalFailure += response.failureCount;
+                }
+
+                console.log(`[GLOBAL NOTIF] Broadcast complete. Success: ${totalSuccess}, Failure: ${totalFailure}`);
+                
+                await snap.ref.update({
+                    status: "delivered",
+                    successCount: totalSuccess,
+                    failureCount: totalFailure,
+                    processedAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+            } else {
+                console.warn("[GLOBAL NOTIF] No FCM tokens found for targets.");
+                await snap.ref.update({
+                    status: "delivered",
+                    message: "No FCM tokens found",
+                    processedAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+            }
+
+        } catch (error: any) {
+            console.error("[GLOBAL NOTIF] Fatal error:", error);
+            await snap.ref.update({
+                status: "error",
+                error: error.message,
+                processedAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+        }
+
+        return null;
+    }
+);
+
 
 
 /**
@@ -2451,13 +2605,10 @@ export const distributeRentalToDrivers = onDocumentWritten(
             }
 
             const driversRef = rtdb.ref('driver_locations');
-            const activeDriversSnap = await driversRef.once('value');
-            const allDrivers = activeDriversSnap.val() || {};
-            const nowMs = Date.now();
 
             // Refactored to matching Daily Ride sequential logic
             let currentRadius = 2.0;
-            const maxRadius = 15.0; // Rentals can expand further
+            const maxRadius = 10.0; // REDUCED from 15km to 10km for rentals
             let candidates: any[] = [];
             const previouslyCheckedDrivers = new Set<string>();
             const rideRef = change.after.ref;
@@ -2467,6 +2618,12 @@ export const distributeRentalToDrivers = onDocumentWritten(
 
             while (currentRadius <= maxRadius && !rideFinished) {
                 console.log(`[Rental Dispatch] Expanding radius to ${currentRadius}km...`);
+
+                // REFRESH: Get latest driver locations from RTDB
+                const activeDriversSnap = await driversRef.once('value');
+                const allDrivers = activeDriversSnap.val() || {};
+                const nowMs = Date.now();
+
                 let newCandidatesFound = false;
 
                 for (const [driverId, locData] of Object.entries<any>(allDrivers)) {

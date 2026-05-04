@@ -3,6 +3,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart' hide Route;
+import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:project_taxi_driver_app/controllers/home_page_controller.dart';
@@ -78,6 +79,9 @@ class _DriverHomePageState extends State<DriverHomePage>
 
     // Enable Wakelock to keep screen on
     WakelockPlus.enable();
+
+    // Ensure edge-to-edge transparency is handled by the widget tree
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   }
 
   @override
