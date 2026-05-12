@@ -45,12 +45,12 @@ class PricingService {
     final double distanceDiff = actualDistanceKm - estimatedDistanceKm;
 
     // Tolerance Logic
-    // If distance is nearly identical (within 200 meters), use original quoted fare.
-    if (distanceDiff.abs() < 0.2) {
+    // User requested +1.5km tolerance. We also keep a small -200m tolerance for minor deviations.
+    if (distanceDiff <= 1.5 && distanceDiff >= -0.2) {
       return {
         'finalFare': rideRequest.rideFare,
         'priceUpdated': false,
-        'reason': "Distance matched within 200m tolerance. Using original quoted fare.",
+        'reason': "Distance matched within tolerance (-200m to +1.5km). Using original quoted fare.",
       };
     }
 
@@ -60,28 +60,35 @@ class PricingService {
 
 
     // Recalculate using rules
-    // Use createdAt (booking time) for peak/night charges to lock the rate.
+    // Use createdAt (booking time) or startedAt for peak/night charges to lock the rate.
     final DateTime refTime = rideRequest.createdAt ?? rideRequest.startedAt ?? DateTime.now();
     
-    // Determine Surge Multiplier (1.2x for peak hours)
-    double surgeMultiplier = 1.0;
+    // Determine Surge Multiplier
+    double surgeMultiplier = rideRequest.surgeMultiplier ?? 1.0;
     
-    // Get IST Hour (Asia/Kolkata)
-    final int hour = refTime.hour;
-    final int weekday = refTime.weekday; // 1 = Mon, 7 = Sun
-    final bool isWeekend = weekday == DateTime.saturday || weekday == DateTime.sunday;
+    // If surge is not already locked in the request, calculate it based on booking time.
+    if (rideRequest.surgeMultiplier == null) {
+      // Get IST Hour (Asia/Kolkata)
+      final int hour = refTime.hour;
+      final int weekday = refTime.weekday; // 1 = Mon, 7 = Sun
+      final bool isWeekend = weekday == DateTime.saturday || weekday == DateTime.sunday;
 
-    if (isWeekend) {
-      if (hour >= 15 && hour < 21) surgeMultiplier = 1.20;
+      if (isWeekend) {
+        if (hour >= 15 && hour < 21) surgeMultiplier = 1.20;
+      } else {
+        final bool isMorningSurge = hour >= 8 && hour < 11;
+        final bool isEveningSurge = hour >= 17 && hour < 21;
+        if (isMorningSurge || isEveningSurge) surgeMultiplier = 1.20;
+      }
+      debugPrint("PricingService: No surge in request. Calculated surge for hour $hour: ${surgeMultiplier}x (RefTime: $refTime)");
     } else {
-      final bool isMorningSurge = hour >= 8 && hour < 11;
-      final bool isEveningSurge = hour >= 17 && hour < 21;
-      if (isMorningSurge || isEveningSurge) surgeMultiplier = 1.20;
+      debugPrint("PricingService: Using locked surge from request: ${surgeMultiplier}x");
     }
 
     // Night Charge (₹30 for 10 PM - 6 AM)
     double nightCharge = 0.0;
-    if (hour >= 22 || hour < 6) {
+    final int refHour = refTime.hour;
+    if (refHour >= 22 || refHour < 6) {
       nightCharge = 30.0;
     }
 

@@ -154,6 +154,7 @@ class RideRequest {
     double? waitingCharge,
     double? paidByWallet,
     double? tollPrice,
+    double? surgeMultiplier,
   }) {
     return RideRequest(
       rideId: rideId ?? this.rideId,
@@ -195,6 +196,7 @@ class RideRequest {
       waitingCharge: waitingCharge ?? this.waitingCharge,
       paidByWallet: paidByWallet ?? this.paidByWallet,
       tollPrice: tollPrice ?? this.tollPrice,
+      surgeMultiplier: surgeMultiplier ?? this.surgeMultiplier,
     );
   }
 
@@ -243,6 +245,7 @@ class RideRequest {
       'waitingCharge': waitingCharge,
       'paidByWallet': paidByWallet,
       'tollPrice': tollPrice,
+      'surgeMultiplier': surgeMultiplier,
     };
   }
 
@@ -392,6 +395,7 @@ class RideRequest {
       waitingCharge: (json['waitingCharge'] as num?)?.toDouble() ?? 0.0,
       paidByWallet: (json['paidByWallet'] as num?)?.toDouble(),
       tollPrice: (json['tollPrice'] as num?)?.toDouble(),
+      surgeMultiplier: (json['surgeMultiplier'] as num?)?.toDouble(),
     );
   }
 
@@ -583,18 +587,24 @@ class _RideRequestCardState extends State<RideRequestCard> {
     // We will handle MediaQuery in the parent or assume context is fine.
     // For list usage, we don't want Positioned.
 
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final cardColor = isDark ? AppColors.darkStart : Colors.white;
+    final primaryTextColor = isDark ? Colors.white : Colors.black87;
+    final secondaryTextColor = isDark ? Colors.white70 : Colors.black54;
+
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       decoration: BoxDecoration(
-        color: AppColors.primary,
+        color: cardColor,
         borderRadius: BorderRadius.circular(20),
         boxShadow: [
           BoxShadow(
             blurRadius: 15,
-            color: Colors.black.withValues(alpha: 0.3),
+            color: Colors.black.withValues(alpha: 0.15),
             offset: const Offset(0, 4),
           ),
         ],
+        border: isDark ? null : Border.all(color: Colors.grey.shade200, width: 1),
       ),
       child: Stack(
         children: [
@@ -614,13 +624,13 @@ class _RideRequestCardState extends State<RideRequestCard> {
                     style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
-                      color: Colors.white.withValues(alpha: 0.9),
+                      color: isDark ? Colors.white.withValues(alpha: 0.9) : AppColors.primary,
                     ),
                   ),
                 ),
                 const SizedBox(height: 12),
                 _isTranslating
-                    ? _buildShimmerRow()
+                    ? _buildShimmerRow(isDark)
                     : _buildDetailRow(
                         Icons.location_on,
                         _translatedPickupTitle ??
@@ -629,16 +639,19 @@ class _RideRequestCardState extends State<RideRequestCard> {
                         _translatedPickupAddress ??
                             widget.rideRequest.pickupFullAddress,
                         "${widget.rideRequest.driverDistance.toStringAsFixed(1)} ${'kmAway'.tr}${(widget.rideRequest.driverDuration != null) ? " (~${widget.rideRequest.driverDuration!.toStringAsFixed(0)} ${'mins'.tr})" : ""}",
+                        primaryTextColor,
+                        secondaryTextColor,
+                        isDark,
                       ),
-                const Padding(
-                  padding: EdgeInsets.symmetric(
+                Padding(
+                  padding: const EdgeInsets.symmetric(
                     vertical: 4.0,
                     horizontal: 12.0,
                   ),
-                  child: Icon(Icons.more_vert, color: Colors.white54, size: 16),
+                  child: Icon(Icons.more_vert, color: secondaryTextColor.withValues(alpha: 0.5), size: 16),
                 ),
                 _isTranslating
-                    ? _buildShimmerRow()
+                    ? _buildShimmerRow(isDark)
                     : Builder(
                         builder: (context) {
                           final pendingStop =
@@ -671,6 +684,9 @@ class _RideRequestCardState extends State<RideRequestCard> {
                             title,
                             address,
                             "${widget.rideRequest.rideDistance.toStringAsFixed(1)} ${'kmRide'.tr}${(widget.rideRequest.rideDuration != null) ? " (~${widget.rideRequest.rideDuration!.toStringAsFixed(0)} ${'mins'.tr})" : ""}",
+                            primaryTextColor,
+                            secondaryTextColor,
+                            isDark,
                           );
                         },
                       ),
@@ -682,25 +698,25 @@ class _RideRequestCardState extends State<RideRequestCard> {
                       horizontal: 12,
                     ),
                     decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.15),
+                      color: isDark ? Colors.white.withValues(alpha: 0.15) : Colors.orange.shade50,
                       borderRadius: BorderRadius.circular(10),
                       border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.3),
+                        color: isDark ? Colors.white.withValues(alpha: 0.3) : Colors.orange.shade200,
                       ),
                     ),
                     child: Row(
                       children: [
-                        const Icon(
+                        Icon(
                           Icons.add_location_alt_outlined,
-                          color: Colors.yellowAccent,
+                          color: isDark ? Colors.yellowAccent : Colors.orange.shade700,
                           size: 20,
                         ),
                         const SizedBox(width: 10),
                         Expanded(
                           child: Text(
                             "${widget.rideRequest.stops.length} ${'stopsAdded'.tr}",
-                            style: const TextStyle(
-                              color: Colors.white,
+                            style: TextStyle(
+                              color: isDark ? Colors.white : Colors.black87,
                               fontWeight: FontWeight.bold,
                               fontSize: 16,
                             ),
@@ -712,13 +728,13 @@ class _RideRequestCardState extends State<RideRequestCard> {
                             vertical: 4,
                           ),
                           decoration: BoxDecoration(
-                            color: Colors.yellowAccent,
+                            color: isDark ? Colors.yellowAccent : Colors.orange.shade700,
                             borderRadius: BorderRadius.circular(6),
                           ),
                           child: Text(
                             "₹${widget.rideRequest.stops.length * 30} added",
-                            style: const TextStyle(
-                              color: Colors.black87,
+                            style: TextStyle(
+                              color: isDark ? Colors.black87 : Colors.white,
                               fontWeight: FontWeight.bold,
                               fontSize: 14,
                             ),
@@ -729,7 +745,7 @@ class _RideRequestCardState extends State<RideRequestCard> {
                   ),
                   const SizedBox(height: 8),
                 ],
-                const Divider(height: 24, color: Colors.white24),
+                Divider(height: 24, color: isDark ? Colors.white24 : Colors.grey.shade200),
 
                 // --- Footer: Price and Actions ---
                 Row(
@@ -741,10 +757,10 @@ class _RideRequestCardState extends State<RideRequestCard> {
                       children: [
                         Text(
                           "₹${widget.rideRequest.rideFare.toStringAsFixed(0)}",
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 28,
                             fontWeight: FontWeight.bold,
-                            color: Colors.white,
+                            color: isDark ? Colors.white : AppColors.primary,
                           ),
                         ),
                         if (widget.rideRequest.tollPrice != null &&
@@ -801,13 +817,42 @@ class _RideRequestCardState extends State<RideRequestCard> {
                         if (widget.rideRequest.tip != null &&
                             widget.rideRequest.tip! > 0)
                           Padding(
-                            padding: const EdgeInsets.only(top: 2),
-                            child: Text(
-                              "+ ₹${widget.rideRequest.tip!.toStringAsFixed(0)} Tip",
-                              style: const TextStyle(
-                                color: Colors.greenAccent,
-                                fontSize: 13,
-                                fontWeight: FontWeight.bold,
+                            padding: const EdgeInsets.only(top: 6),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 6,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.green,
+                                borderRadius: BorderRadius.circular(8),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.green.withValues(alpha: 0.3),
+                                    blurRadius: 4,
+                                    offset: const Offset(0, 2),
+                                  ),
+                                ],
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(
+                                    Icons.card_giftcard,
+                                    color: Colors.white,
+                                    size: 14,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    "Customer Added TIP: ₹${widget.rideRequest.tip!.toStringAsFixed(0)}",
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: 0.5,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           ),
@@ -821,9 +866,9 @@ class _RideRequestCardState extends State<RideRequestCard> {
                         TextButton(
                           onPressed: widget.onReject,
                           style: TextButton.styleFrom(
-                            backgroundColor: Colors.white.withValues(
-                              alpha: 0.1,
-                            ),
+                            backgroundColor: isDark 
+                                ? Colors.white.withValues(alpha: 0.1)
+                                : Colors.grey.shade100,
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(30),
                             ),
@@ -832,10 +877,10 @@ class _RideRequestCardState extends State<RideRequestCard> {
                               vertical: 10,
                             ),
                           ),
-                          child: const Text(
+                          child: Text(
                             "Pass",
                             style: TextStyle(
-                              color: Colors.white70,
+                              color: isDark ? Colors.white70 : Colors.grey.shade600,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
@@ -879,8 +924,10 @@ class _RideRequestCardState extends State<RideRequestCard> {
               ),
               child: LinearProgressIndicator(
                 value: _progressValue,
-                backgroundColor: Colors.white.withValues(alpha: 0.1),
-                valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                backgroundColor: isDark 
+                    ? Colors.white.withValues(alpha: 0.1)
+                    : Colors.grey.shade100,
+                valueColor: AlwaysStoppedAnimation<Color>(isDark ? Colors.white : AppColors.primary),
                 minHeight: 4,
               ),
             ),
@@ -895,6 +942,9 @@ class _RideRequestCardState extends State<RideRequestCard> {
     String title,
     String fullAddress,
     String distanceInfo,
+    Color primaryColor,
+    Color secondaryColor,
+    bool isDark,
   ) {
     // If title and address are identical, don't show the redundant title
     final bool isTitleRedundant = title.trim() == fullAddress.trim();
@@ -902,7 +952,7 @@ class _RideRequestCardState extends State<RideRequestCard> {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(icon, color: Colors.white, size: 28),
+        Icon(icon, color: isDark ? Colors.white : AppColors.primary, size: 28),
         const SizedBox(width: 16),
         Expanded(
           child: Column(
@@ -911,9 +961,9 @@ class _RideRequestCardState extends State<RideRequestCard> {
               if (!isTitleRedundant) ...[
                 Text(
                   title,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontWeight: FontWeight.bold,
-                    color: Colors.white,
+                    color: primaryColor,
                     fontSize: 18,
                   ),
                 ),
@@ -921,7 +971,7 @@ class _RideRequestCardState extends State<RideRequestCard> {
                 Text(
                   fullAddress,
                   style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.9),
+                    color: secondaryColor,
                     fontSize: 14,
                   ),
                   maxLines: 2,
@@ -930,9 +980,9 @@ class _RideRequestCardState extends State<RideRequestCard> {
               ] else
                 Text(
                   fullAddress,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontWeight: FontWeight.bold,
-                    color: Colors.white,
+                    color: primaryColor,
                     fontSize: 16,
                   ),
                   maxLines: 3,
@@ -941,8 +991,8 @@ class _RideRequestCardState extends State<RideRequestCard> {
               const SizedBox(height: 8),
               Text(
                 distanceInfo,
-                style: const TextStyle(
-                  color: Colors.white,
+                style: TextStyle(
+                  color: primaryColor,
                   fontSize: 14,
                   fontWeight: FontWeight.bold,
                 ),
@@ -959,21 +1009,24 @@ class _RideRequestCardState extends State<RideRequestCard> {
     String title,
     String fullAddress,
     String distanceInfo,
+    Color primaryColor,
+    Color secondaryColor,
+    bool isDark,
   ) {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.1),
+        color: isDark ? Colors.white.withValues(alpha: 0.1) : Colors.grey.shade50,
         borderRadius: BorderRadius.circular(15),
         border: Border.all(
-          color: Colors.white.withValues(alpha: 0.2),
+          color: isDark ? Colors.white.withValues(alpha: 0.2) : Colors.grey.shade200,
           width: 1,
         ),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, color: Colors.white, size: 28),
+          Icon(icon, color: isDark ? Colors.white : AppColors.primary, size: 28),
           const SizedBox(width: 16),
           Expanded(
             child: Column(
@@ -981,9 +1034,9 @@ class _RideRequestCardState extends State<RideRequestCard> {
               children: [
                 Text(
                   title,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontWeight: FontWeight.bold,
-                    color: Colors.white,
+                    color: primaryColor,
                     fontSize: 22,
                   ),
                 ),
@@ -991,7 +1044,7 @@ class _RideRequestCardState extends State<RideRequestCard> {
                 Text(
                   fullAddress,
                   style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.8),
+                    color: secondaryColor,
                     fontSize: 14,
                   ),
                   maxLines: 2,
@@ -1000,8 +1053,8 @@ class _RideRequestCardState extends State<RideRequestCard> {
                 const SizedBox(height: 8),
                 Text(
                   distanceInfo,
-                  style: const TextStyle(
-                    color: Colors.white,
+                  style: TextStyle(
+                    color: primaryColor,
                     fontSize: 14,
                     fontWeight: FontWeight.bold,
                   ),
@@ -1014,7 +1067,10 @@ class _RideRequestCardState extends State<RideRequestCard> {
     );
   }
 
-  Widget _buildShimmerRow() {
+  Widget _buildShimmerRow(bool isDark) {
+    final shimmerBaseColor = isDark ? Colors.white.withValues(alpha: 0.2) : Colors.grey.shade200;
+    final shimmerSecondaryColor = isDark ? Colors.white.withValues(alpha: 0.1) : Colors.grey.shade100;
+
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1022,7 +1078,7 @@ class _RideRequestCardState extends State<RideRequestCard> {
           width: 28,
           height: 28,
           decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.3),
+            color: shimmerBaseColor,
             borderRadius: BorderRadius.circular(14),
           ),
         ),
@@ -1035,7 +1091,7 @@ class _RideRequestCardState extends State<RideRequestCard> {
                 height: 18,
                 width: 120,
                 decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.3),
+                  color: shimmerBaseColor,
                   borderRadius: BorderRadius.circular(4),
                 ),
               ),
@@ -1044,7 +1100,7 @@ class _RideRequestCardState extends State<RideRequestCard> {
                 height: 14,
                 width: double.infinity,
                 decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.2),
+                  color: shimmerSecondaryColor,
                   borderRadius: BorderRadius.circular(4),
                 ),
               ),
@@ -1053,7 +1109,7 @@ class _RideRequestCardState extends State<RideRequestCard> {
                 height: 14,
                 width: 180,
                 decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.2),
+                  color: shimmerSecondaryColor,
                   borderRadius: BorderRadius.circular(4),
                 ),
               ),
@@ -1062,7 +1118,7 @@ class _RideRequestCardState extends State<RideRequestCard> {
                 height: 14,
                 width: 100,
                 decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.3),
+                  color: shimmerBaseColor,
                   borderRadius: BorderRadius.circular(4),
                 ),
               ),

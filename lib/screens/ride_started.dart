@@ -221,13 +221,15 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
                     oldPendingCount != newPendingCount ||
                     _rideRequest.stops.length != updatedRide.stops.length;
 
-                // Preserve locally-resolved distance if server update is missing it (0.0)
-                if (updatedRide.rideDistance == 0 && _rideRequest.rideDistance > 0) {
-                  _dynamicRideRequest =
-                      updatedRide.copyWith(rideDistance: _rideRequest.rideDistance);
-                } else {
-                  _dynamicRideRequest = updatedRide;
-                }
+                // Preserve locally-resolved or critical fields if server update is missing them
+                _dynamicRideRequest = updatedRide.copyWith(
+                  rideDistance: (updatedRide.rideDistance == 0 && _rideRequest.rideDistance > 0)
+                      ? _rideRequest.rideDistance
+                      : updatedRide.rideDistance,
+                  createdAt: updatedRide.createdAt ?? _rideRequest.createdAt,
+                  startedAt: updatedRide.startedAt ?? _rideRequest.startedAt,
+                  surgeMultiplier: updatedRide.surgeMultiplier ?? _rideRequest.surgeMultiplier,
+                );
 
                 if (destChanged) {
                   debugPrint("Destination changed! Updating route.");
@@ -1051,7 +1053,7 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
   void _showRentalEndOtpDialog() {
     Get.to(
       () => RideEndOtpScreen(
-        rideRequest: widget.rideRequest,
+        rideRequest: _rideRequest,
         driverLocation: _driverLocation,
         accumulatedDistance: _accumulatedDistance,
       ),
