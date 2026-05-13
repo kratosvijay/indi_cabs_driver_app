@@ -316,15 +316,16 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
   bool _routeFetched = false;
 
   Future<void> _getInitialRoute() async {
-    // Attempt to repair drop location if it looks suspicious (equals pickup)
-    await _repairDropoffLocation();
-
     // Wait for driver location to be available
     int retries = 0;
-    while (_driverLocation == null && retries < 5) {
+    while (_driverLocation == null && retries < 10) { // Increased retries slightly
       await Future.delayed(const Duration(milliseconds: 500));
       retries++;
     }
+
+    // Attempt to repair drop location if it looks suspicious (equals pickup)
+    // Doing this AFTER waiting for driver location ensures we have location bias for geocoding
+    await _repairDropoffLocation();
 
     if (_driverLocation != null &&
         _driverLocation!.latitude != 0 &&
@@ -597,7 +598,10 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
           ),
         );
       }
-    } else if (_dropLocation != null) {
+    }
+    
+    // Always add final destination Marker if available
+    if (_dropLocation != null && _dropLocation!.latitude != 0) {
       _markers.add(
         maps.Marker(
           markerId: const maps.MarkerId('destination'),
@@ -697,14 +701,16 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
       // Logic: Pass current target.
       // Use maps.LatLng for local logic, convert to nav.LatLng for NavigationScreen.
 
+      // 1. Identify Target: First pending stop, or final destination
       maps.LatLng target;
       String title;
-
-      if (_rideRequest.stops.isNotEmpty &&
-          _currentStopIndex < _rideRequest.stops.length) {
-        final stop = _rideRequest.stops[_currentStopIndex];
+      final pendingStopIndex = _rideRequest.stops.indexWhere((s) => s.isPending);
+      
+      if (pendingStopIndex != -1) {
+        final stop = _rideRequest.stops[pendingStopIndex];
         target = maps.LatLng(stop.location.latitude, stop.location.longitude);
         title = stop.title;
+        debugPrint("Navigating to Stop ${pendingStopIndex + 1}: $title");
       } else {
         target = _dropLocation ??
             maps.LatLng(
@@ -712,59 +718,37 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
               _rideRequest.dropoffLocation.longitude,
             );
         title = _rideRequest.dropoffTitle;
+        debugPrint("Navigating to Final Destination: $title");
+      }
 
-        // --- NAV SAFETY CHECK ---
-        // If target is 0,0 or suspiciously close to pickup (implies invalid data),
-        // try one last time to resolve from address before opening navigation.
-        final distToPickup = Geolocator.distanceBetween(
-          target.latitude,
-          target.longitude,
-          _rideRequest.pickupLocation.latitude,
-          _rideRequest.pickupLocation.longitude,
+      // --- NAV SAFETY CHECK ---
+      // If target is 0,0 or suspiciously close to pickup (implies invalid data),
+      // try one last time to resolve from address before opening navigation.
+      final distToPickup = Geolocator.distanceBetween(
+        target.latitude,
+        target.longitude,
+        _rideRequest.pickupLocation.latitude,
+        _rideRequest.pickupLocation.longitude,
+      );
+
+      if ((target.latitude == 0 && target.longitude == 0) ||
+          (distToPickup < 100 && _rideRequest.rideType != 'rental')) {
+        debugPrint(
+          "Nav_Safety: Target is invalid or at pickup. Geocoding address...",
         );
+        String address = (pendingStopIndex != -1)
+            ? _rideRequest.stops[pendingStopIndex].fullAddress
+            : (_rideRequest.dropoffFullAddress.isNotEmpty &&
+                    _rideRequest.dropoffFullAddress != "Unknown" &&
+                    !_rideRequest.dropoffFullAddress.contains("getting address")
+                ? _rideRequest.dropoffFullAddress
+                : _rideRequest.dropoffTitle);
 
-        if ((target.latitude == 0 && target.longitude == 0) ||
-            (distToPickup < 100 && _rideRequest.rideType != 'rental')) {
-          debugPrint(
-            "Nav_Safety: Target is invalid or at pickup. Geocoding address...",
-          );
-          String address = _rideRequest.dropoffFullAddress.isNotEmpty &&
-                  _rideRequest.dropoffFullAddress != "Unknown" &&
-                  !_rideRequest.dropoffFullAddress.contains("getting address")
-              ? _rideRequest.dropoffFullAddress
-              : _rideRequest.dropoffTitle;
-
-          if (address.isNotEmpty && address != "Unknown") {
-            final resolved = await _getLatLngFromAddress(address);
-            if (resolved != null) {
-              target = resolved;
-              debugPrint("Nav_Safety: Resolved target to $target");
-            }
-          }
-        }
-
-        // Final fallback checks if still 0,0
-
-        if (target.latitude == 0 && target.longitude == 0) {
-          // If drop is 0,0 try getting from address
-          String addressToGeocode = _rideRequest.dropoffFullAddress;
-          if (addressToGeocode.isEmpty ||
-              addressToGeocode == "Unknown" ||
-              addressToGeocode.contains("getting address")) {
-            addressToGeocode = _fetchedAddress;
-          }
-
-          if (addressToGeocode.isNotEmpty &&
-              addressToGeocode != "Drop-off Location" &&
-              !addressToGeocode.contains("getting address")) {
-            debugPrint(
-              "Nav Target is 0,0 (BAD). Attempting to geocode address: $addressToGeocode",
-            );
-            final resolvedLoc = await _getLatLngFromAddress(addressToGeocode);
-            if (resolvedLoc != null) {
-              target = resolvedLoc;
-              debugPrint("Resolved Nav Target to: $target");
-            }
+        if (address.isNotEmpty && address != "Unknown") {
+          final resolved = await _getLatLngFromAddress(address);
+          if (resolved != null) {
+            target = resolved;
+            debugPrint("Nav_Safety: Resolved target to $target");
           }
         }
       }
@@ -804,8 +788,14 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
       final apiKey = dotenv.env['GOOGLE_MAPS_API_KEY'];
       if (apiKey == null) return null;
 
+      // Add location bias if driver location is available to prevent results from 500km away
+      String biasParam = "";
+      if (_driverLocation != null) {
+        biasParam = "&locationbias=circle:50000@${_driverLocation!.latitude},${_driverLocation!.longitude}";
+      }
+
       final url = Uri.parse(
-        'https://maps.googleapis.com/maps/api/geocode/json?address=${Uri.encodeComponent(address)}&key=$apiKey',
+        'https://maps.googleapis.com/maps/api/geocode/json?address=${Uri.encodeComponent(address)}$biasParam&key=$apiKey',
       );
       final response = await http.get(url);
 
@@ -1131,10 +1121,9 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
       // If price was updated (distance changed), we might want to verify tolls via Cloud
       // but the user wants to avoid the "always calling" delay.
       // So we use the estimated toll from the original request as a baseline if distance matches.
-      if (!priceUpdated) {
-        tollCharge = _rideRequest.tollPrice ?? 0.0;
-        tollCrossed = tollCharge > 0;
-      }
+      // Always include tolls if they were part of the initial request
+      tollCharge = _rideRequest.tollPrice ?? 0.0;
+      tollCrossed = tollCharge > 0;
       // ---------------------------------------------------------
 
       // Start Address Fetch in Parallel if location known

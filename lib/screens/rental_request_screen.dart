@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui';
 import 'package:flutter/material.dart';
 
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
@@ -39,9 +40,7 @@ class _RentalRequestScreenState extends State<RentalRequestScreen> {
 
   void _startTimer() {
     const updateInterval = Duration(milliseconds: 100);
-    // Total steps = 10s * 1000ms / 100ms = 100 steps
-    final totalSteps =
-        (_totalDurationSeconds * 1000) / updateInterval.inMilliseconds;
+    final totalSteps = (_totalDurationSeconds * 1000) / updateInterval.inMilliseconds;
     final decrement = 1.0 / totalSteps;
 
     _timer = Timer.periodic(updateInterval, (timer) {
@@ -62,305 +61,210 @@ class _RentalRequestScreenState extends State<RentalRequestScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Construct package display string
-    String packageDisplay = widget.rideRequest.packageName ?? "Rental Package";
-    if (widget.rideRequest.durationHours != null &&
-        widget.rideRequest.kmLimit != null) {
-      packageDisplay =
-          "${widget.rideRequest.durationHours} Hours / ${widget.rideRequest.kmLimit} km";
-    }
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final cardColor = isDark ? AppColors.darkStart : Colors.white;
+    final primaryTextColor = isDark ? Colors.white : Colors.black87;
+    final secondaryTextColor = isDark ? Colors.white70 : Colors.black54;
 
-    final String vehicleClass = widget.rideRequest.vehicleClass;
-    final String pickupTitle = widget.rideRequest.pickupTitle;
-    final String pickupAddress = widget.rideRequest.pickupFullAddress;
-    final String driverDist = widget.rideRequest.driverDistance.toStringAsFixed(
-      1,
-    );
-    final String driverDur =
-        widget.rideRequest.driverDuration?.toStringAsFixed(0) ?? "0";
-    final String rideFare = widget.rideRequest.rideFare.toStringAsFixed(0);
+    String packageDisplay = widget.rideRequest.packageName ?? "Rental Package";
+    if (widget.rideRequest.durationHours != null && widget.rideRequest.kmLimit != null) {
+      packageDisplay = "${widget.rideRequest.durationHours} Hours / ${widget.rideRequest.kmLimit} km Package";
+    }
 
     return PopScope(
       canPop: false,
       child: MediaQuery(
         data: MediaQuery.of(context).copyWith(textScaler: TextScaler.noScaling),
         child: Scaffold(
-          backgroundColor: Colors.black,
+          backgroundColor: Colors.transparent,
           body: Stack(
             children: [
-              // Background - Dark Gradient
-              Container(
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [Colors.black87, Colors.black],
+              // 1. Blurred Background
+              Positioned.fill(
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                  child: Container(
+                    color: Colors.black.withValues(alpha: 0.6),
                   ),
                 ),
               ),
 
-              // Heavy overlay pattern or image could go here if needed
-
-              // Main Content
+              // 2. Main Content
               SafeArea(
                 child: Column(
                   children: [
-                    // Progress Indicator
+                    // Top Progress Bar
                     LinearProgressIndicator(
                       value: _progressValue,
-                      backgroundColor: Colors.white12,
-                      valueColor: const AlwaysStoppedAnimation<Color>(
-                        Colors.greenAccent,
-                      ),
-                      minHeight: 4,
+                      backgroundColor: Colors.white10,
+                      valueColor: const AlwaysStoppedAnimation<Color>(Colors.greenAccent),
+                      minHeight: 6,
                     ),
 
                     Expanded(
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 24.0,
-                          vertical: 16.0,
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          children: [
-                            const SizedBox(height: 16),
-                            // Title
-                            Text(
-                              "$vehicleClass REQUEST".toUpperCase(),
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                color: Colors.white.withValues(alpha: 0.95),
-                                fontSize: 24,
-                                fontWeight: FontWeight.bold,
-                                letterSpacing: 1.5,
-                              ),
+                      child: Center(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: cardColor,
+                              borderRadius: BorderRadius.circular(24),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withValues(alpha: 0.4),
+                                  blurRadius: 30,
+                                  offset: const Offset(0, 15),
+                                ),
+                              ],
+                              border: isDark ? Border.all(color: Colors.white10) : null,
                             ),
-                            const SizedBox(height: 32),
-
-                            // Main Card
-                            Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(20),
-                              decoration: BoxDecoration(
-                                color: AppColors.primary,
-                                borderRadius: BorderRadius.circular(24),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withValues(alpha: 0.5),
-                                    blurRadius: 20,
-                                    offset: const Offset(0, 10),
-                                  ),
-                                ],
-                                border: Border.all(color: Colors.white12),
-                              ),
+                            child: Padding(
+                              padding: const EdgeInsets.all(24),
                               child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  // Package Info Box
-                                  Container(
-                                    width: double.infinity,
-                                    padding: const EdgeInsets.symmetric(
-                                      vertical: 16,
-                                      horizontal: 12,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: Colors.white.withValues(
-                                        alpha: 0.08,
+                                  // Header
+                                  Center(
+                                    child: Text(
+                                      "${widget.rideRequest.vehicleClass} RENTAL".toUpperCase(),
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        fontSize: 20,
+                                        fontWeight: FontWeight.bold,
+                                        color: isDark ? Colors.white.withValues(alpha: 0.9) : AppColors.primary,
+                                        letterSpacing: 1.2,
                                       ),
-                                      borderRadius: BorderRadius.circular(16),
-                                      border: Border.all(color: Colors.white10),
-                                    ),
-                                    child: Column(
-                                      children: [
-                                        Text(
-                                          "RENTAL PACKAGE",
-                                          style: TextStyle(
-                                            color: Colors.white60,
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w600,
-                                            letterSpacing: 1,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 6),
-                                        Text(
-                                          packageDisplay,
-                                          textAlign: TextAlign.center,
-                                          style: const TextStyle(
-                                            color: Colors.lightBlueAccent,
-                                            fontSize: 22, // Slightly larger
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ],
                                     ),
                                   ),
                                   const SizedBox(height: 24),
 
-                                  // Pickup Location Row
-                                  Row(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      const Icon(
-                                        Icons.location_on,
-                                        color: Colors.greenAccent,
-                                        size: 32,
-                                      ),
-                                      const SizedBox(width: 16),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              pickupTitle,
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 18,
-                                                fontWeight: FontWeight.bold,
-                                              ),
-                                            ),
-                                            const SizedBox(height: 6),
-                                            Text(
-                                              pickupAddress,
-                                              style: TextStyle(
-                                                color: Colors.white70,
-                                                fontSize: 15,
-                                                height: 1.3,
-                                              ),
-                                              maxLines: 3,
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-                                            const SizedBox(height: 12),
+                                  // Pickup
+                                  _buildInfoRow(
+                                    Icons.location_on,
+                                    widget.rideRequest.pickupTitle,
+                                    widget.rideRequest.pickupFullAddress,
+                                    "${widget.rideRequest.driverDistance.toStringAsFixed(1)} km Away",
+                                    primaryTextColor,
+                                    secondaryTextColor,
+                                    isDark,
+                                    isPickup: true,
+                                  ),
 
-                                            // Distance Tag
-                                            Container(
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                    horizontal: 10,
-                                                    vertical: 6,
-                                                  ),
-                                              decoration: BoxDecoration(
-                                                color: Colors.white.withValues(
-                                                  alpha: 0.1,
-                                                ),
-                                                borderRadius:
-                                                    BorderRadius.circular(8),
-                                              ),
-                                              child: Text(
-                                                "$driverDist km Away • ~$driverDur mins",
-                                                style: const TextStyle(
-                                                  color: Colors.white,
-                                                  fontSize: 13,
-                                                  fontWeight: FontWeight.w500,
-                                                ),
-                                              ),
+                                  const Padding(
+                                    padding: EdgeInsets.only(left: 14, top: 4, bottom: 4),
+                                    child: Icon(Icons.more_vert, color: Colors.grey, size: 20),
+                                  ),
+
+                                  // Package
+                                  _buildInfoRow(
+                                    Icons.work_history,
+                                    widget.rideRequest.packageName ?? "Rental Package",
+                                    packageDisplay,
+                                    "Package Details",
+                                    primaryTextColor,
+                                    secondaryTextColor,
+                                    isDark,
+                                  ),
+
+                                  const SizedBox(height: 32),
+                                  const Divider(),
+                                  const SizedBox(height: 24),
+
+                                  // Price & Actions
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          const Text(
+                                            "ESTIMATED FARE",
+                                            style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold),
+                                          ),
+                                          Text(
+                                            "₹${widget.rideRequest.rideFare.toStringAsFixed(0)}",
+                                            style: TextStyle(
+                                              fontSize: 36,
+                                              fontWeight: FontWeight.bold,
+                                              color: isDark ? Colors.greenAccent : AppColors.primary,
                                             ),
-                                          ],
-                                        ),
+                                          ),
+                                        ],
                                       ),
                                     ],
                                   ),
                                   const SizedBox(height: 32),
 
-                                  const Divider(
-                                    height: 1,
-                                    color: Colors.white10,
+                                  // Actions
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: SizedBox(
+                                          height: 56,
+                                          child: OutlinedButton(
+                                            onPressed: widget.onPass,
+                                            style: OutlinedButton.styleFrom(
+                                              side: BorderSide(color: isDark ? Colors.white24 : Colors.grey.shade300),
+                                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                            ),
+                                            child: Text("PASS", style: TextStyle(color: isDark ? Colors.white70 : Colors.grey.shade700, fontWeight: FontWeight.bold, fontSize: 16)),
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 16),
+                                      Expanded(
+                                        child: SizedBox(
+                                          height: 56,
+                                          child: ElevatedButton(
+                                            onPressed: widget.onAccept,
+                                            style: ElevatedButton.styleFrom(
+                                              backgroundColor: Colors.green,
+                                              foregroundColor: Colors.white,
+                                              elevation: 0,
+                                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                            ),
+                                            child: const Text("ACCEPT", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                  const SizedBox(height: 24),
-
-                                  // Price Section
-                                  const Text(
-                                    "ESTIMATED EARNINGS",
-                                    style: TextStyle(
-                                      color: Colors.white54,
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w600,
-                                      letterSpacing: 1.5,
+                                  if (widget.rideRequest.tip != null && widget.rideRequest.tip! > 0)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 24),
+                                      child: Center(
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                                          decoration: BoxDecoration(
+                                            color: Colors.green,
+                                            borderRadius: BorderRadius.circular(12),
+                                            boxShadow: [
+                                              BoxShadow(
+                                                color: Colors.green.withValues(alpha: 0.3),
+                                                blurRadius: 10,
+                                                offset: const Offset(0, 4),
+                                              ),
+                                            ],
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              const Icon(Icons.card_giftcard, color: Colors.white, size: 20),
+                                              const SizedBox(width: 10),
+                                              Text(
+                                                "Customer Added TIP: ₹${widget.rideRequest.tip!.toStringAsFixed(0)}",
+                                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
                                     ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    "₹$rideFare",
-                                    style: const TextStyle(
-                                      fontSize: 48,
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.greenAccent,
-                                    ),
-                                  ),
                                 ],
                               ),
                             ),
-
-                            const Spacer(),
-
-                            // Action Buttons
-                            Row(
-                              children: [
-                                // PASS Button
-                                Expanded(
-                                  child: SizedBox(
-                                    height: 60,
-                                    child: OutlinedButton(
-                                      onPressed: widget.onPass,
-                                      style: OutlinedButton.styleFrom(
-                                        foregroundColor: Colors.white70,
-                                        side: const BorderSide(
-                                          color: Colors.white24,
-                                          width: 1.5,
-                                        ),
-                                        shape: RoundedRectangleBorder(
-                                          borderRadius: BorderRadius.circular(
-                                            16,
-                                          ),
-                                        ),
-                                      ),
-                                      child: const Text(
-                                        "PASS",
-                                        style: TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.bold,
-                                          letterSpacing: 1,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(width: 20),
-                                // ACCEPT Button
-                                Expanded(
-                                  child: SizedBox(
-                                    height: 60,
-                                    child: ElevatedButton(
-                                      onPressed: widget.onAccept,
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: Colors.green,
-                                        foregroundColor: Colors.white,
-                                        elevation: 8,
-                                        shadowColor: Colors.green.withValues(
-                                          alpha: 0.4,
-                                        ),
-                                        shape: RoundedRectangleBorder(
-                                          borderRadius: BorderRadius.circular(
-                                            16,
-                                          ),
-                                        ),
-                                      ),
-                                      child: const Text(
-                                        "ACCEPT",
-                                        style: TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.bold,
-                                          letterSpacing: 1,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 16),
-                          ],
+                          ),
                         ),
                       ),
                     ),
@@ -371,6 +275,63 @@ class _RentalRequestScreenState extends State<RentalRequestScreen> {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildInfoRow(
+    IconData icon,
+    String title,
+    String subtitle,
+    String meta,
+    Color primaryTextColor,
+    Color secondaryTextColor,
+    bool isDark, {
+    bool isPickup = false,
+  }) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: isDark 
+                ? (isPickup ? Colors.green.withValues(alpha: 0.15) : Colors.blue.withValues(alpha: 0.15))
+                : (isPickup ? Colors.green.shade50 : Colors.blue.shade50),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(icon, color: isPickup ? Colors.green : Colors.blue, size: 24),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: TextStyle(color: primaryTextColor, fontSize: 18, fontWeight: FontWeight.bold),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 4),
+              Text(
+                subtitle,
+                style: TextStyle(color: secondaryTextColor, fontSize: 14, height: 1.4),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                meta,
+                style: TextStyle(
+                  color: isPickup ? (isDark ? Colors.greenAccent : Colors.green) : (isDark ? Colors.lightBlueAccent : Colors.blue),
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

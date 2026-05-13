@@ -599,22 +599,31 @@ export const distributeRideToDrivers = onDocumentWritten(
                         driverUid: driverInfo.data.uid, // Auth UID for security rules
                     });
 
-                    // Wait 
-                    await new Promise((resolve) => setTimeout(resolve, waitTimeMs));
+                    // Responsive Wait: up to waitTimeMs, but break early if accepted or rejected
+                    const startTime = Date.now();
+                    while (Date.now() - startTime < waitTimeMs) {
+                        const checkRide = await rideRef.get();
+                        const checkData = checkRide.data();
+                        
+                        // Stop waiting if ride is taken, cancelled, or rejected by this driver
+                        if (checkData?.status !== "searching" || (checkData?.rejectedBy || []).includes(driverId)) {
+                            break;
+                        }
+                        await new Promise(r => setTimeout(r, 1000));
+                    }
 
-                    // Check if accepted by viewing the central ride document
-                    const checkRide = await rideRef.get();
-                    if (checkRide.data()?.status === "accepted") {
+                    const finalCheck = await rideRef.get();
+                    const finalData = finalCheck.data();
+                    if (finalData?.status === "accepted") {
                         console.log(`Ride ${rideId} was accepted! Stopping dispatch.`);
                         rideFinished = true;
                         break; // End sequential sequence
-                    } else {
+                    } else if (finalData?.driverId === driverId) {
                         // Update the request to expired
                         console.log(`Driver ${driverId} did not accept ride ${rideId} in time. Expiring card.`);
                         await requestRef.update({ status: "expired" }).catch(() => { });
-
-                        // Also track rejection in original ride doc and clear driverId
-                        // so next dispatch triggers a fresh frontend listener event
+                        
+                        // Only track rejection/clear if driver still assigned (avoids race with handleRideRejection)
                         await rideRef.update({
                             rejectedBy: admin.firestore.FieldValue.arrayUnion(driverId),
                             driverId: admin.firestore.FieldValue.delete(),
@@ -2686,14 +2695,25 @@ export const distributeRentalToDrivers = onDocumentWritten(
                         notifiedAt: admin.firestore.FieldValue.serverTimestamp(),
                     });
 
-                    // Wait for acceptance
-                    await new Promise((resolve) => setTimeout(resolve, waitTimeMs));
+                    // Responsive Wait: up to waitTimeMs, but break early if accepted or rejected
+                    const startTime = Date.now();
+                    while (Date.now() - startTime < waitTimeMs) {
+                        const checkRide = await rideRef.get();
+                        const checkData = checkRide.data();
+                        
+                        // Stop waiting if ride is taken, cancelled, or rejected by this driver
+                        if (checkData?.status !== "searching" || (checkData?.rejectedBy || []).includes(driverId)) {
+                            break;
+                        }
+                        await new Promise(r => setTimeout(r, 1000));
+                    }
 
                     const finalCheck = await rideRef.get();
-                    if (finalCheck.data()?.status === "accepted") {
+                    const finalData = finalCheck.data();
+                    if (finalData?.status === "accepted") {
                         rideFinished = true;
                         break;
-                    } else {
+                    } else if (finalData?.driverId === driverId) {
                         await rideRef.update({
                             rejectedBy: admin.firestore.FieldValue.arrayUnion(driverId),
                             driverId: admin.firestore.FieldValue.delete(),

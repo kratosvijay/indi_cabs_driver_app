@@ -228,6 +228,7 @@ class AppTranslations extends Translations {
       'tollCharges': 'Toll Charges',
       'tollDeducted': 'Toll (Deducted)',
       'priceRecalculatedMsg': 'Price recalculated based on actual distance traveled',
+      'extra': 'extra',
 
       // Request Card
       'kmAway': 'km away',
@@ -514,6 +515,7 @@ class AppTranslations extends Translations {
       'tollCharges': 'சுங்கக் கட்டணம்',
       'tollDeducted': 'சுங்கக் கட்டணம் (கழிக்கப்பட்டது)',
       'priceRecalculatedMsg': 'உண்மையான தூரத்தின் அடிப்படையில் விலை மாற்றப்பட்டுள்ளது',
+      'extra': 'கூடுதல்',
 
       // Request Card
       'kmAway': 'கி.மீ. தூரத்தில்',
@@ -736,6 +738,7 @@ class AppTranslations extends Translations {
       'tollCharges': 'टोल शुल्क',
       'tollDeducted': 'टोल शुल्क (काटा गया)',
       'priceRecalculatedMsg': 'वास्तविक दूरी के आधार पर मूल्य की गणना की गई',
+      'extra': 'अतिरिक्त',
 
       // Request Card
       'kmAway': 'किमी दूर',
@@ -978,6 +981,7 @@ class AppTranslations extends Translations {
       'tollCharges': 'టోల్ ఛార్జీలు',
       'tollDeducted': 'టోల్ ఛార్జీలు (తగ్గించబడ్డాయి)',
       'priceRecalculatedMsg': 'అసలు దూరం ఆధారంగా ధర మళ్ళీ లెక్కించబడింది',
+      'extra': 'అదనపు',
 
       // Request Card
       'kmAway': 'కి.మీ. దూరంలో',
@@ -1262,6 +1266,7 @@ class AppTranslations extends Translations {
       'tollCharges': 'ಟೋಲ್ ಶುಲ್ಕಗಳು',
       'tollDeducted': 'ಟೋಲ್ ಶುಲ್ಕಗಳು (ಕಡಿತಗೊಳಿಸಲಾಗಿದೆ)',
       'priceRecalculatedMsg': 'ನಿಜವಾದ ದೂರದ ಆಧಾರದ ಮೇಲೆ ಬೆಲೆಯನ್ನು ಮರುಲೆಕ್ಕಾಚಾರ ಮಾಡಲಾಗಿದೆ',
+      'extra': 'ಹೆಚ್ಚುವರಿ',
 
       // Request Card
       'kmAway': 'ಕಿ.ಮಿ. ದೂರದಲ್ಲಿ',
@@ -1557,6 +1562,7 @@ class AppTranslations extends Translations {
       'tollCharges': 'ടോൾ നിരക്കുകൾ',
       'tollDeducted': 'ടോൾ (കുറച്ചു)',
       'priceRecalculatedMsg': 'യഥാർത്ഥ ദൂരത്തിനനുസരിച്ച് വില പുനർനിർണ്ണയിച്ചു',
+      'extra': 'അധിക',
     },
     'gu': {
       // Home Page

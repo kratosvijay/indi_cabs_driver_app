@@ -487,7 +487,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
 
     // Add to temporary blacklist to prevent "one last time" reappear bug
     _recentlyClearedRideIds.add(rideId);
-    Future.delayed(const Duration(seconds: 10), () {
+    Future.delayed(const Duration(seconds: 1), () {
       _recentlyClearedRideIds.remove(rideId);
       debugPrint("Removed $rideId from recently cleared blacklist");
     });

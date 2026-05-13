@@ -428,9 +428,6 @@ class _DriverHomePageState extends State<DriverHomePage>
                                     itemCount: requests.length,
                                     itemBuilder: (context, index) {
                                       final request = requests[index];
-                                      if (request.rideType == 'rental') {
-                                        return const SizedBox.shrink();
-                                      }
                                       return Padding(
                                         padding: const EdgeInsets.only(
                                           bottom: 12.0,

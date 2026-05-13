@@ -31,12 +31,14 @@ class PricingService {
       final double extraTimeCost = extraHours * extraHourCharge;
       final double extraDistCost = extraKm * extraKmCharge;
 
-      final double totalFare = baseFare + extraTimeCost + extraDistCost;
+      // Ensure we treat rideFare as base fare only (excluding tolls)
+      final double actualBaseFare = baseFare - (rideRequest.tollPrice ?? 0);
+      final double totalBaseFare = actualBaseFare + extraTimeCost + extraDistCost;
 
       return {
-        'finalFare': totalFare,
+        'finalFare': totalBaseFare.roundToDouble(),
         'priceUpdated': (extraTimeCost > 0 || extraDistCost > 0),
-        'reason': "Local Rental calculation: Base: $baseFare, ExtraKm: $extraDistCost, ExtraTime: $extraTimeCost",
+        'reason': "Local Rental calculation: Base: $actualBaseFare, ExtraKm: $extraDistCost, ExtraTime: $extraTimeCost",
       };
     }
 
@@ -48,9 +50,9 @@ class PricingService {
     // User requested +1.5km tolerance. We also keep a small -200m tolerance for minor deviations.
     if (distanceDiff <= 1.5 && distanceDiff >= -0.2) {
       return {
-        'finalFare': rideRequest.rideFare,
+        'finalFare': rideRequest.rideFare - (rideRequest.tollPrice ?? 0),
         'priceUpdated': false,
-        'reason': "Distance matched within tolerance (-200m to +1.5km). Using original quoted fare.",
+        'reason': "Distance matched within tolerance (-200m to +1.5km). Using original quoted fare (excluding toll).",
       };
     }
 
@@ -171,7 +173,9 @@ class PricingService {
     estBase *= surgeMultiplier;
     estBase += nightCharge;
 
-    double estimatedExtras = rideRequest.rideFare - estBase;
+    // Subtract toll from rideFare to avoid double-counting tolls as "extras"
+    double baseQuotedFare = rideRequest.rideFare - (rideRequest.tollPrice ?? 0);
+    double estimatedExtras = baseQuotedFare - estBase;
     if (estimatedExtras < 0) estimatedExtras = 0;
 
     calculatedFare += estimatedExtras;

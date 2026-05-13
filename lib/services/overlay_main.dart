@@ -272,6 +272,7 @@ class _OverlayRootState extends State<OverlayRoot> {
 
     return LayoutBuilder(
       builder: (context, constraints) {
+        final isDark = MediaQuery.of(context).platformBrightness == Brightness.dark;
         final maxCardHeight = math.max(260.0, constraints.maxHeight - 24);
         return Align(
           alignment: Alignment.topCenter,
@@ -303,9 +304,11 @@ class _OverlayRootState extends State<OverlayRoot> {
                         ),
                         child: LinearProgressIndicator(
                           value: _progress,
-                          backgroundColor: Colors.white.withValues(alpha: 0.1),
-                          valueColor: const AlwaysStoppedAnimation<Color>(
-                            Colors.white,
+                          backgroundColor: isDark 
+                              ? Colors.white.withValues(alpha: 0.1)
+                              : Colors.grey.shade100,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            isDark ? Colors.white : AppColors.primary,
                           ),
                           minHeight: 4,
                         ),
@@ -324,6 +327,10 @@ class _OverlayRootState extends State<OverlayRoot> {
   Widget _miniCard() {
     return LayoutBuilder(
       builder: (context, constraints) {
+        final isDark = MediaQuery.of(context).platformBrightness == Brightness.dark;
+        final cardColor = isDark ? AppColors.darkStart : Colors.white;
+        final primaryTextColor = isDark ? Colors.white : Colors.black87;
+
         final isTiny =
             constraints.maxHeight < 140 || constraints.maxWidth < 140;
         final actionWidth = constraints.maxWidth.isFinite
@@ -333,11 +340,11 @@ class _OverlayRootState extends State<OverlayRoot> {
           mainAxisSize: MainAxisSize.min,
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Text(
+            Text(
               "New Ride Request!",
               textAlign: TextAlign.center,
               style: TextStyle(
-                color: Colors.white,
+                color: primaryTextColor,
                 fontWeight: FontWeight.bold,
                 fontSize: 16,
               ),
@@ -345,8 +352,8 @@ class _OverlayRootState extends State<OverlayRoot> {
             const SizedBox(height: 8),
             Text(
               "₹${_ride?['rideFare'] ?? '0'}",
-              style: const TextStyle(
-                color: Colors.greenAccent,
+              style: TextStyle(
+                color: isDark ? Colors.greenAccent : Colors.green.shade700,
                 fontWeight: FontWeight.bold,
                 fontSize: 18,
               ),
@@ -359,8 +366,10 @@ class _OverlayRootState extends State<OverlayRoot> {
                   Expanded(
                     child: OutlinedButton(
                       style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.white,
-                        side: const BorderSide(color: Colors.white54),
+                        foregroundColor: primaryTextColor,
+                        side: BorderSide(
+                          color: isDark ? Colors.white54 : Colors.grey.shade400,
+                        ),
                         padding: const EdgeInsets.symmetric(vertical: 8),
                       ),
                       onPressed: _reject,
@@ -389,9 +398,11 @@ class _OverlayRootState extends State<OverlayRoot> {
                 onPressed: () {
                   _sendActionToMain({"action": "OPEN_APP"});
                 },
-                child: const Text(
+                child: Text(
                   "Open App",
-                  style: TextStyle(color: Colors.white70),
+                  style: TextStyle(
+                    color: isDark ? Colors.white70 : Colors.blue.shade700,
+                  ),
                 ),
               ),
             ),
@@ -400,8 +411,15 @@ class _OverlayRootState extends State<OverlayRoot> {
 
         return Container(
           decoration: BoxDecoration(
-            color: AppColors.primary,
+            color: cardColor,
             borderRadius: BorderRadius.circular(16),
+            border: isDark ? null : Border.all(color: Colors.grey.shade200),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.1),
+                blurRadius: 10,
+              ),
+            ],
           ),
           width: double.infinity,
           height: double.infinity,
@@ -431,7 +449,7 @@ class _OverlayRootState extends State<OverlayRoot> {
     final tollPrice = (ride['tollPrice'] as num?)?.toDouble() ?? 0.0;
 
     if (isRental) {
-      headerText = "$vehicleClass Rental";
+      headerText = "$vehicleClass REQUEST";
     } else {
       // "Cash Payment", "Cash + Wallet", "Digital Payment" logic
       if (walletUsed > 0 || paymentMethod == 'Cash + Wallet') {
@@ -460,17 +478,23 @@ class _OverlayRootState extends State<OverlayRoot> {
     final dropoffTitle = ride['dropoffTitle'] ?? 'Dropoff';
     final dropoffAddress = ride['dropoffFullAddress'] ?? '';
 
+    final isDark = MediaQuery.of(context).platformBrightness == Brightness.dark;
+    final cardColor = isDark ? AppColors.darkStart : Colors.white;
+    final primaryTextColor = isDark ? Colors.white : Colors.black87;
+    final secondaryTextColor = isDark ? Colors.white70 : Colors.black54;
+
     return Container(
       decoration: BoxDecoration(
-        color: AppColors.primary,
+        color: cardColor,
         borderRadius: BorderRadius.circular(20),
         boxShadow: [
           BoxShadow(
             blurRadius: 15,
-            color: Colors.black.withValues(alpha: 0.3),
+            color: Colors.black.withValues(alpha: 0.15),
             offset: const Offset(0, 4),
           ),
         ],
+        border: isDark ? null : Border.all(color: Colors.grey.shade200, width: 1),
       ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 20, 16, 24),
@@ -486,7 +510,7 @@ class _OverlayRootState extends State<OverlayRoot> {
                 style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.bold,
-                  color: Colors.white.withValues(alpha: 0.9),
+                  color: isDark ? Colors.white.withValues(alpha: 0.9) : AppColors.primary,
                 ),
               ),
             ),
@@ -500,11 +524,14 @@ class _OverlayRootState extends State<OverlayRoot> {
               isRental
                   ? "Rental"
                   : "$driverDist km Away${driverDur != null ? " (~$driverDur mins)" : ""}",
+              primaryTextColor,
+              secondaryTextColor,
+              isDark,
             ),
 
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 4, horizontal: 12),
-              child: Icon(Icons.more_vert, color: Colors.white54, size: 16),
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
+              child: Icon(Icons.more_vert, color: secondaryTextColor.withValues(alpha: 0.5), size: 16),
             ),
 
             // 3. Dropoff
@@ -515,6 +542,9 @@ class _OverlayRootState extends State<OverlayRoot> {
               isRental
                   ? ""
                   : "$rideDist km Ride${rideDur != null ? " (~$rideDur mins)" : ""}",
+              primaryTextColor,
+              secondaryTextColor,
+              isDark,
             ),
 
             // 4. Stops (if any)
@@ -526,25 +556,25 @@ class _OverlayRootState extends State<OverlayRoot> {
                   vertical: 8,
                 ),
                 decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.15),
+                  color: isDark ? Colors.white.withValues(alpha: 0.15) : Colors.orange.shade50,
                   borderRadius: BorderRadius.circular(10),
                   border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.3),
+                    color: isDark ? Colors.white.withValues(alpha: 0.3) : Colors.orange.shade200,
                   ),
                 ),
                 child: Row(
                   children: [
-                    const Icon(
+                    Icon(
                       Icons.add_location_alt_outlined,
-                      color: Colors.yellowAccent,
+                      color: isDark ? Colors.yellowAccent : Colors.orange.shade700,
                       size: 20,
                     ),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
                         "${stops.length} Stops Added",
-                        style: const TextStyle(
-                          color: Colors.white,
+                        style: TextStyle(
+                          color: isDark ? Colors.white : Colors.black87,
                           fontWeight: FontWeight.bold,
                           fontSize: 16,
                         ),
@@ -556,13 +586,13 @@ class _OverlayRootState extends State<OverlayRoot> {
                         vertical: 4,
                       ),
                       decoration: BoxDecoration(
-                        color: Colors.yellowAccent,
+                        color: isDark ? Colors.yellowAccent : Colors.orange.shade700,
                         borderRadius: BorderRadius.circular(6),
                       ),
                       child: Text(
                         "+ ₹${stops.length * 30}",
-                        style: const TextStyle(
-                          color: Colors.black87,
+                        style: TextStyle(
+                          color: isDark ? Colors.black87 : Colors.white,
                           fontWeight: FontWeight.bold,
                           fontSize: 14,
                         ),
@@ -573,56 +603,90 @@ class _OverlayRootState extends State<OverlayRoot> {
               ),
             ],
 
-            const SizedBox(height: 20),
+            Divider(height: 24, color: isDark ? Colors.white24 : Colors.grey.shade200),
 
             // 5. Price & Actions
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                // Price
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
+                // Price & Badges
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                     Text(
                       "₹${ride['rideFare'] ?? '0'}",
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 28,
                         fontWeight: FontWeight.bold,
-                        color: Colors.white,
+                        color: isDark ? Colors.white : AppColors.primary,
                       ),
                     ),
                     if (tollPrice > 0)
                       Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.orange.withValues(alpha: 0.2),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                              color: Colors.orange.withValues(alpha: 0.5),
+                              width: 1,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(
+                                Icons.directions,
+                                color: Colors.orange,
+                                size: 14,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                "Toll: ₹${tollPrice.toStringAsFixed(0)}",
+                                style: const TextStyle(
+                                  color: Colors.orange,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    if (ride['surgeMultiplier'] != null &&
+                        (ride['surgeMultiplier'] as num) > 1.0)
+                      Padding(
                         padding: const EdgeInsets.only(top: 2),
                         child: Text(
-                          "Includes ₹${tollPrice.toStringAsFixed(0)} Toll",
+                          "Surge Active: ${(ride['surgeMultiplier'] as num).toStringAsFixed(1)}x",
                           style: const TextStyle(
-                            color: Colors.orangeAccent,
+                            color: Colors.redAccent,
                             fontSize: 13,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
                       ),
-                    if (ride['tip'] != null && (ride['tip'] as num) > 0)
-                      Text(
-                        "+ ₹${ride['tip']} Tip",
-                        style: const TextStyle(
-                          color: Colors.greenAccent,
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
                   ],
                 ),
+              ),
 
-                // Actions
+              // Actions
                 Row(
                   children: [
                     // Pass (Styled like TextButton in card)
                     TextButton(
                       onPressed: _reject,
                       style: TextButton.styleFrom(
-                        backgroundColor: Colors.white.withValues(alpha: 0.1),
+                        backgroundColor: isDark 
+                            ? Colors.white.withValues(alpha: 0.1)
+                            : Colors.grey.shade100,
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(30),
                         ),
@@ -631,10 +695,10 @@ class _OverlayRootState extends State<OverlayRoot> {
                           vertical: 10,
                         ),
                       ),
-                      child: const Text(
+                      child: Text(
                         "Pass",
                         style: TextStyle(
-                          color: Colors.white70,
+                          color: isDark ? Colors.white70 : Colors.grey.shade600,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
@@ -661,6 +725,49 @@ class _OverlayRootState extends State<OverlayRoot> {
                 ),
               ],
             ),
+            if (ride['tip'] != null && (ride['tip'] as num) > 0)
+              Padding(
+                padding: const EdgeInsets.only(top: 16),
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.green,
+                      borderRadius: BorderRadius.circular(10),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.green.withValues(alpha: 0.3),
+                          blurRadius: 8,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.card_giftcard,
+                          color: Colors.white,
+                          size: 16,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          "Customer Added TIP: ₹${(ride['tip'] as num).toStringAsFixed(0)}",
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
           ],
         ),
       ),
@@ -672,11 +779,14 @@ class _OverlayRootState extends State<OverlayRoot> {
     String title,
     String fullAddress,
     String distanceInfo,
+    Color primaryColor,
+    Color secondaryColor,
+    bool isDark,
   ) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(icon, color: Colors.white, size: 28),
+        Icon(icon, color: isDark ? Colors.white : AppColors.primary, size: 28),
         const SizedBox(width: 16),
         Expanded(
           child: Column(
@@ -684,9 +794,9 @@ class _OverlayRootState extends State<OverlayRoot> {
             children: [
               Text(
                 title,
-                style: const TextStyle(
+                style: TextStyle(
                   fontWeight: FontWeight.bold,
-                  color: Colors.white,
+                  color: primaryColor,
                   fontSize: 18,
                 ),
               ),
@@ -694,7 +804,7 @@ class _OverlayRootState extends State<OverlayRoot> {
               Text(
                 fullAddress,
                 style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.9),
+                  color: secondaryColor,
                   fontSize: 14,
                 ),
                 maxLines: 2,
@@ -704,8 +814,8 @@ class _OverlayRootState extends State<OverlayRoot> {
               if (distanceInfo.isNotEmpty)
                 Text(
                   distanceInfo,
-                  style: const TextStyle(
-                    color: Colors.white,
+                  style: TextStyle(
+                    color: primaryColor,
                     fontSize: 14,
                     fontWeight: FontWeight.bold,
                   ),

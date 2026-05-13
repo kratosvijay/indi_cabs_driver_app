@@ -507,6 +507,7 @@ class OverlayService {
       'packageName': strVal(ride['packageName']),
       'stops': safeStops,
       'tollPrice': numVal(ride['tollPrice']),
+      'surgeMultiplier': numVal(ride['surgeMultiplier']),
     };
   }
 }

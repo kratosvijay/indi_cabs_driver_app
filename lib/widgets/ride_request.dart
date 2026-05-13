@@ -617,14 +617,15 @@ class _RideRequestCardState extends State<RideRequestCard> {
                 // --- Payment Method Header ---
                 Center(
                   child: Text(
-                    widget.rideRequest.rideType == 'daily'
-                        ? _getPaymentHeaderText()
-                        : "${widget.rideRequest.vehicleClass} ${'rideHeader'.tr}",
+                    widget.rideRequest.rideType == 'rental'
+                        ? "${widget.rideRequest.vehicleClass} RENTAL".toUpperCase()
+                        : _getPaymentHeaderText(),
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
                       color: isDark ? Colors.white.withValues(alpha: 0.9) : AppColors.primary,
+                      letterSpacing: 1.1,
                     ),
                   ),
                 ),
@@ -665,25 +666,33 @@ class _RideRequestCardState extends State<RideRequestCard> {
 
                           String title = "";
                           String address = "";
+                          String meta = "";
 
-                          if (pendingStop != null) {
+                          if (widget.rideRequest.rideType == 'rental') {
+                            title = widget.rideRequest.packageName ?? "Rental Package";
+                            address = (widget.rideRequest.durationHours != null &&
+                                    widget.rideRequest.kmLimit != null)
+                                ? "${widget.rideRequest.durationHours} Hours / ${widget.rideRequest.kmLimit} km"
+                                : widget.rideRequest.dropoffFullAddress;
+                            meta = "Rental Request";
+                          } else if (pendingStop != null) {
                             title = pendingStop.title;
                             address = pendingStop.fullAddress;
+                            meta = "${widget.rideRequest.rideDistance.toStringAsFixed(1)} ${'kmRide'.tr}${(widget.rideRequest.rideDuration != null) ? " (~${widget.rideRequest.rideDuration!.toStringAsFixed(0)} ${'mins'.tr})" : ""}";
                           } else {
-                            title =
-                                _translatedDropoffTitle ??
+                            title = _translatedDropoffTitle ??
                                 widget.rideRequest.dropoffPlaceName ??
                                 widget.rideRequest.dropoffTitle;
-                            address =
-                                _translatedDropoffAddress ??
+                            address = _translatedDropoffAddress ??
                                 widget.rideRequest.dropoffFullAddress;
+                            meta = "${widget.rideRequest.rideDistance.toStringAsFixed(1)} ${'kmRide'.tr}${(widget.rideRequest.rideDuration != null) ? " (~${widget.rideRequest.rideDuration!.toStringAsFixed(0)} ${'mins'.tr})" : ""}";
                           }
 
                           return _buildDestinationRow(
-                            Icons.flag,
+                            widget.rideRequest.rideType == 'rental' ? Icons.work_history : Icons.flag,
                             title,
                             address,
-                            "${widget.rideRequest.rideDistance.toStringAsFixed(1)} ${'kmRide'.tr}${(widget.rideRequest.rideDuration != null) ? " (~${widget.rideRequest.rideDuration!.toStringAsFixed(0)} ${'mins'.tr})" : ""}",
+                            meta,
                             primaryTextColor,
                             secondaryTextColor,
                             isDark,

@@ -103,22 +103,25 @@ class _RideEndOtpScreenState extends State<RideEndOtpScreen> {
         waitingCharge: 0.0,
       );
 
-      final totalFare = (localResult['finalFare'] as num).toDouble();
+      final baseFare = (localResult['finalFare'] as num).toDouble();
+      final tollPrice = widget.rideRequest.tollPrice ?? 0.0;
+      final totalFare = baseFare + tollPrice;
 
       // Local update for UI transition (Backend updates Firestore)
       RideRequest updatedRequest = widget.rideRequest.copyWith(
-        rideFare: totalFare,
+        rideFare: baseFare,
         status: 'completed',
         actualDistance: actualDistanceKm,
         actualDuration: actualDuration,
+        tollPrice: tollPrice,
       );
 
       // Update Firestore with final status and data
       final Map<String, dynamic> updateData = {
         'status': 'completed',
-        'rideFare': totalFare, // For rentals, this includes package price + extras
-        'baseFare': totalFare,
-        'totalFare': totalFare, // NEW: Added for dashboard earnings sync
+        'rideFare': baseFare, // Recalculated base
+        'baseFare': baseFare,
+        'totalFare': totalFare, // Total includes tolls
         'actualDistance': actualDistanceKm,
         'actualDuration': actualDuration,
         'completedAt': FieldValue.serverTimestamp(),

@@ -743,7 +743,7 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                             Expanded(
                                               child: Row(
                                                 children: [
-                                                  Icon(
+                                                  const Icon(
                                                     Icons.directions,
                                                     color: Colors.orange,
                                                     size: 20,
@@ -777,8 +777,105 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
                                         ),
                                       ),
                                       const SizedBox(height: 12),
-                                      const Divider(height: 20),
                                     ],
+
+                                    // --- NEW: TRIP STATISTICS SECTION ---
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 12,
+                                        horizontal: 4,
+                                      ),
+                                      child: Column(
+                                        children: [
+                                          Row(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.spaceBetween,
+                                            children: [
+                                              Row(
+                                                children: [
+                                                  Icon(
+                                                    Icons.route_outlined,
+                                                    size: 18,
+                                                    color: Colors.blue.shade400,
+                                                  ),
+                                                  const SizedBox(width: 8),
+                                                  Text(
+                                                    'totalDistance'.tr,
+                                                    style: TextStyle(
+                                                      fontSize: 14,
+                                                      color:
+                                                          Theme.of(context).brightness ==
+                                                                  Brightness.dark
+                                                              ? Colors.grey[400]
+                                                              : Colors.grey[600],
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                              Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.end,
+                                                children: [
+                                                  Text(
+                                                    "${(_rideRequest.actualDistance ?? (_rideRequest.accumulatedDistanceMeters ?? 0) / 1000.0).toStringAsFixed(1)} km",
+                                                    style: const TextStyle(
+                                                      fontSize: 15,
+                                                      fontWeight: FontWeight.bold,
+                                                    ),
+                                                  ),
+                                                  if ((_rideRequest.actualDistance ?? 0) >
+                                                      _rideRequest.rideDistance + 0.1)
+                                                    Text(
+                                                      "+${((_rideRequest.actualDistance ?? 0) - _rideRequest.rideDistance).toStringAsFixed(1)} km ${'extra'.tr}",
+                                                      style: const TextStyle(
+                                                        fontSize: 11,
+                                                        color: Colors.redAccent,
+                                                        fontWeight: FontWeight.w500,
+                                                      ),
+                                                    ),
+                                                ],
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 10),
+                                          Row(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.spaceBetween,
+                                            children: [
+                                              Row(
+                                                children: [
+                                                  Icon(
+                                                    Icons.timer_outlined,
+                                                    size: 18,
+                                                    color: Colors.blue.shade400,
+                                                  ),
+                                                  const SizedBox(width: 8),
+                                                  Text(
+                                                    'timeTaken'.tr,
+                                                    style: TextStyle(
+                                                      fontSize: 14,
+                                                      color:
+                                                          Theme.of(context).brightness ==
+                                                                  Brightness.dark
+                                                              ? Colors.grey[400]
+                                                              : Colors.grey[600],
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                              Text(
+                                                "${(_rideRequest.actualDuration ?? 0).toStringAsFixed(0)} ${'mins'.tr}",
+                                                style: const TextStyle(
+                                                  fontSize: 15,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    const Divider(height: 24),
 
                                     if (widget.priceUpdated) ...[
                                       Container(
