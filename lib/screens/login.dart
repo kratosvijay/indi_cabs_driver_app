@@ -54,7 +54,7 @@ class _LoginScreenState extends State<LoginScreen> {
     },
     'ml': {
       'welcome': 'ഡ്രൈവർക്ക് സ്വാഗതം',
-      'subtitle': 'ആരംഭിക്കുന്നതിന് ലോഗിൻ ചെയ്യുക അല്ലെങ്കിൽ രജിസ്റ്റർ ചെയ്യുക',
+      'subtitle': 'ആരംഭിക്കുന്നതിന് ലോഗിн ചെയ്യുക അല്ലെങ്കിൽ രജിസ്റ്റർ ചെയ്യുക',
       'login': 'ലോഗിൻ',
       'register': 'രജിസ്റ്റർ ചെയ്യുക',
     },
@@ -112,97 +112,99 @@ class _LoginScreenState extends State<LoginScreen> {
         decoration: BoxDecoration(
           gradient: AppColors.getAppBarGradient(context),
         ),
-        child: Stack(
-          children: [
-            SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24.0),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const Spacer(),
-                    // App Logo with Glow
-                    Center(
-                      child: Container(
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.white.withValues(alpha: 0.2),
-                              blurRadius: 30,
-                              spreadRadius: 5,
-                            ),
-                          ],
-                        ),
-                        child: ClipOval(
-                          child: Image.asset(
-                            'assets/logos/app_logo.png',
-                            width: 150,
-                            height: 150,
-                            fit: BoxFit.cover,
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 40),
-                    // Welcome Text
-                    FadeInSlide(
-                      delay: 0.1,
+        child: SafeArea(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              return SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    minHeight: constraints.maxHeight,
+                  ),
+                  child: IntrinsicHeight(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 24.0),
                       child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          Text(
-                            _getTranslatedString('welcome'),
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              fontSize: 28,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                              letterSpacing: 1.2,
+                          const SizedBox(height: 60),
+                          // App Logo with Glow
+                          Center(
+                            child: Container(
+                              padding: const EdgeInsets.all(16),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.1),
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: Colors.white.withValues(alpha: 0.2),
+                                ),
+                              ),
+                              child: ClipOval(
+                                child: Image.asset(
+                                  'assets/logos/app_logo.png',
+                                  width: 120,
+                                  height: 120,
+                                  fit: BoxFit.cover,
+                                ),
+                              ),
                             ),
                           ),
-                          const SizedBox(height: 10),
-                          Text(
-                            _getTranslatedString('subtitle'),
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontSize: 16,
-                              color: Colors.white.withValues(alpha: 0.8),
+                          const Spacer(),
+                          // Welcome Text
+                          FadeInSlide(
+                            delay: 0.1,
+                            child: Column(
+                              children: [
+                                Text(
+                                  _getTranslatedString('welcome'),
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(
+                                    fontSize: 28,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.white,
+                                    letterSpacing: 1.2,
+                                  ),
+                                ),
+                                const SizedBox(height: 10),
+                                Text(
+                                  _getTranslatedString('subtitle'),
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    color: Colors.white.withValues(alpha: 0.8),
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
+                          const Spacer(),
+                          // Action Buttons
+                          FadeInSlide(
+                            delay: 0.3,
+                            child: Column(
+                              children: [
+                                ProButton(
+                                  text: _getTranslatedString('login'),
+                                  onPressed: () => _navigateToAuth(false),
+                                ),
+                                const SizedBox(height: 20),
+                                ProButton(
+                                  text: _getTranslatedString('register'),
+                                  textColor: Colors.white,
+                                  onPressed: () => _navigateToAuth(true),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 40),
                         ],
                       ),
                     ),
-                    const Spacer(),
-                    // Action Buttons
-                    FadeInSlide(
-                      delay: 0.3,
-                      child: Column(
-                        children: [
-                          ProButton(
-                            text: _getTranslatedString('login'),
-                            // backgroundColor: Colors.white,
-                            // textColor: AppColors.primary,
-                            onPressed: () => _navigateToAuth(false),
-                          ),
-                          const SizedBox(height: 20),
-                          ProButton(
-                            text: _getTranslatedString('register'),
-                            // backgroundColor: Colors.black.withValues(
-                            //   alpha: 0.3,
-                            // ),
-                            textColor: Colors.white,
-                            onPressed: () => _navigateToAuth(true),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 40),
-                  ],
+                  ),
                 ),
-              ),
-            ),
-          ],
+              );
+            },
+          ),
         ),
       ),
     );

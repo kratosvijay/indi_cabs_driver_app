@@ -575,7 +575,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         isDark: isDark,
                         onTap: () {
                           Get.to(
-                            () => DocumentVerificationScreen(user: widget.user),
+                            () => DocumentVerificationScreen(
+                              user: widget.user,
+                              driverDocId: _driverDocId,
+                            ),
                           );
                         },
                       ),

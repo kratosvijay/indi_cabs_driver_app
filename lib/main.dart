@@ -19,6 +19,7 @@ import 'package:upgrader/upgrader.dart';
 // import 'package:flutter_refresh_rate_control/flutter_refresh_rate_control.dart';
 import 'package:project_taxi_driver_app/utils/app_colors.dart';
 import 'package:project_taxi_driver_app/utils/app_translations.dart';
+import 'package:responsive_framework/responsive_framework.dart';
 
 import 'package:project_taxi_driver_app/services/overlay_main.dart' show OverlayApp;
 
@@ -132,6 +133,15 @@ class _MyAppState extends State<MyApp> {
       translations: AppTranslations(),
       locale: Get.deviceLocale,
       fallbackLocale: const Locale('en', 'US'),
+      builder: (context, child) => ResponsiveBreakpoints.builder(
+        child: child!,
+        breakpoints: [
+          const Breakpoint(start: 0, end: 450, name: MOBILE),
+          const Breakpoint(start: 451, end: 800, name: TABLET),
+          const Breakpoint(start: 801, end: 1920, name: DESKTOP),
+          const Breakpoint(start: 1921, end: double.infinity, name: '4K'),
+        ],
+      ),
 
       // **1. Light Theme Configuration**
       theme: ThemeData(

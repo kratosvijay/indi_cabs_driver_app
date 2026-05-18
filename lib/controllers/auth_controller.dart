@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -27,12 +28,22 @@ class AuthController extends GetxController {
   // Firestore references
   final _db = FirebaseFirestore.instance;
 
+  // Single Active Session management variables
+  StreamSubscription<DocumentSnapshot>? _sessionSubscription;
+  String? _currentSessionId;
+
   @override
   void onInit() {
     super.onInit();
     // Initialize firebaseUser immediately
     firebaseUser = Rx<User?>(_auth.currentUser);
     firebaseUser.bindStream(_auth.authStateChanges());
+  }
+
+  @override
+  void onClose() {
+    _sessionSubscription?.cancel();
+    super.onClose();
   }
 
   // Determine where to go after successful login or auto-login check
@@ -85,6 +96,12 @@ class AuthController extends GetxController {
         // Persist the Document ID for use in other screens
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('driverDocId', driverDocId);
+
+        // --- Session Management for Single Active Session ---
+        final String sessionId = DateTime.now().microsecondsSinceEpoch.toString();
+        _currentSessionId = sessionId;
+        await _db.collection('drivers').doc(driverDocId).update({'sessionId': sessionId});
+        _listenToSession('drivers', driverDocId);
 
         // --- NEW: Check for Active Rides to Restore State ---
         try {
@@ -286,13 +303,13 @@ class AuthController extends GetxController {
           debugPrint(
             "DEBUG: Route -> DocumentVerificationScreen (Reason: documentsSubmitted=true, Pending/Rejected)",
           );
-          Get.offAll(() => DocumentVerificationScreen(user: user));
+          Get.offAll(() => DocumentVerificationScreen(user: user, driverDocId: driverDocId));
         } else if (data.containsKey('vehicleDetailsFilled') &&
             data['vehicleDetailsFilled'] == true) {
           debugPrint(
             "DEBUG: Route -> DocumentVerificationScreen (Reason: vehicleDetailsFilled=true, Needs Docs)",
           );
-          Get.offAll(() => DocumentVerificationScreen(user: user));
+          Get.offAll(() => DocumentVerificationScreen(user: user, driverDocId: driverDocId));
         } else {
           debugPrint("DEBUG: Route -> CarSelectionScreen (Reason: Default)");
           Get.offAll(() => CarSelectionScreen(user: user));
@@ -338,6 +355,12 @@ class AuthController extends GetxController {
       }
 
       if (fleetDoc.exists) {
+        // --- Session Management for Single Active Session ---
+        final String sessionId = DateTime.now().microsecondsSinceEpoch.toString();
+        _currentSessionId = sessionId;
+        await _db.collection('fleet_operators').doc(user.uid).update({'sessionId': sessionId});
+        _listenToSession('fleet_operators', user.uid);
+
         Get.offAll(() => FleetDashboardScreen(user: user));
         return;
       }
@@ -362,13 +385,19 @@ class AuthController extends GetxController {
             "DEBUG: Found pending fleet invite for NEW USER! Creating profile...",
           );
 
+          // --- Session Management for Single Active Session ---
+          final String sessionId = DateTime.now().microsecondsSinceEpoch.toString();
+          _currentSessionId = sessionId;
+
           // Create new driver doc with migrated data
           await _db.collection('drivers').doc(user.uid).set({
             ...pendingData,
             'uid': user.uid, // Ensure UID matches Auth UID
             'phoneNumber': user.phoneNumber, // Use authenticated phone number
             'createdAt': FieldValue.serverTimestamp(),
+            'sessionId': sessionId,
           });
+          _listenToSession('drivers', user.uid);
 
           // Delete the temporary pending doc
           await _db.collection('drivers').doc(otherDocs.first.id).delete();
@@ -389,7 +418,48 @@ class AuthController extends GetxController {
     }
   }
 
+  void _listenToSession(String collection, String docId) {
+    _sessionSubscription?.cancel();
+    _sessionSubscription = _db.collection(collection).doc(docId).snapshots().listen(
+      (snapshot) {
+        if (snapshot.exists && snapshot.data() != null) {
+          final data = snapshot.data() as Map<String, dynamic>;
+          final String? serverSessionId = data['sessionId'];
+          if (serverSessionId != null && serverSessionId != _currentSessionId) {
+            _handleSessionConflict();
+          }
+        }
+      },
+      onError: (error) {
+        debugPrint("Auth: Session listener error: $error");
+      },
+    );
+  }
+
+  void _handleSessionConflict() async {
+    _sessionSubscription?.cancel();
+    _sessionSubscription = null;
+    _currentSessionId = null;
+
+    // Force sign out and route to login
+    Get.snackbar(
+      "Session Expired",
+      "You have been logged out because your account is active on another device.",
+      backgroundColor: Colors.red.shade900,
+      colorText: Colors.white,
+      duration: const Duration(seconds: 8),
+      snackPosition: SnackPosition.BOTTOM,
+      icon: const Icon(Icons.warning, color: Colors.white),
+    );
+
+    await logout();
+  }
+
   Future<void> logout() async {
+    _sessionSubscription?.cancel();
+    _sessionSubscription = null;
+    _currentSessionId = null;
+
     // Force delete controllers to ensure their onClose() cancels Firestore streams,
     // thereby preventing permission-denied crashes upon sign out.
     Get.delete<HomePageController>(force: true);

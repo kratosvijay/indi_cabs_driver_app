@@ -385,29 +385,34 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> {
         builder: (context, setDialogState) {
           return AlertDialog(
             title: Text('rateCustomer'.tr),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text('rateExperience'.tr),
-                const SizedBox(height: 16),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: List.generate(5, (index) {
-                    return IconButton(
-                      onPressed: () {
-                        setDialogState(() {
-                          rating = index + 1.0;
-                        });
-                      },
-                      icon: Icon(
-                        index < rating ? Icons.star : Icons.star_border,
-                        color: Colors.amber,
-                        size: 32,
-                      ),
-                    );
-                  }),
-                ),
-              ],
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('rateExperience'.tr),
+                  const SizedBox(height: 16),
+                  FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: List.generate(5, (index) {
+                        return IconButton(
+                          onPressed: () {
+                            setDialogState(() {
+                              rating = index + 1.0;
+                            });
+                          },
+                          icon: Icon(
+                            index < rating ? Icons.star : Icons.star_border,
+                            color: Colors.amber,
+                            size: 32,
+                          ),
+                        );
+                      }),
+                    ),
+                  ),
+                ],
+              ),
             ),
             actions: [
               ProButton(

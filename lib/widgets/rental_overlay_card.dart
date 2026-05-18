@@ -19,6 +19,7 @@ class RentalOverlayCard extends StatelessWidget {
     final String packageName = ride['packageName'] ?? 'Rental Package';
     final String packageDetails = _getPackageDetails(ride);
     final String pickupTitle = ride['pickupTitle'] ?? 'Pickup';
+    final String? pickupArea = ride['pickupArea'] as String?; // **NEW**
     final String pickupAddress = ride['pickupFullAddress'] ?? '';
     final String driverDist =
         (ride['driverDistance'] as num?)?.toDouble().toStringAsFixed(1) ?? "0.0";
@@ -69,6 +70,7 @@ class RentalOverlayCard extends StatelessWidget {
               Icons.location_on,
               pickupTitle,
               pickupAddress,
+              pickupArea, // **NEW**
               "$driverDist km Away${driverDur != null ? " (~$driverDur mins)" : ""}",
               primaryTextColor,
               secondaryTextColor,
@@ -86,6 +88,7 @@ class RentalOverlayCard extends StatelessWidget {
               Icons.work_history,
               packageName,
               packageDetails,
+              null, // No area for package
               "Rental Package",
               primaryTextColor,
               secondaryTextColor,
@@ -202,6 +205,7 @@ class RentalOverlayCard extends StatelessWidget {
     IconData icon,
     String title,
     String subtitle,
+    String? area, // **NEW**
     String meta,
     Color primaryTextColor,
     Color secondaryTextColor,
@@ -234,15 +238,33 @@ class RentalOverlayCard extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Expanded(
-                    child: Text(
-                      title,
-                      style: TextStyle(
-                        color: primaryTextColor,
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          title,
+                          style: TextStyle(
+                            color: primaryTextColor,
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        if (area != null && area.isNotEmpty && area != title) ...[
+                          const SizedBox(height: 2),
+                          Text(
+                            area,
+                            style: TextStyle(
+                              color: primaryTextColor.withValues(alpha: 0.8),
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ],
                     ),
                   ),
                   const SizedBox(width: 8),

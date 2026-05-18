@@ -108,32 +108,39 @@ class _DriverHomePageState extends State<DriverHomePage>
         final bool isDark = Theme.of(context).brightness == Brightness.dark;
         return Scaffold(
           backgroundColor: isDark ? Colors.black : Colors.white,
-          body: Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                ClipOval(
-                  child: Image.asset(
-                    'assets/logos/app_logo.png',
-                    width: 150,
-                    height: 150,
-                    fit: BoxFit.cover,
-                  ),
-                ),
-                SizedBox(height: 24),
-                CircularProgressIndicator(color: AppColors.lightEnd),
-                if (controller.isRideAcceptanceInProgress.value) ...[
-                  SizedBox(height: 16),
-                  Text(
-                    "Accepting Ride...",
-                    style: TextStyle(
-                      color: isDark ? Colors.white : Colors.black,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
+          body: SingleChildScrollView(
+            child: Container(
+              width: double.infinity,
+              height: MediaQuery.of(context).size.height,
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    ClipOval(
+                      child: Image.asset(
+                        'assets/logos/app_logo.png',
+                        width: 150,
+                        height: 150,
+                        fit: BoxFit.cover,
+                      ),
                     ),
-                  ),
-                ],
-              ],
+                    const SizedBox(height: 24),
+                    CircularProgressIndicator(color: AppColors.lightEnd),
+                    if (controller.isRideAcceptanceInProgress.value) ...[
+                      const SizedBox(height: 16),
+                      Text(
+                        "Accepting Ride...",
+                        style: TextStyle(
+                          color: isDark ? Colors.white : Colors.black,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
             ),
           ),
         );
@@ -201,53 +208,62 @@ class _DriverHomePageState extends State<DriverHomePage>
             Obx(
               () => controller.driverStatus.value == DriverStatus.offline
                   ? // Off Duty - Show blank state
-                    Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          InkWell(
-                            onTap: () {
-                              controller.handleStatusChange(
-                                DriverStatus.online,
-                              );
-                            },
-                            borderRadius: BorderRadius.circular(80),
-                            child: Container(
-                              width: 160,
-                              height: 160,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: AppColors.primary,
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: AppColors.primary.withValues(
-                                      alpha: 0.4,
+                    SingleChildScrollView(
+                      child: SizedBox(
+                        width: MediaQuery.of(context).size.width,
+                        height: MediaQuery.of(context).size.height - 
+                                MediaQuery.of(context).padding.top - 
+                                100, // Account for appBar
+                        child: Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            children: [
+                            InkWell(
+                              onTap: () {
+                                controller.handleStatusChange(
+                                  DriverStatus.online,
+                                );
+                              },
+                              borderRadius: BorderRadius.circular(80),
+                              child: Container(
+                                width: 160,
+                                height: 160,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: AppColors.primary,
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: AppColors.primary.withValues(
+                                        alpha: 0.4,
+                                      ),
+                                      blurRadius: 20,
+                                      spreadRadius: 2,
+                                      offset: const Offset(0, 8),
                                     ),
-                                    blurRadius: 20,
-                                    spreadRadius: 2,
-                                    offset: const Offset(0, 8),
-                                  ),
-                                ],
-                              ),
-                              child: const Icon(
-                                Icons.power_settings_new,
-                                size: 80,
-                                color: Colors.white,
+                                  ],
+                                ),
+                                child: const Icon(
+                                  Icons.power_settings_new,
+                                  size: 80,
+                                  color: Colors.white,
+                                ),
                               ),
                             ),
-                          ),
-                          const SizedBox(height: 32),
-                          Text(
-                            'turnOnToGetRides'.tr,
-                            style: Theme.of(context).textTheme.headlineSmall
-                                ?.copyWith(
-                                  color: Colors.grey,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                          ),
-                        ],
+                            const SizedBox(height: 32),
+                            Text(
+                              'turnOnToGetRides'.tr,
+                              style: Theme.of(context).textTheme.headlineSmall
+                                  ?.copyWith(
+                                    color: Colors.grey,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                            ),
+                          ],
+                        ),
                       ),
-                    )
+                    ),
+                  )
                   : // On Duty or GoTo - Show map and features
                     Stack(
                       children: [

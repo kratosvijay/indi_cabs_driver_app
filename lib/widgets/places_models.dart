@@ -1,4 +1,3 @@
-import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 // Model for Google Places API Autocomplete predictions
@@ -16,7 +15,6 @@ class PlaceAutocompletePrediction {
   });
 
   factory PlaceAutocompletePrediction.fromJson(Map<String, dynamic> json) {
-    debugPrint("Autocomplete Prediction JSON: $json");
     final prediction = json['placePrediction'] ?? json['prediction'] ?? json;
     
     final textData = prediction['text'] as Map<String, dynamic>?;

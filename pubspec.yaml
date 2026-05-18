@@ -1,7 +1,7 @@
 name: project_taxi_driver_app
 description: "Indi Cabs Partner App."
 publish_to: 'none'
-version: 1.4.4+21
+version: 1.4.5+22
 
 environment:
   sdk: ^3.9.2
@@ -64,6 +64,7 @@ dependencies:
   device_info_plus: ^12.3.0
   flutter_displaymode: ^0.7.0
   sms_autofill: ^2.3.0
+  responsive_framework: ^1.5.1
   
 
 dev_dependencies:

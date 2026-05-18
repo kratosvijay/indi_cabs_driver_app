@@ -5,8 +5,8 @@ import 'package:google_maps_flutter/google_maps_flutter.dart' as maps;
 import 'package:pinput/pinput.dart';
 import 'package:project_taxi_driver_app/screens/ride_payment.dart';
 import 'package:project_taxi_driver_app/widgets/ride_request.dart';
-import 'package:project_taxi_driver_app/services/pricing_service.dart';
 import 'package:project_taxi_driver_app/widgets/pro_library.dart';
+import 'package:project_taxi_driver_app/controllers/trip_controller.dart';
 
 class RideEndOtpScreen extends StatefulWidget {
   final RideRequest rideRequest;
@@ -32,6 +32,7 @@ class _RideEndOtpScreenState extends State<RideEndOtpScreen> {
   bool _isLoading = false;
   String _errorMessage = '';
   String _customerName = "Customer";
+  late TripController _tripController;
 
   @override
   void initState() {
@@ -40,6 +41,8 @@ class _RideEndOtpScreenState extends State<RideEndOtpScreen> {
     if (widget.rideRequest.userName != null) {
       _customerName = widget.rideRequest.userName!;
     }
+    
+    _tripController = Get.find<TripController>(tag: widget.rideRequest.rideId);
   }
 
   void _fetchOtp() {
@@ -83,33 +86,21 @@ class _RideEndOtpScreenState extends State<RideEndOtpScreen> {
     });
 
     try {
-      // Amount is calculated in backend now
-
-      double actualDistanceKm = 0.0;
-      if (widget.accumulatedDistance > 0) {
-        actualDistanceKm = widget.accumulatedDistance / 1000.0;
+      // authoritative backend calculation
+      final fareResult = await _tripController.calculateFinalFare();
+      
+      if (fareResult.isEmpty) {
+        throw Exception("Failed to calculate authoritative fare from backend");
       }
 
-      // Calculate Duration for pricing
-      final double actualDuration = widget.rideRequest.startedAt != null
-          ? DateTime.now().difference(widget.rideRequest.startedAt!).inMinutes.toDouble()
-          : 0.0;
-
-      // Local Recalculation for RENTAL billing
-      final localResult = PricingService.calculateFareLocally(
-        rideRequest: widget.rideRequest,
-        actualDistanceKm: actualDistanceKm,
-        actualDurationMins: actualDuration,
-        waitingCharge: 0.0,
-      );
-
-      final baseFare = (localResult['finalFare'] as num).toDouble();
-      final tollPrice = widget.rideRequest.tollPrice ?? 0.0;
-      final totalFare = baseFare + tollPrice;
+      final finalFare = (fareResult['finalFare'] as num?)?.toDouble() ?? 0.0;
+      final actualDistanceKm = (fareResult['actualDistance'] as num?)?.toDouble() ?? 0.0;
+      final actualDuration = (fareResult['actualDurationMinutes'] as num?)?.toDouble() ?? 0.0;
+      final tollPrice = (fareResult['tolls'] as num?)?.toDouble() ?? 0.0;
 
       // Local update for UI transition (Backend updates Firestore)
       RideRequest updatedRequest = widget.rideRequest.copyWith(
-        rideFare: baseFare,
+        rideFare: finalFare,
         status: 'completed',
         actualDistance: actualDistanceKm,
         actualDuration: actualDuration,
@@ -119,9 +110,9 @@ class _RideEndOtpScreenState extends State<RideEndOtpScreen> {
       // Update Firestore with final status and data
       final Map<String, dynamic> updateData = {
         'status': 'completed',
-        'rideFare': baseFare, // Recalculated base
-        'baseFare': baseFare,
-        'totalFare': totalFare, // Total includes tolls
+        'rideFare': (fareResult['totalExcludingTaxes'] as num?)?.toDouble() ?? finalFare,
+        'baseFare': (fareResult['baseFare'] as num?)?.toDouble() ?? finalFare,
+        'totalFare': finalFare, 
         'actualDistance': actualDistanceKm,
         'actualDuration': actualDuration,
         'completedAt': FieldValue.serverTimestamp(),
@@ -145,7 +136,7 @@ class _RideEndOtpScreenState extends State<RideEndOtpScreen> {
         Get.off(
           () => RidePaymentScreen(
             rideRequest: updatedRequest,
-            totalAmount: totalFare,
+            totalAmount: finalFare,
           ),
         );
       }

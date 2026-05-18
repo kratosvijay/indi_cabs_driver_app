@@ -803,57 +803,61 @@ class _DocumentVerificationScreenState
           onPressed: _showExitDialog,
         ),
       ),
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  color: (isRejected ? Colors.red : AppColors.primary)
-                      .withValues(alpha: 0.1),
-                  shape: BoxShape.circle,
+      body: SingleChildScrollView(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const SizedBox(height: 40),
+                Container(
+                  padding: const EdgeInsets.all(24),
+                  decoration: BoxDecoration(
+                    color: (isRejected ? Colors.red : AppColors.primary)
+                        .withValues(alpha: 0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    icon,
+                    size: 64,
+                    color: isRejected ? Colors.red : AppColors.primary,
+                  ),
                 ),
-                child: Icon(
-                  icon,
-                  size: 64,
-                  color: isRejected ? Colors.red : AppColors.primary,
+                const SizedBox(height: 32),
+                Text(
+                  title,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 32),
-              Text(
-                title,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
+                const SizedBox(height: 16),
+                Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 16,
+                    height: 1.5,
+                    color: Theme.of(context).brightness == Brightness.dark
+                        ? Colors.white70
+                        : Colors.black54,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                message,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 16,
-                  height: 1.5,
-                  color: Theme.of(context).brightness == Brightness.dark
-                      ? Colors.white70
-                      : Colors.black54,
-                ),
-              ),
-              if (isRejected) ...[
-                const SizedBox(height: 48),
-                ProButton(
-                  text: _getTranslatedString('reupload'),
-                  onPressed: () => setState(() {
-                    _status = VerificationStatus.initial;
-                    _rejectionReason = null;
-                  }),
-                ),
+                if (isRejected) ...[
+                  const SizedBox(height: 48),
+                  ProButton(
+                    text: _getTranslatedString('reupload'),
+                    onPressed: () => setState(() {
+                      _status = VerificationStatus.initial;
+                      _rejectionReason = null;
+                    }),
+                  ),
+                ],
+                const SizedBox(height: 40),
               ],
-            ],
+            ),
           ),
         ),
       ),

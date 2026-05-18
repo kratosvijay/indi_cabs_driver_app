@@ -287,68 +287,77 @@ class _PermissionScreenState extends State<PermissionScreen>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const SizedBox(height: 20),
-              Text(
-                "Enable Access",
-                style: TextStyle(
-                  fontSize: 28,
-                  fontWeight: FontWeight.bold,
-                  color: isDark ? Colors.white : Colors.black87,
+              Expanded(
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const SizedBox(height: 20),
+                      Text(
+                        "Enable Access",
+                        style: TextStyle(
+                          fontSize: 28,
+                          fontWeight: FontWeight.bold,
+                          color: isDark ? Colors.white : Colors.black87,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        "Tap on each item to grant permission.",
+                        style: TextStyle(
+                          fontSize: 16,
+                          color: isDark ? Colors.white60 : Colors.black54,
+                          height: 1.5,
+                        ),
+                      ),
+                      const SizedBox(height: 40),
+
+                      _buildPermissionTile(
+                        icon: Icons.location_on,
+                        title: "Location Services",
+                        description:
+                            "Required for ride matching and tracking, even when the app is closed or not in use.",
+                        isGranted: _locationGranted,
+                        onTap: _requestLocation,
+                      ),
+
+                      const SizedBox(height: 20),
+
+                      _buildPermissionTile(
+                        icon: Icons.notifications_active,
+                        title: "Notifications",
+                        description: "Get instant alerts for new ride requests.",
+                        isGranted: _notificationGranted,
+                        onTap: _requestNotification,
+                      ),
+
+                      const SizedBox(height: 20),
+
+                      _buildPermissionTile(
+                        icon: Icons.layers,
+                        title: "Display Over Apps",
+                        description:
+                            "Required to show ride requests while using other apps.",
+                        isGranted: _overlayGranted,
+                        onTap: _requestOverlay,
+                      ),
+
+                      const SizedBox(height: 20),
+
+                      _buildPermissionTile(
+                        icon: Icons.battery_charging_full,
+                        title: "Battery Optimization",
+                        description:
+                            "Disable optimization to keep GPS tracking and notifications active in background.",
+                        isGranted: _batteryGranted,
+                        onTap: _requestBattery,
+                      ),
+                    ],
+                  ),
                 ),
               ),
-              const SizedBox(height: 12),
-              Text(
-                "Tap on each item to grant permission.",
-                style: TextStyle(
-                  fontSize: 16,
-                  color: isDark ? Colors.white60 : Colors.black54,
-                  height: 1.5,
-                ),
-              ),
-              const SizedBox(height: 40),
 
-              _buildPermissionTile(
-                icon: Icons.location_on,
-                title: "Location Services",
-                description:
-                    "Required for ride matching and tracking, even when the app is closed or not in use.",
-                isGranted: _locationGranted,
-                onTap: _requestLocation,
-              ),
-
-              const SizedBox(height: 20),
-
-              _buildPermissionTile(
-                icon: Icons.notifications_active,
-                title: "Notifications",
-                description: "Get instant alerts for new ride requests.",
-                isGranted: _notificationGranted,
-                onTap: _requestNotification,
-              ),
-
-              const SizedBox(height: 20),
-
-              _buildPermissionTile(
-                icon: Icons.layers,
-                title: "Display Over Apps",
-                description:
-                    "Required to show ride requests while using other apps.",
-                isGranted: _overlayGranted,
-                onTap: _requestOverlay,
-              ),
-
-              const SizedBox(height: 20),
-
-              _buildPermissionTile(
-                icon: Icons.battery_charging_full,
-                title: "Battery Optimization",
-                description:
-                    "Disable optimization to keep GPS tracking and notifications active in background.",
-                isGranted: _batteryGranted,
-                onTap: _requestBattery,
-              ),
-
-              const Spacer(),
+              const SizedBox(height: 24),
 
               ProButton(
                 text: "Allow & Continue",

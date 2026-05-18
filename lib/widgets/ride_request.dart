@@ -70,6 +70,8 @@ class RideRequest {
   final String? userName;
   final String? pickupPlaceName; // **NEW**
   final String? dropoffPlaceName; // **NEW**
+  final String? pickupArea; // **NEW**
+  final String? dropoffArea; // **NEW**
 
   RideRequest({
     required this.rideId,
@@ -78,6 +80,8 @@ class RideRequest {
     this.userName,
     this.pickupPlaceName, // **NEW**
     this.dropoffPlaceName, // **NEW**
+    this.pickupArea, // **NEW**
+    this.dropoffArea, // **NEW**
     required this.pickupTitle,
     required this.dropoffTitle,
     required this.pickupFullAddress,
@@ -155,11 +159,19 @@ class RideRequest {
     double? paidByWallet,
     double? tollPrice,
     double? surgeMultiplier,
+    String? pickupPlaceName,
+    String? dropoffPlaceName,
+    String? pickupArea,
+    String? dropoffArea,
   }) {
     return RideRequest(
       rideId: rideId ?? this.rideId,
       userId: userId ?? this.userId,
       userName: userName ?? this.userName,
+      pickupPlaceName: pickupPlaceName ?? this.pickupPlaceName,
+      dropoffPlaceName: dropoffPlaceName ?? this.dropoffPlaceName,
+      pickupArea: pickupArea ?? this.pickupArea,
+      dropoffArea: dropoffArea ?? this.dropoffArea,
       pickupTitle: pickupTitle ?? this.pickupTitle,
       dropoffTitle: dropoffTitle ?? this.dropoffTitle,
       pickupFullAddress: pickupFullAddress ?? this.pickupFullAddress,
@@ -318,6 +330,8 @@ class RideRequest {
       pickupPlaceName: json['pickupPlaceName'], // **NEW**
       dropoffPlaceName:
           json['destinationPlaceName'] ?? json['dropoffPlaceName'], // **NEW**
+      pickupArea: json['pickupArea'] ?? json['pickupSublocality'],
+      dropoffArea: json['destinationArea'] ?? json['dropoffArea'] ?? json['dropoffSublocality'],
       driverDistance: (json['driverDistance'] as num?)?.toDouble() ?? 0.0,
       rideDistance: (json['rideDistance'] as num?)?.toDouble() ??
           (json['distance'] as num?)?.toDouble() ??
@@ -458,6 +472,63 @@ class RideRequest {
 
     return p1;
   }
+
+  static String extractArea(String address) {
+    if (address.isEmpty) return '';
+    final parts = address.split(',');
+    if (parts.isEmpty) return '';
+
+    // Helper to detect Google Plus Codes
+    bool isPlusCode(String s) {
+      final trimmed = s.trim();
+      final plusCodePattern = RegExp(
+        r'^[A-Z0-9]{2,8}\+[A-Z0-9]{2,4}(\s|$)',
+        caseSensitive: false,
+      );
+      return plusCodePattern.hasMatch(trimmed);
+    }
+
+    final filteredParts = parts.where((p) => !isPlusCode(p.trim())).toList();
+
+    // Find City and take the part before it
+    int cityIndex = -1;
+    for (int i = filteredParts.length - 1; i >= 0; i--) {
+      final p = filteredParts[i].trim().toLowerCase();
+      if (p == 'chennai' ||
+          p.startsWith('chennai ') ||
+          p.startsWith('chennai-') ||
+          p == 'madurai' ||
+          p == 'coimbatore' ||
+          p == 'tiruchirappalli' ||
+          p == 'salem' ||
+          p == 'tirunelveli' ||
+          p == 'tirupur' ||
+          p == 'ranipet' ||
+          p == 'vellore' ||
+          p == 'kancheepuram' ||
+          p == 'chengalpattu' ||
+          p == 'thiruvallur' ||
+          p == 'hosur' ||
+          p == 'erode' ||
+          p == 'kanyakumari' ||
+          p == 'tuticorin' ||
+          p == 'tanjor' ||
+          p == 'trichy') {
+        cityIndex = i;
+        break;
+      }
+    }
+
+    if (cityIndex > 0) {
+      final area = filteredParts[cityIndex - 1].trim();
+      // Only use it if it's not a house number (digits)
+      if (!RegExp(r'^\d').hasMatch(area)) {
+        return area;
+      }
+    }
+
+    return '';
+  }
 }
 
 class RideRequestCard extends StatefulWidget {
@@ -541,7 +612,7 @@ class _RideRequestCardState extends State<RideRequestCard> {
   void _startTimer() {
     int totalSeconds = widget.rideRequest.rideType == 'rental'
         ? 10
-        : 5; // aligned with backend
+        : 5; // aligned with backend (locked per user request)
     int remainingMs = totalSeconds * 1000;
 
     if (remainingMs <= 0) {
@@ -609,7 +680,7 @@ class _RideRequestCardState extends State<RideRequestCard> {
       child: Stack(
         children: [
           Padding(
-            padding: const EdgeInsets.all(20),
+            padding: const EdgeInsets.all(8),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min, // Important for list items
@@ -622,23 +693,24 @@ class _RideRequestCardState extends State<RideRequestCard> {
                         : _getPaymentHeaderText(),
                     textAlign: TextAlign.center,
                     style: TextStyle(
-                      fontSize: 18,
+                      fontSize: 13,
                       fontWeight: FontWeight.bold,
                       color: isDark ? Colors.white.withValues(alpha: 0.9) : AppColors.primary,
                       letterSpacing: 1.1,
                     ),
                   ),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 6),
                 _isTranslating
                     ? _buildShimmerRow(isDark)
                     : _buildDetailRow(
                         Icons.location_on,
                         _translatedPickupTitle ??
-                            widget.rideRequest.pickupPlaceName ?? // **NEW**
+                            widget.rideRequest.pickupPlaceName ?? 
                             widget.rideRequest.pickupTitle,
                         _translatedPickupAddress ??
                             widget.rideRequest.pickupFullAddress,
+                        widget.rideRequest.pickupArea, // **NEW**
                         "${widget.rideRequest.driverDistance.toStringAsFixed(1)} ${'kmAway'.tr}${(widget.rideRequest.driverDuration != null) ? " (~${widget.rideRequest.driverDuration!.toStringAsFixed(0)} ${'mins'.tr})" : ""}",
                         primaryTextColor,
                         secondaryTextColor,
@@ -692,6 +764,7 @@ class _RideRequestCardState extends State<RideRequestCard> {
                             widget.rideRequest.rideType == 'rental' ? Icons.work_history : Icons.flag,
                             title,
                             address,
+                            widget.rideRequest.dropoffArea, // **NEW**
                             meta,
                             primaryTextColor,
                             secondaryTextColor,
@@ -722,15 +795,24 @@ class _RideRequestCardState extends State<RideRequestCard> {
                         ),
                         const SizedBox(width: 10),
                         Expanded(
-                          child: Text(
-                            "${widget.rideRequest.stops.length} ${'stopsAdded'.tr}",
-                            style: TextStyle(
-                              color: isDark ? Colors.white : Colors.black87,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 16,
-                            ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                "${widget.rideRequest.stops.length} ${'stopsAdded'.tr}",
+                                style: TextStyle(
+                                  color: isDark ? Colors.white : Colors.black87,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
                           ),
                         ),
+                        const SizedBox(width: 8),
                         Container(
                           padding: const EdgeInsets.symmetric(
                             horizontal: 10,
@@ -752,172 +834,181 @@ class _RideRequestCardState extends State<RideRequestCard> {
                       ],
                     ),
                   ),
-                  const SizedBox(height: 8),
                 ],
-                Divider(height: 24, color: isDark ? Colors.white24 : Colors.grey.shade200),
+                const SizedBox(height: 6),
+            Divider(height: 1, color: isDark ? Colors.white24 : Colors.grey.shade200),
+            const SizedBox(height: 8),
 
-                // --- Footer: Price and Actions ---
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    // Price
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
+            // --- Price & Actions ---
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                // Price & Badges
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerLeft,
+                        child: Text(
                           "₹${widget.rideRequest.rideFare.toStringAsFixed(0)}",
                           style: TextStyle(
-                            fontSize: 28,
+                            fontSize: 20,
                             fontWeight: FontWeight.bold,
                             color: isDark ? Colors.white : AppColors.primary,
                           ),
                         ),
-                        if (widget.rideRequest.tollPrice != null &&
-                            widget.rideRequest.tollPrice! > 0)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 4,
-                              ),
-                              decoration: BoxDecoration(
-                                color: Colors.orange.withValues(alpha: 0.2),
-                                borderRadius: BorderRadius.circular(6),
-                                border: Border.all(
-                                  color: Colors.orange.withValues(alpha: 0.5),
-                                  width: 1,
+                      ),
+                          if (widget.rideRequest.tollPrice != null &&
+                              widget.rideRequest.tollPrice! > 0)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.orange.withValues(alpha: 0.2),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                    color: Colors.orange.withValues(alpha: 0.5),
+                                    width: 1,
+                                  ),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(
+                                      Icons.directions,
+                                      color: Colors.orange,
+                                      size: 14,
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Flexible(
+                                      child: Text(
+                                        "Toll: ₹${widget.rideRequest.tollPrice!.toStringAsFixed(0)}",
+                                        style: const TextStyle(
+                                          color: Colors.orange,
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(
-                                    Icons.directions,
-                                    color: Colors.orange,
-                                    size: 14,
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    "Toll: ₹${widget.rideRequest.tollPrice!.toStringAsFixed(0)}",
-                                    style: const TextStyle(
-                                      color: Colors.orange,
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ],
-                              ),
                             ),
-                          ),
-                        if (widget.rideRequest.surgeMultiplier != null &&
-                            widget.rideRequest.surgeMultiplier! > 1.0)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 2),
-                            child: Text(
-                              "Surge Active: ${widget.rideRequest.surgeMultiplier!.toStringAsFixed(1)}x",
-                              style: const TextStyle(
-                                color: Colors.yellowAccent,
-                                fontSize: 13,
-                                fontWeight: FontWeight.bold,
+                          if (widget.rideRequest.surgeMultiplier != null &&
+                              widget.rideRequest.surgeMultiplier! > 1.0)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Text(
+                                "Surge Active: ${widget.rideRequest.surgeMultiplier!.toStringAsFixed(1)}x",
+                                style: const TextStyle(
+                                  color: Colors.yellowAccent,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
-                            ),
-                          ),
-                        if (widget.rideRequest.tip != null &&
-                            widget.rideRequest.tip! > 0)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 6),
-                            child: Container(
+                              ),
+                        ],
+                      ),
+                    ),
+
+                    const SizedBox(width: 12),
+
+                    // Buttons: Pass / Accept
+                    Flexible(
+                      flex: 0,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // Pass Button
+                          TextButton(
+                            onPressed: widget.onReject,
+                            style: TextButton.styleFrom(
+                              backgroundColor: isDark 
+                                  ? Colors.white.withValues(alpha: 0.1)
+                                  : Colors.grey.shade100,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(30),
+                              ),
                               padding: const EdgeInsets.symmetric(
                                 horizontal: 10,
                                 vertical: 6,
                               ),
-                              decoration: BoxDecoration(
-                                color: Colors.green,
-                                borderRadius: BorderRadius.circular(8),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.green.withValues(alpha: 0.3),
-                                    blurRadius: 4,
-                                    offset: const Offset(0, 2),
-                                  ),
-                                ],
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const Icon(
-                                    Icons.card_giftcard,
-                                    color: Colors.white,
-                                    size: 14,
-                                  ),
-                                  const SizedBox(width: 6),
-                                  Text(
-                                    "Customer Added TIP: ₹${widget.rideRequest.tip!.toStringAsFixed(0)}",
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.bold,
-                                      letterSpacing: 0.5,
-                                    ),
-                                  ),
-                                ],
+                            ),
+                            child: Text(
+                              "Pass",
+                              style: TextStyle(
+                                color: isDark ? Colors.white70 : Colors.grey.shade600,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13,
                               ),
                             ),
                           ),
-                      ],
-                    ),
-
-                    // Buttons: Pass / Accept
-                    Row(
-                      children: [
-                        // Pass Button
-                        TextButton(
-                          onPressed: widget.onReject,
-                          style: TextButton.styleFrom(
-                            backgroundColor: isDark 
-                                ? Colors.white.withValues(alpha: 0.1)
-                                : Colors.grey.shade100,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(30),
-                            ),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 10,
+                          const SizedBox(width: 6),
+                          // Accept Button
+                          ElevatedButton.icon(
+                            onPressed: widget.onAccept,
+                            icon: const Icon(Icons.check_circle, size: 16),
+                            label: Text("Accept".tr, style: const TextStyle(fontSize: 13)),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.green,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(30),
+                              ),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 6,
+                              ),
                             ),
                           ),
-                          child: Text(
-                            "Pass",
-                            style: TextStyle(
-                              color: isDark ? Colors.white70 : Colors.grey.shade600,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        // Accept Button (Tap the card triggers it, but explicit button is nice too)
-                        ElevatedButton.icon(
-                          onPressed: widget.onAccept,
-                          icon: const Icon(Icons.check_circle, size: 18),
-                          label: Text("Accept".tr),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.green,
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(30),
-                            ),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 20,
-                              vertical: 10,
-                            ),
-                          ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ],
                 ),
-
                 const SizedBox(height: 8),
+                if (widget.rideRequest.tip != null && widget.rideRequest.tip! > 0)
+                  Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.green,
+                        borderRadius: BorderRadius.circular(8),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.green.withValues(alpha: 0.3),
+                            blurRadius: 4,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.card_giftcard, color: Colors.white, size: 12),
+                          const SizedBox(width: 6),
+                          Text(
+                            "Customer Added TIP: ₹${widget.rideRequest.tip!.toStringAsFixed(0)}",
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                const SizedBox(height: 4),
               ],
             ),
           ),
@@ -950,6 +1041,7 @@ class _RideRequestCardState extends State<RideRequestCard> {
     IconData icon,
     String title,
     String fullAddress,
+    String? area,
     String distanceInfo,
     Color primaryColor,
     Color secondaryColor,
@@ -961,8 +1053,8 @@ class _RideRequestCardState extends State<RideRequestCard> {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(icon, color: isDark ? Colors.white : AppColors.primary, size: 28),
-        const SizedBox(width: 16),
+        Icon(icon, color: isDark ? Colors.white : AppColors.primary, size: 22),
+        const SizedBox(width: 12),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -973,15 +1065,26 @@ class _RideRequestCardState extends State<RideRequestCard> {
                   style: TextStyle(
                     fontWeight: FontWeight.bold,
                     color: primaryColor,
-                    fontSize: 18,
+                    fontSize: 13,
                   ),
                 ),
-                const SizedBox(height: 2),
+                if (area != null && area.isNotEmpty && area != title) ...[
+                  Text(
+                    area,
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: primaryColor.withValues(alpha: 0.8),
+                      fontSize: 12,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
                 Text(
                   fullAddress,
                   style: TextStyle(
                     color: secondaryColor,
-                    fontSize: 14,
+                    fontSize: 11,
                   ),
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
@@ -992,17 +1095,17 @@ class _RideRequestCardState extends State<RideRequestCard> {
                   style: TextStyle(
                     fontWeight: FontWeight.bold,
                     color: primaryColor,
-                    fontSize: 16,
+                    fontSize: 13,
                   ),
                   maxLines: 3,
                   overflow: TextOverflow.ellipsis,
                 ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 2),
               Text(
                 distanceInfo,
                 style: TextStyle(
                   color: primaryColor,
-                  fontSize: 14,
+                  fontSize: 11,
                   fontWeight: FontWeight.bold,
                 ),
               ),
@@ -1017,16 +1120,17 @@ class _RideRequestCardState extends State<RideRequestCard> {
     IconData icon,
     String title,
     String fullAddress,
+    String? area,
     String distanceInfo,
     Color primaryColor,
     Color secondaryColor,
     bool isDark,
   ) {
     return Container(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: isDark ? Colors.white.withValues(alpha: 0.1) : Colors.grey.shade50,
-        borderRadius: BorderRadius.circular(15),
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(
           color: isDark ? Colors.white.withValues(alpha: 0.2) : Colors.grey.shade200,
           width: 1,
@@ -1035,8 +1139,8 @@ class _RideRequestCardState extends State<RideRequestCard> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, color: isDark ? Colors.white : AppColors.primary, size: 28),
-          const SizedBox(width: 16),
+          Icon(icon, color: isDark ? Colors.white : AppColors.primary, size: 20),
+          const SizedBox(width: 8),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1046,25 +1150,36 @@ class _RideRequestCardState extends State<RideRequestCard> {
                   style: TextStyle(
                     fontWeight: FontWeight.bold,
                     color: primaryColor,
-                    fontSize: 22,
+                    fontSize: 14,
                   ),
                 ),
-                const SizedBox(height: 4),
+                if (area != null && area.isNotEmpty && area != title) ...[
+                  Text(
+                    area,
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: primaryColor.withValues(alpha: 0.8),
+                      fontSize: 12,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
                 Text(
                   fullAddress,
                   style: TextStyle(
                     color: secondaryColor,
-                    fontSize: 14,
+                    fontSize: 11,
                   ),
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 2),
                 Text(
                   distanceInfo,
                   style: TextStyle(
                     color: primaryColor,
-                    fontSize: 14,
+                    fontSize: 11,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
@@ -1141,7 +1256,6 @@ class _RideRequestCardState extends State<RideRequestCard> {
   String _getPaymentHeaderText() {
     final method = widget.rideRequest.paymentMethod; // e.g. "Cash"
     final walletUsed = widget.rideRequest.paidByWallet ?? 0.0;
-    debugPrint("RideRequestCard: method=$method, walletUsed=$walletUsed");
 
     if (walletUsed > 0 || method == 'Cash + Wallet') {
       return "cashPlusWallet".tr;

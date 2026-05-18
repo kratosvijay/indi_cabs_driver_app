@@ -14,16 +14,17 @@ import { onSchedule } from "firebase-functions/v2/scheduler";
 import { defineSecret } from "firebase-functions/params";
 import axios from "axios";
 import * as crypto from "crypto";
-
-
+import { calculateDistance } from "./utils/geo";
 import { batchOnboard } from "./onboarding";
 import { aggregateDemandDriver, resetDemandZonesDriver } from "./demandAggregator";
 import { removeInvalidAirportDrivers, cleanupGhostAirportDrivers, onQueueDriverAdded, onQueueDriverRemoved, acceptAirportRide, assignAirportRide } from "./airportQueue";
+import { onGPSUpdate } from "./trip_engine";
+import { calculateTripFare } from "./fare_engine";
 
 export {
     batchOnboard, aggregateDemandDriver, resetDemandZonesDriver,
     removeInvalidAirportDrivers, cleanupGhostAirportDrivers, onQueueDriverAdded, onQueueDriverRemoved, acceptAirportRide,
-    generateOtpDriver
+    assignAirportRide, generateOtpDriver, onGPSUpdate, calculateDistance
 };
 
 /*
@@ -283,27 +284,6 @@ const generateOtpDriver = onDocumentWritten(
  * Calculate distance between two points using Haversine formula
  */
 
-/**
- * Calculate distance between two points using Haversine formula
- */
-export function calculateDistance(
-    lat1: number,
-    lon1: number,
-    lat2: number,
-    lon2: number
-): number {
-    const R = 6371; // Radius of the Earth in km
-    const dLat = ((lat2 - lat1) * Math.PI) / 180;
-    const dLon = ((lon2 - lon1) * Math.PI) / 180;
-    const a =
-        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos((lat1 * Math.PI) / 180) *
-        Math.cos((lat2 * Math.PI) / 180) *
-        Math.sin(dLon / 2) *
-        Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-}
 
 
 
@@ -432,7 +412,7 @@ export const distributeRideToDrivers = onDocumentWritten(
             const previouslyCheckedDrivers = new Set<string>();
             const rideRef = change.after.ref;
             const isRental = afterData.rideType === 'rental';
-            const waitTimeMs = isRental ? 10000 : 5000;
+            const waitTimeMs = isRental ? 10000 : 5000; // Locked to 5s daily, 10s rental per user request
 
             console.log(`[Dispatch Flow] Ride is ${isRental ? 'Rental' : 'Daily'}. Timer set to ${waitTimeMs}ms. Max Radius: ${maxRadius}km`);
 
@@ -925,431 +905,70 @@ export const manageDriverStatus = onDocumentUpdated(
 
 /**
  * Calculate dynamic pricing based on actual distance traveled
+ * Refactored to use the new FareEngine
  */
 export const calculateDynamicPricing = onCall({ region: "asia-south1" }, async (request) => {
     if (!request.auth) {
-        throw new HttpsError(
-            "unauthenticated",
-            "User must be authenticated"
-        );
+        throw new HttpsError("unauthenticated", "User must be authenticated");
     }
 
-    const { rideId, actualDistanceKm, waitingCharge, rideType } = request.data;
-    // rideType is optional, defaulting to 'daily' if not found in doc
-    // waitingCharge is optional, defaulting to 0
+    const { rideId, actualDistanceKm, waitingMinutes, rideType } = request.data;
 
-    if (!rideId || actualDistanceKm === undefined) {
-        throw new HttpsError(
-            "invalid-argument",
-            "Missing required parameters (rideId, actualDistanceKm)"
-        );
+    if (!rideId) {
+        throw new HttpsError("invalid-argument", "Missing required parameter: rideId");
     }
 
     try {
-        // Get ride data
-        const rideDoc = await db.collection(rideType === 'rental' ? 'rental_requests' : 'ride_requests').doc(rideId).get();
+        const db = admin.firestore();
+        const rideRef = db.collection(rideType === 'rental' ? 'rental_requests' : 'ride_requests').doc(rideId);
+        const rideSnap = await rideRef.get();
 
-        if (!rideDoc.exists) {
+        if (!rideSnap.exists) {
             throw new HttpsError("not-found", "Ride not found");
         }
 
-        const rideData = rideDoc.data();
-        if (!rideData) throw new HttpsError("internal", "Ride data missing");
+        const rideData = rideSnap.data()!;
+        
+        // Use backend-accumulated distance if actualDistanceKm is not provided
+        const finalDistance = actualDistanceKm !== undefined ? actualDistanceKm : (rideData.actualDistance || 0);
+        
+        // Calculate duration
+        const startedAt = rideData.startedAt?.toDate() || new Date();
+        const rideDurationMinutes = (Date.now() - startedAt.getTime()) / 60000;
+        
+        const calculation = await calculateTripFare(
+            rideId,
+            finalDistance,
+            rideDurationMinutes,
+            waitingMinutes || 0,
+            rideType || rideData.rideType || 'daily'
+        );
 
-        const effectiveRideType = rideType || rideData.rideType || 'daily';
-
-        // --- 1. RENTAL BILLING LOGIC ---
-        if (effectiveRideType === 'rental') {
-            console.log(`Processing Rental Billing for ${rideId}`);
-
-            const pkgHours = (rideData.durationHours || 0);
-            const pkgKm = (rideData.kmLimit || 0);
-            const extraHourCharge = (rideData.extraHourCharge || 0);
-            const extraKmCharge = (rideData.extraKmCharge || 0);
-            const baseFare = (rideData.rideFare || rideData.fare || 0); // locked package price
-
-            // Calculate duration
-            const startedAtTs = rideData.startedAt;
-            const startedAt = startedAtTs ? startedAtTs.toDate() : new Date();
-            const now = new Date();
-            const durationMinutes = (now.getTime() - startedAt.getTime()) / 60000;
-            const durationHours = durationMinutes / 60.0;
-
-            let extraHours = 0;
-            if (durationHours > pkgHours) {
-                extraHours = Math.ceil(durationHours - pkgHours);
-            }
-
-            let extraKm = 0;
-            if (actualDistanceKm > pkgKm) {
-                extraKm = actualDistanceKm - pkgKm;
-            }
-
-            const extraTimeCost = extraHours * extraHourCharge;
-            const extraDistCost = extraKm * extraKmCharge;
-            // Rental does not typically have "waiting charge" separate from duration
-            // But if passed, we could add it. Usually implicit in rental duration.
-            // Let's assume waiting is part of the rental time.
-
-            const totalFare = baseFare + extraTimeCost + extraDistCost;
-
-            await rideDoc.ref.update({
-                actualDistance: actualDistanceKm,
-                actualDuration: durationMinutes, // store in minutes? or hours? existing code used minutes in one place, hours in another
-                actualDurationMinutes: durationMinutes,
-                finalAmount: totalFare,
-                totalFare: totalFare,
-                rideFare: totalFare,
-                extraTimeCost: extraTimeCost,
-                extraDistanceCost: extraDistCost,
-                priceUpdated: (extraTimeCost > 0 || extraDistCost > 0),
-                pricingReason: `Base: ${baseFare}, ExtraKm: ${extraDistCost}, ExtraTime: ${extraTimeCost}`
-            });
-
-            return {
-                success: true,
-                finalFare: totalFare,
-                priceUpdated: (extraTimeCost > 0 || extraDistCost > 0),
-                reason: "Rental calculation complete"
-            };
-        }
-
-        // --- 2. DAILY RIDE BILLING LOGIC ---
-
-        // Inputs
-        const estimatedDistanceKm = rideData.rideDistance || 0;
-        const vehicleType = rideData.vehicleType || rideData.vehicleClass || "Sedan"; // Booked Type - Fallback to vehicleClass
-        console.log(`[DEBUG] Pricing Calc - RideId: ${rideId}, BookedType: ${vehicleType}, DriverType: ${rideData.driverCarModel || 'Unknown'}`);
-        const providedWaitingCharge = waitingCharge || 0;
-
-        // Pricing Rules Fetch
-        let pricingRules: any = {};
-        try {
-            const pricingDoc = await db.collection("pricing_rules").doc("Chennai").get();
-            if (pricingDoc.exists) pricingRules = pricingDoc.data() || {};
-        } catch (e) {
-            console.error("Failed to fetch pricing rules:", e);
-        }
-
-        // --- SURGE / PEAK LOGIC (Matched with User App) ---
-        // Peak rate is locked to BOOKING TIME (createdAt) so that:
-        //   - A ride booked during peak hours always pays peak rate regardless of when it ends.
-        //   - A ride booked during off-peak hours always pays off-peak rate regardless of when it ends.
-        let surgeMultiplier = 1.0;
-
-        // Use createdAt (booking time) as the reference for all time-based charges.
-        // Fall back to startedAt then now only if createdAt is missing.
-        const bookingRefTime = rideData.createdAt
-            ? rideData.createdAt.toDate()
-            : (rideData.startedAt ? rideData.startedAt.toDate() : new Date());
-
-        const istFormatter = new Intl.DateTimeFormat("en-US", {
-            timeZone: "Asia/Kolkata",
-            hour: "2-digit",
-            hour12: false,
-            weekday: "short",
-        });
-        const parts = istFormatter.formatToParts(bookingRefTime);
-        let currentHour = 0;
-        let currentDayString = "";
-        for (const part of parts) {
-            if (part.type === "hour") currentHour = parseInt(part.value) % 24;
-            if (part.type === "weekday") currentDayString = part.value;
-        }
-
-        // 1. Check DB Override
-        if (pricingRules.isSurgeActive && pricingRules.surgeMultiplier) {
-            surgeMultiplier = pricingRules.surgeMultiplier;
-        } else {
-            // 2. Time-based Logic using booking time
-            const isWeekend = currentDayString === "Sat" || currentDayString === "Sun";
-
-            if (isWeekend) {
-                if (currentHour >= 15 && currentHour < 21) surgeMultiplier = 1.20;
-            } else {
-                const isMorningSurge = currentHour >= 8 && currentHour < 11;
-                const isEveningSurge = currentHour >= 17 && currentHour < 21;
-                if (isMorningSurge || isEveningSurge) surgeMultiplier = 1.20;
-            }
-        }
-
-        // --- NIGHT CHARGE (based on booking time, same rationale as peak) ---
-        let nightCharge = 0.0;
-        if (currentHour >= 22 || currentHour < 6) {
-            nightCharge = 30.0;
-        }
-
-        // --- BASE RATES ---
-        let baseFare = 50;
-        let perKm = 12;
-        let minFare = 100;
-        let perMinute = 0; // User App has time charge
-
-        if (vehicleType && pricingRules.vehicle_types && pricingRules.vehicle_types[vehicleType]) {
-            const vRules = pricingRules.vehicle_types[vehicleType];
-            if (vRules) {
-              baseFare = vRules.baseFare || baseFare;
-              perKm = vRules.perKilometer || perKm;
-              minFare = vRules.minimumFare || minFare;
-              perMinute = vRules.perMinute || 0;
-              console.log(`[DEBUG] Applied Rules for ${vehicleType}: Base=${baseFare}, PerKm=${perKm}`);
-            }
-        } else {
-            console.warn(`[WARN] No pricing rules found for vehicle type: ${vehicleType}. Using defaults.`);
-        }
-
-        // --- GEOFENCE LOGIC & TOLL DETECTION ---
-        let geofenceSurcharge = 0.0;
-        let actualTollCrossed = false;
-        let tollZonesCrossed: string[] = [];
-        let totalTollAmount = 0.0;
-
-        try {
-            const zonesSnapshot = await db.collection("geofenced_zones").get();
-            // Parse pickup location
-            let pickupGeoPoint = null;
-            let dropoffGeoPoint = null;
-
-            if (rideData.pickupLocation) {
-                if (rideData.pickupLocation instanceof admin.firestore.GeoPoint) {
-                    pickupGeoPoint = rideData.pickupLocation;
-                } else if (typeof rideData.pickupLocation === 'object' && rideData.pickupLocation !== null) {
-                    const location = rideData.pickupLocation as any;
-                    const lat = location.latitude ?? location.lat;
-                    const lng = location.longitude ?? location.lng;
-                    if (typeof lat === 'number' && typeof lng === 'number' && isFinite(lat) && isFinite(lng)) {
-                        pickupGeoPoint = new admin.firestore.GeoPoint(lat, lng);
-                    }
-                }
-            }
-
-            // Parse dropoff/destination location
-            if (rideData.dropoffLocation) {
-                if (rideData.dropoffLocation instanceof admin.firestore.GeoPoint) {
-                    dropoffGeoPoint = rideData.dropoffLocation;
-                } else if (typeof rideData.dropoffLocation === 'object' && rideData.dropoffLocation !== null) {
-                    const location = rideData.dropoffLocation as any;
-                    const lat = location.latitude ?? location.lat;
-                    const lng = location.longitude ?? location.lng;
-                    if (typeof lat === 'number' && typeof lng === 'number' && isFinite(lat) && isFinite(lng)) {
-                        dropoffGeoPoint = new admin.firestore.GeoPoint(lat, lng);
-                    }
-                }
-            } else if (rideData.destinationLocation) {
-                // Fallback to destinationLocation field
-                if (rideData.destinationLocation instanceof admin.firestore.GeoPoint) {
-                    dropoffGeoPoint = rideData.destinationLocation;
-                } else if (typeof rideData.destinationLocation === 'object' && rideData.destinationLocation !== null) {
-                    const location = rideData.destinationLocation as any;
-                    const lat = location.latitude ?? location.lat;
-                    const lng = location.longitude ?? location.lng;
-                    if (typeof lat === 'number' && typeof lng === 'number' && isFinite(lat) && isFinite(lng)) {
-                        dropoffGeoPoint = new admin.firestore.GeoPoint(lat, lng);
-                    }
-                } else if (rideData.destinationLocation.lat && rideData.destinationLocation.lng) {
-                    dropoffGeoPoint = new admin.firestore.GeoPoint(rideData.destinationLocation.lat, rideData.destinationLocation.lng);
-                }
-            }
-
-            if (pickupGeoPoint) {
-                for (const doc of zonesSnapshot.docs) {
-                    const zone = doc.data();
-                    if (zone.surcharge_amount && zone.surcharge_amount > 0 && zone.boundary) {
-                        const pickupInZone = isPointInPolygon(pickupGeoPoint, zone.boundary);
-                        const dropoffInZone = dropoffGeoPoint ? isPointInPolygon(dropoffGeoPoint, zone.boundary) : false;
-
-                        // Geofence surcharge applies if pickup is in zone
-                        if (pickupInZone) {
-                            geofenceSurcharge = zone.surcharge_amount;
-                            console.log(`Applying surcharge of ${geofenceSurcharge} for zone ${doc.id}`);
-                        }
-
-                        // Toll detection: Route crosses toll zone if pickup and dropoff are on opposite sides
-                        // Scenario 1: Pickup inside zone, dropoff outside = Route crossed OUT
-                        // Scenario 2: Pickup outside zone, dropoff inside = Route crossed IN
-                        // Scenario 3: Both inside = Already in toll zone (geofence applies)
-                        // Scenario 4: Both outside = No toll crossing
-                        const routeCrossesTollZone = (pickupInZone && !dropoffInZone) || (!pickupInZone && dropoffInZone);
-
-                        if (routeCrossesTollZone) {
-                            actualTollCrossed = true;
-                            tollZonesCrossed.push(doc.id);
-                            totalTollAmount += zone.surcharge_amount; // SUM all toll zones crossed
-                            console.log(`Toll zone ${doc.id} crossed on route (pickup: ${pickupInZone}, dropoff: ${dropoffInZone}, amount: ${zone.surcharge_amount})`);
-                        }
-                    }
-                }
-            }
-        } catch (e) {
-            console.error("Geofence check failed:", e);
-        }
-
-        // --- CALCULATE FARE ---
-        // Formula matching User App:
-        // 1. Distance Charge (Tiered)
-        // 2. Time Charge
-        // 3. Surge
-        // 4. Extras (Night, Toll, Geofence)
-        // 5. Min Fare
-
-        let calculatedFare = baseFare;
-
-        // 1. Distance Charge (Tiered)
-        if (actualDistanceKm <= 12) {
-            calculatedFare += actualDistanceKm * perKm;
-        } else {
-            // First 12 km normal
-            calculatedFare += 12 * perKm;
-            // Remaining reduced
-            const reducedRate = Math.max(0, perKm - 3);
-            calculatedFare += (actualDistanceKm - 12) * reducedRate;
-        }
-
-        // 2. Time Charge (Using actualDurationMinutes if available, else calculate)
-        let rideDurationMinutes = 0;
-        if (rideData.startedAt) {
-            const startDiv = rideData.startedAt.toDate();
-            const endDiv = new Date();
-            rideDurationMinutes = (endDiv.getTime() - startDiv.getTime()) / 60000;
-        }
-        if (perMinute > 0 && rideDurationMinutes > 0) {
-            calculatedFare += (rideDurationMinutes * perMinute);
-        }
-
-        // 3. Surge
-        calculatedFare *= surgeMultiplier;
-
-        // 4. Extras
-        calculatedFare += nightCharge;
-        calculatedFare += geofenceSurcharge; // Added Geofence
-
-        // Toll Handling:
-        // - For daily rides: User app adds toll pessimistically upfront
-        //   - If toll was actually crossed: keep the toll charge (use actual amount from zones)
-        //   - If toll was NOT crossed: we'll deduct it below
-        // - For rental rides: Only add toll if actually crossed (use actual amount from zones)
-        if (actualTollCrossed && totalTollAmount > 0) {
-            calculatedFare += totalTollAmount;
-            console.log(`Toll crossed: Adding ₹${totalTollAmount} to fare (${tollZonesCrossed.join(", ")})`);
-        } else if (!actualTollCrossed && rideData.tollPrice) {
-            // Toll was charged by user app but NOT actually crossed
-            // Will be deducted in daily ride logic below
-            console.log(`Toll NOT crossed but charged: ${rideData.tollPrice}. Will deduct if within tolerance.`);
-        }
-
-        // 5. Min Fare
-        if (calculatedFare < minFare) calculatedFare = minFare;
-
-        // Add Waiting Charge (Driver App specific addition, User App didn't show it explicitly in calcFares but likely handled separate or implicit)
-        // Driver App passes it explicitly.
-        calculatedFare += providedWaitingCharge;
-
-        // Rounding
-        let finalFare = Math.round(calculatedFare);
-
-
-        // distanceDiff > 0  → driver travelled more than estimated (detour / wrong route)
-        // distanceDiff < 0  → driver took a shortcut
-        const distanceDiff = actualDistanceKm - estimatedDistanceKm;
-        let priceUpdated = false;
-        let reason = "Fare matched estimate";
-
-        const isPeak = surgeMultiplier > 1.0;
-
-        // Tolerance window: actual distance is within ±1.5 km above or 5 km below estimate.
-        // WITHIN tolerance  → driver took the correct route → apply dynamic pricing at booking-time rates.
-        // OUTSIDE tolerance → driver deviated significantly → protect the customer by using the
-        //                     original fare they were quoted (read from Firestore rideFare).
-        const withinTolerance = distanceDiff <= 1.5 && distanceDiff >= -5.0;
-
-        if (withinTolerance) {
-            // Dynamic pricing at booking-time rates (already fully calculated as finalFare above).
-            // geofenceSurcharge is already included in finalFare via calculatedFare — do NOT add again.
-
-            // Toll handling:
-            // - If toll was crossed: the toll amount is already included in calculatedFare above.
-            // - If toll was NOT crossed but was charged by user app: deduct it.
-            if (actualTollCrossed && totalTollAmount > 0) {
-                console.log(`[Within Tolerance] Toll crossed: ₹${totalTollAmount} already in fare`);
-            } else if (!actualTollCrossed && rideData.tollPrice) {
-                finalFare -= rideData.tollPrice;
-                console.log(`[Within Tolerance] Toll NOT crossed: Deducting ₹${rideData.tollPrice}`);
-                priceUpdated = true;
-                reason = `Fare recalculated at booking-time rates; toll deducted (not crossed).`;
-            }
-
-            priceUpdated = true;
-            if (!reason || reason === "Fare matched estimate") {
-                reason = `Fare recalculated at booking-time rates (${isPeak ? "peak" : "off-peak"}).`;
-            }
-
-        } else {
-            // Outside tolerance: driver took a significantly different route.
-            // Use the original Firestore fare to protect the customer from paying for driver detours.
-            finalFare = parseFloat(rideData.rideFare || finalFare);
-            finalFare += providedWaitingCharge;
-            finalFare += geofenceSurcharge;
-
-            if (actualTollCrossed && totalTollAmount > 0) {
-                finalFare += totalTollAmount;
-                console.log(`[Outside Tolerance] Toll crossed: Adding ₹${totalTollAmount}`);
-            } else if (!actualTollCrossed && rideData.tollPrice) {
-                finalFare -= rideData.tollPrice;
-                console.log(`[Outside Tolerance] Toll NOT crossed: Deducting ₹${rideData.tollPrice}`);
-            }
-
-            priceUpdated = false;
-            reason = `Route deviated (diff: ${distanceDiff.toFixed(2)} km). Using original quoted fare.`;
-            console.log(`[Outside Tolerance] Using original fare: ${rideData.rideFare}`);
-        }
-
-
-        // --- FINAL CHECK: BOOKED TYPE ENFORCEMENT ---
-        // Verify we didn't use "Suv" rates for a "Hatchback" booking.
-        // We already did this by using `vehicleType` (which is the booked type) to fetch `baseFare`/`perKm`.
-        // So `calculated` above uses the correct rates.
-
-        // Update Backend
-        await rideDoc.ref.update({
-            actualDistance: actualDistanceKm,
-            finalAmount: finalFare,
-            totalFare: finalFare,
-            rideFare: finalFare, // Update main display fare
-            waitingCharge: providedWaitingCharge,
-            priceUpdated: priceUpdated,
-            pricingReason: reason,
-            isPeakHour: isPeak,
-            peakMultiplier: surgeMultiplier,
-            // Toll information
-            tollCrossed: actualTollCrossed,
-            tollZonesCrossed: tollZonesCrossed,
-            totalTollAmount: totalTollAmount,
-            geofenceSurcharge: geofenceSurcharge,
+        // Update ride doc
+        await rideRef.update({
+            actualDistance: finalDistance,
+            actualDurationMinutes: rideDurationMinutes,
+            actualDuration: Math.round(rideDurationMinutes),
+            waitingMinutes: waitingMinutes || 0,
+            finalAmount: calculation.finalFare,
+            totalFare: calculation.finalFare,
+            rideFare: calculation.finalFare,
+            fare: calculation.finalFare,
+            fareBreakdown: calculation,
+            priceUpdated: true,
             calculatedAt: admin.firestore.FieldValue.serverTimestamp()
         });
 
         return {
             success: true,
-            estimatedFare: rideData.rideFare,
-            finalFare: finalFare,
-            priceUpdated: priceUpdated,
-            reason: reason,
-            actualDistance: actualDistanceKm,
-            waitingCharge: providedWaitingCharge,
-            isPeak: isPeak,
-            tollCrossed: actualTollCrossed,
-            tollZonesCrossed: tollZonesCrossed,
-            tollCharge: totalTollAmount,
-            geofenceSurcharge: geofenceSurcharge,
-            distanceDifference: distanceDiff
+            actualDistance: finalDistance,
+            actualDurationMinutes: rideDurationMinutes,
+            ...calculation
         };
 
-    } catch (error) {
-        console.error("Error calculating dynamic pricing:", error);
-        throw new HttpsError(
-            "internal",
-            "Failed to calculate pricing"
-        );
+    } catch (error: any) {
+        console.error("Error calculating pricing:", error);
+        throw new HttpsError("internal", error.message || "Failed to calculate pricing");
     }
 });
 
@@ -2621,7 +2240,7 @@ export const distributeRentalToDrivers = onDocumentWritten(
             let candidates: any[] = [];
             const previouslyCheckedDrivers = new Set<string>();
             const rideRef = change.after.ref;
-            const waitTimeMs = 10000; // 10 seconds for rentals
+            const waitTimeMs = 10000; // Locked to 10 seconds for rentals
 
             let rideFinished = false;
 
@@ -2811,56 +2430,4 @@ export const handleRentalRejection = onDocumentUpdated(
  * @param {admin.firestore.GeoPoint[]} polygon The polygon boundaries.
  * @return {boolean} True if the point is inside, false otherwise.
  */
-function isPointInPolygon(
-    point: admin.firestore.GeoPoint,
-    polygon: admin.firestore.GeoPoint[]
-): boolean {
-    if (polygon.length === 0) return false;
-    let intersectCount = 0;
-    for (let j = 0; j < polygon.length - 1; j++) {
-        if (_rayCastIntersect(point, polygon[j], polygon[j + 1])) {
-            intersectCount++;
-        }
-    }
-    if (_rayCastIntersect(point, polygon[polygon.length - 1], polygon[0])) {
-        intersectCount++;
-    }
-    return intersectCount % 2 === 1;
-}
 
-/**
- * Ray casting helper for isPointInPolygon.
- * @param {admin.firestore.GeoPoint} point The point to check.
- * @param {admin.firestore.GeoPoint} vertA The first vertex of the segment.
- * @param {admin.firestore.GeoPoint} vertB The second vertex of the segment.
- * @return {boolean} True if the ray intersects the segment.
- */
-function _rayCastIntersect(
-    point: admin.firestore.GeoPoint,
-    vertA: admin.firestore.GeoPoint,
-    vertB: admin.firestore.GeoPoint
-): boolean {
-    const aY = vertA.latitude;
-    const bY = vertB.latitude;
-    const aX = vertA.longitude;
-    const bX = vertB.longitude;
-    const pY = point.latitude;
-    const pX = point.longitude;
-
-    if ((aY > pY && bY > pY) || (aY < pY && bY < pY)) {
-        return false;
-    }
-    if (aX < pX && bX < pX) {
-        return false;
-    }
-    if (aX > pX && bX > pX) {
-        return true;
-    }
-    if (aX === bX) {
-        return pX <= aX;
-    }
-    const numerator = (pY - aY) * (bX - aX);
-    const denominator = bY - aY;
-    const intersectX = (numerator / denominator) + aX;
-    return intersectX >= pX;
-}

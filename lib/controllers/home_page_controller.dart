@@ -332,8 +332,10 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
       'rideDistance': request.rideDistance,
       'rideDuration': request.rideDuration,
       'pickupTitle': request.pickupTitle,
+      'pickupArea': request.pickupArea, // **NEW**
       'pickupFullAddress': request.pickupFullAddress,
       'dropoffTitle': request.dropoffTitle,
+      'dropoffArea': request.dropoffArea, // **NEW**
       'dropoffFullAddress': request.dropoffFullAddress,
       'rideFare': request.rideFare,
       'tip': request.tip,
@@ -1132,6 +1134,7 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
     Query query = FirebaseFirestore.instance
         .collection('ride_requests')
         .where('status', isEqualTo: 'searching')
+        .where('driverUid', isEqualTo: user.uid) // Sequential dispatch filter
         .orderBy('createdAt', descending: true);
 
     // Filter based on driver type
@@ -1673,6 +1676,16 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
                          data['dropoffTitle'] ??
                          (dataDropoff != null ? RideRequest.extractTitle(dataDropoff) : (destinationLocation != null ? 'Dropoff' : 'Rental'));
 
+    // Extract Areas
+    String pickupArea = data['pickupArea'] ?? 
+                        data['pickupSublocality'] ?? 
+                        (dataPickup != null ? RideRequest.extractArea(dataPickup) : '');
+    
+    String dropoffArea = data['destinationArea'] ?? 
+                         data['dropoffArea'] ?? 
+                         data['dropoffSublocality'] ?? 
+                         (dataDropoff != null ? RideRequest.extractArea(dataDropoff) : '');
+
     // Only geocode IF addresses are missing from Firestore
     if (dataPickup == null) {
       final pickupDetails = await getParsedAddressFromLatLng(pickupLocation);
@@ -1719,6 +1732,10 @@ class HomePageController extends GetxController with WidgetsBindingObserver {
         userId: userId,
         userName: userName,
         surgeMultiplier: surge,
+        pickupPlaceName: data['pickupPlaceName'],
+        dropoffPlaceName: data['destinationPlaceName'] ?? data['dropoffPlaceName'],
+        pickupArea: pickupArea,
+        dropoffArea: dropoffArea,
         pickupTitle: pickupTitle,
         dropoffTitle: dropoffTitle,
         pickupFullAddress: pickupFull,

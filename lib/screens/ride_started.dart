@@ -11,10 +11,10 @@ import 'package:google_maps_flutter/google_maps_flutter.dart' as maps;
 import 'package:project_taxi_driver_app/widgets/ride_request.dart';
 import 'package:project_taxi_driver_app/widgets/ride_status_slider.dart';
 import 'package:project_taxi_driver_app/screens/ride_payment.dart';
-import 'package:project_taxi_driver_app/services/pricing_service.dart';
 import 'package:project_taxi_driver_app/screens/navigation_screen.dart'; // Import NavigationScreen
 import 'package:project_taxi_driver_app/screens/ride_end_otp_screen.dart';
 import 'package:project_taxi_driver_app/services/ride_queue_service.dart';
+import 'package:project_taxi_driver_app/controllers/trip_controller.dart';
 
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:http/http.dart' as http;
@@ -70,6 +70,7 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
   String _fetchedAddress = ''; // Store locally fetched address
   Timer? _syncTimer;
   SharedPreferences? _prefs;
+  late TripController _tripController;
 
   @override
   void initState() {
@@ -86,6 +87,16 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
 
     final rideDrop = _rideRequest.dropoffLocation;
     _dropLocation = maps.LatLng(rideDrop.latitude, rideDrop.longitude);
+
+    // Initialize TripController
+    _tripController = Get.put(
+      TripController(
+        rideId: widget.rideRequest.rideId,
+        rideType: widget.rideRequest.rideType,
+      ),
+      tag: widget.rideRequest.rideId,
+    );
+    _tripController.updateStatus(TripState.started);
 
     _fetchCustomerDetails();
     _startLocationUpdates();
@@ -963,6 +974,9 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
           _waitTimeRemaining--;
         } else {
           // Free wait over, start paid wait
+          if (_paidWaitSeconds == 0) {
+            _tripController.startWaiting();
+          }
           _paidWaitSeconds++;
         }
       });
@@ -971,6 +985,7 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
 
   void _resumeRide() {
     _waitTimer?.cancel();
+    _tripController.stopWaiting();
     setState(() {
       _isWaiting = false;
       _currentStopIndex++;
@@ -1053,77 +1068,40 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
   Future<void> _endRide() async {
     setState(() => _isLoading = true);
     try {
-      double actualDistance = 0.0;
-
-      // Use accumulated distance if available and non-zero
-      if (_accumulatedDistance > 0) {
-        actualDistance = _accumulatedDistance / 1000.0; // Convert to km
-      } else if (_driverLocation != null) {
-        // Fallback to straight line if accumulation failed (e.g. app restarted)
-        actualDistance =
-            Geolocator.distanceBetween(
-              _rideRequest.pickupLocation.latitude,
-              _rideRequest.pickupLocation.longitude,
-              _driverLocation!.latitude,
-              _driverLocation!.longitude,
-            ) /
-            1000;
-      } else {
-        actualDistance = 0.0;
+      // authoritative backend calculation
+      final fareResult = await _tripController.calculateFinalFare();
+      
+      if (fareResult.isEmpty) {
+        throw Exception("Failed to calculate authoritative fare from backend");
       }
-      debugPrint(
-        "Ending Ride. Accumulated Distance: ${_accumulatedDistance}m. Final used km: $actualDistance",
-      );
+
+      final finalFare = (fareResult['finalFare'] as num?)?.toDouble() ?? 0.0;
+      final actualDistance = (fareResult['actualDistance'] as num?)?.toDouble() ?? 0.0;
+
+      debugPrint("Ending Ride. Final authoritative fare: $finalFare, distance: $actualDistance km");
 
       // Cleanup local SharedPreferences backup
       _prefs?.remove('distance_tracking_${widget.rideRequest.rideId}');
       _syncTimer?.cancel();
-
-      // Calculate Paid Waiting Charge
-      // pickupWait comes from the pickup phase (passed via RideRequest)
-      double pickupWait = _rideRequest.waitingCharge;
+      
+      await _tripController.updateStatus(TripState.completed);
 
       // stopWait is total seconds beyond the free 3 mins per stop during the trip
       int totalStopWaitMinutes = (_paidWaitSeconds / 60).ceil();
       double stopWait = totalStopWaitMinutes * 3.0; // ₹3 per min
 
-      double totalWaitCharge = pickupWait + stopWait;
+      // totalWaitCharge will be fetched from backend results below
 
       // ---------------------------------------------------------
       // OPTIMIZED BILLING LOGIC
       // ---------------------------------------------------------
-      // Calculate Duration for pricing
-      final double durationMins = _rideRequest.startedAt != null
-          ? DateTime.now().difference(_rideRequest.startedAt!).inMinutes.toDouble()
-          : 0.0;
-
-      // Local Recalculation
-      final localResult = PricingService.calculateFareLocally(
-        rideRequest: _rideRequest,
-        actualDistanceKm: actualDistance,
-        actualDurationMins: durationMins,
-        waitingCharge: 0.0, // We add waitingCharge manually later
-      );
-
-      double finalFare = (localResult['finalFare'] as num).toDouble();
-      bool priceUpdated = localResult['priceUpdated'] as bool;
-      String pricingReason = localResult['reason'] as String;
-
-      debugPrint("BILLING_DEBUG: Local Result - Fare: $finalFare, Updated: $priceUpdated, Reason: $pricingReason");
-
-      // Optional: If we still want to fetch toll information from Cloud, 
-      // we could call it in the background or only if needed.
-      // For now, we trust the local calculation for the base fare.
-      bool tollCrossed = false;
-      List<dynamic> tollZones = [];
-      double tollCharge = 0.0;
-
-      // If price was updated (distance changed), we might want to verify tolls via Cloud
-      // but the user wants to avoid the "always calling" delay.
-      // So we use the estimated toll from the original request as a baseline if distance matches.
-      // Always include tolls if they were part of the initial request
-      tollCharge = _rideRequest.tollPrice ?? 0.0;
-      tollCrossed = tollCharge > 0;
+      // finalFare already declared above
+      final bool priceUpdated = fareResult['priceUpdated'] ?? true;
+      final String pricingReason = fareResult['reason'] ?? "Backend authoritative calculation";
+      final double tollCharge = (fareResult['tolls'] as num?)?.toDouble() ?? 0.0;
+      final bool tollCrossed = fareResult['tollCrossed'] ?? (tollCharge > 0);
+      final double totalWaitCharge = (fareResult['waitingCharge'] as num?)?.toDouble() ?? 0.0;
+      final double taxes = (fareResult['taxes'] as num?)?.toDouble() ?? 0.0;
       // ---------------------------------------------------------
 
       // Start Address Fetch in Parallel if location known
@@ -1133,29 +1111,27 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
       }
 
       debugPrint(
-        "PRICING_DEBUG: totalWaitCharge=$totalWaitCharge, tollCharge=$tollCharge, baseDynamicFare (finalFare)=$finalFare",
+        "PRICING_DEBUG: totalWaitCharge=$totalWaitCharge, tollCharge=$tollCharge, taxes=$taxes, baseDynamicFare (finalFare)=$finalFare",
       );
-      final double totalAmountForUser = finalFare + totalWaitCharge + tollCharge;
-
+      // totalAmountForUser is not used, finalFare from backend is the total
       final Map<String, dynamic> updateData = {
         'status': 'completed',
-        'rideFare': finalFare,
-        'baseFare': finalFare,
-        'totalFare': totalAmountForUser, // NEW: Added for dashboard earnings sync
+        'rideFare': (fareResult['totalExcludingTaxes'] as num?)?.toDouble() ?? finalFare,
+        'baseFare': (fareResult['baseFare'] as num?)?.toDouble() ?? finalFare,
+        'totalFare': finalFare,
         'waitingCharge': totalWaitCharge,
-        'pickupWaitingCharge': pickupWait,
+        'taxes': taxes,
+        'tollPrice': tollCharge,
+        'tollCrossed': tollCrossed,
         'stopWaitingCharge': stopWait,
         'priceUpdated': priceUpdated,
-        'tollCrossed': tollCrossed,
-        'tollZonesCrossed': tollZones,
-        'tollCharge': tollCharge,
+        'pricingReason': pricingReason,
+        'actualDistance': actualDistance,
         'completedAt': FieldValue.serverTimestamp(),
       };
 
-      // Use the duration calculated earlier for pricing
-      updateData['actualDuration'] = durationMins;
-      updateData['actualDistance'] =
-          actualDistance; // Also save distance explicitly
+
+      final double actualDuration = (fareResult['actualDurationMinutes'] as num?)?.toDouble() ?? 0.0;
 
       RideRequest updatedRequest = _rideRequest;
 
@@ -1183,7 +1159,7 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
       }
 
       updatedRequest = updatedRequest.copyWith(
-        actualDuration: durationMins,
+        actualDuration: actualDuration,
         actualDistance: actualDistance,
         waitingCharge: totalWaitCharge,
         tollPrice: tollCharge,
@@ -1527,6 +1503,30 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
                                   ).textTheme.bodyLarge?.color,
                                 ),
                               ),
+                              if ((_rideRequest.tip ?? 0) > 0) ...[
+                                const SizedBox(width: 12),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 4,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.green.withAlpha(40),
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(
+                                      color: Colors.green.withAlpha(100),
+                                    ),
+                                  ),
+                                  child: Text(
+                                    "+ ₹${_rideRequest.tip!.toStringAsFixed(0)} TIP",
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.green,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ],
                           ),
                           const SizedBox(height: 8),
@@ -1797,7 +1797,7 @@ class _RideStartedScreenState extends State<RideStartedScreen> {
   }
 
   String _buildDistanceString() {
-    final distKm = _accumulatedDistance / 1000.0;
+    final distKm = _tripController.accumulatedDistance.value;
     String text = "${distKm.toStringAsFixed(1)} km";
     if (_rideRequest.kmLimit != null && _rideRequest.kmLimit! > 0) {
       text += " / ${_rideRequest.kmLimit} km";

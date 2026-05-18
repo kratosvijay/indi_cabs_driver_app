@@ -474,8 +474,10 @@ class _OverlayRootState extends State<OverlayRoot> {
     final rideDur = (ride['rideDuration'] as num?)?.toDouble().toInt();
 
     final pickupTitle = ride['pickupTitle'] ?? 'Pickup';
+    final pickupArea = ride['pickupArea'] as String?; // **NEW**
     final pickupAddress = ride['pickupFullAddress'] ?? '';
     final dropoffTitle = ride['dropoffTitle'] ?? 'Dropoff';
+    final dropoffArea = ride['dropoffArea'] as String?; // **NEW**
     final dropoffAddress = ride['dropoffFullAddress'] ?? '';
 
     final isDark = MediaQuery.of(context).platformBrightness == Brightness.dark;
@@ -521,6 +523,7 @@ class _OverlayRootState extends State<OverlayRoot> {
               Icons.location_on,
               pickupTitle,
               pickupAddress,
+              pickupArea, // **NEW**
               isRental
                   ? "Rental"
                   : "$driverDist km Away${driverDur != null ? " (~$driverDur mins)" : ""}",
@@ -539,6 +542,7 @@ class _OverlayRootState extends State<OverlayRoot> {
               Icons.flag,
               dropoffTitle,
               dropoffAddress,
+              dropoffArea, // **NEW**
               isRental
                   ? ""
                   : "$rideDist km Ride${rideDur != null ? " (~$rideDur mins)" : ""}",
@@ -778,6 +782,7 @@ class _OverlayRootState extends State<OverlayRoot> {
     IconData icon,
     String title,
     String fullAddress,
+    String? area,
     String distanceInfo,
     Color primaryColor,
     Color secondaryColor,
@@ -800,7 +805,20 @@ class _OverlayRootState extends State<OverlayRoot> {
                   fontSize: 18,
                 ),
               ),
-              const SizedBox(height: 4),
+              if (area != null && area.isNotEmpty && area != title) ...[
+                const SizedBox(height: 2),
+                Text(
+                  area,
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: primaryColor.withValues(alpha: 0.8),
+                    fontSize: 15,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+              const SizedBox(height: 2),
               Text(
                 fullAddress,
                 style: TextStyle(
